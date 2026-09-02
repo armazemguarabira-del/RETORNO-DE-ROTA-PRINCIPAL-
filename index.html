@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="description" content="Plataforma de conferência de retorno de rota com controle físico de produtos e ativos de giro, reconciliação fiscal e dashboard gerencial." />
+    <meta property="og:title" content="Aferição de Retorno de Rota - Pau Brasil Guarabira" />
+    <meta property="og:description" content="Plataforma de conferência de retorno de rota com controle físico de produtos e ativos de giro, reconciliação fiscal e dashboard gerencial." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/jpeg" href="./pau_brasil_logo.jpg" />
+    <title>Aferição de Retorno de Rota - Pau Brasil Guarabira</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator && window.location.protocol === 'https:' && !window.location.hostname.includes('ais-dev')) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js')
+            .then(reg => console.log('PWA Service Worker registrado com sucesso:', reg.scope))
+            .catch(err => console.warn('Erro ao registrar Service Worker do PWA:', err));
+        });
+      }
+    </script>
+  </body>
+</html>
+
