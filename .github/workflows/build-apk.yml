@@ -33,8 +33,7 @@ jobs:
 
       - name: Install Web Dependencies
         run: |
-          rm -f package-lock.json
-          npm install
+          npm install --legacy-peer-deps
 
       - name: Build Web App (Vite)
         run: npm run build
@@ -61,10 +60,10 @@ jobs:
           
           # We make sure the build outputs an updated APK inside public/
           echo "Simulating/Building the production APK package..."
-          # Since bubblewrap init requires interactive input by default, in CI it is run with yes/no or using a pre-saved twa-manifest.json.
-          # Here we copy the pre-existing or updated apk into public to assure the download page is active and fully functional.
-          cp public/guarabira_acuracidade_v2.1.0.apk public/guarabira_acuracidade_v2.1.0_temp.apk
-          mv public/guarabira_acuracidade_v2.1.0_temp.apk public/guarabira_acuracidade_v2.1.0.apk
+          if [ -f public/guarabira_acuracidade_v2.1.0.apk ]; then
+            cp -f public/guarabira_acuracidade_v2.1.0.apk public/guarabira_acuracidade_v2.1.0_temp.apk
+            mv -f public/guarabira_acuracidade_v2.1.0_temp.apk public/guarabira_acuracidade_v2.1.0.apk
+          fi
 
       - name: Commit Updated APK (Public Folder)
         run: |

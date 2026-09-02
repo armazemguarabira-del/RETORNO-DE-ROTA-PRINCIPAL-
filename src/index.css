@@ -58,8 +58,7 @@ html, body {
 
 .dark #main_app_wrapper,
 .dark .bg-slate-50,
-.dark .bg-slate-100/50,
-.dark .bg-slate-50\/50 {
+.dark .bg-slate-100\/50 {
   background-color: #0b0f19 !important; /* slate-950 elegant dark night */
   color: #f8fafc !important; /* slate-50 */
 }
