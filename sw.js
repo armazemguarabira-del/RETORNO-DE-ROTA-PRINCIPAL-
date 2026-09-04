@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pau-brasil-guarabira-cache-v2.3.0';
+const CACHE_NAME = 'pau-brasil-guarabira-cache-v2.5.0';
 
 const PRECACHE_ASSETS = [
   './',
@@ -88,7 +88,7 @@ self.addEventListener('fetch', (event) => {
           }).catch(() => {});
           return networkResponse;
         }).catch(() => {
-          return fetch(request);
+          return new Response('', { status: 408, statusText: 'Request Timeout' });
         });
       })
     );
@@ -111,7 +111,7 @@ self.addEventListener('fetch', (event) => {
             if (cachedResponse) {
               return cachedResponse;
             }
-            return caches.match('./index.html').then(idx => idx || fetch(request));
+            return caches.match('./index.html').then(idx => idx || new Response('Offline', { status: 503, statusText: 'Offline' }));
           });
         })
     );
