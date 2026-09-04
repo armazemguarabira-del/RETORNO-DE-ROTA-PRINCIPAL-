@@ -306,14 +306,14 @@ export function isClientFirebaseActive(): boolean {
 }
 
 export function getActiveFirebaseConfig(): any {
-  const activePreset = FIREBASE_PRESETS.find(p => p.id === 'banco-03-teste' || p.config.projectId === 'banco-03-teste') || FIREBASE_PRESETS[0];
+  const activePreset = FIREBASE_PRESETS[0];
   if (typeof window !== "undefined") {
     try {
       const stored = localStorage.getItem("active_firebase_config") || localStorage.getItem("logiroute_firebase_client_config");
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed && parsed.projectId) {
-          // If stored project belongs to presets, return it; otherwise reset to Banco 03 Teste
+          // If stored project belongs to presets, return it; otherwise default to official activePreset
           const matchedPreset = FIREBASE_PRESETS.find(p => p.config.projectId === parsed.projectId || p.id === parsed.projectId);
           if (matchedPreset) {
             return matchedPreset.config;
