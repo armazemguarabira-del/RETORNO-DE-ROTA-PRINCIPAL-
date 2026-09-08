@@ -111,20 +111,37 @@ async function startServer() {
   const SCHEDULE_RULES_FILE = path.join(process.cwd(), 'schedule-rules.json');
   const AUTO_SCHEDULE_FILE = path.join(process.cwd(), 'auto-schedule-setting.json');
 
+  let serverFirebaseConfig: any = {};
+  try {
+    if (fs.existsSync(FIREBASE_CONFIG_FILE)) {
+      serverFirebaseConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_FILE, 'utf-8'));
+    }
+  } catch (e) {}
+
+  if (!serverFirebaseConfig.projectId) {
+    serverFirebaseConfig.projectId = "banco-03-teste";
+    serverFirebaseConfig.appId = "1:960111862390:web:14e480b12d53eb9fb0b557";
+    serverFirebaseConfig.apiKey = "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64";
+    serverFirebaseConfig.authDomain = "banco-03-teste.firebaseapp.com";
+    serverFirebaseConfig.storageBucket = "banco-03-teste.firebasestorage.app";
+    serverFirebaseConfig.firestoreDatabaseId = "(default)";
+    serverFirebaseConfig.messagingSenderId = "960111862390";
+  }
+
   const SERVER_FIREBASE_PRESETS = [
     {
-      id: "banco-03-teste",
-      name: "Banco 03 Teste (Banco Principal / Todos os Usuários e GitHub)",
+      id: "banco-oficial",
+      name: "Banco de Dados Oficial (Google Cloud Firestore)",
       config: {
-        projectId: "banco-03-teste",
-        appId: "1:960111862390:web:14e480b12d53eb9fb0b557",
-        apiKey: "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64",
-        authDomain: "banco-03-teste.firebaseapp.com",
-        firestoreDatabaseId: "(default)",
-        storageBucket: "banco-03-teste.firebasestorage.app",
-        messagingSenderId: "960111862390",
-        measurementId: "",
-        oAuthClientId: ""
+        projectId: serverFirebaseConfig.projectId || "banco-03-teste",
+        appId: serverFirebaseConfig.appId || "1:960111862390:web:14e480b12d53eb9fb0b557",
+        apiKey: serverFirebaseConfig.apiKey || "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64",
+        authDomain: serverFirebaseConfig.authDomain || "banco-03-teste.firebaseapp.com",
+        firestoreDatabaseId: serverFirebaseConfig.firestoreDatabaseId || "(default)",
+        storageBucket: serverFirebaseConfig.storageBucket || "banco-03-teste.firebasestorage.app",
+        messagingSenderId: serverFirebaseConfig.messagingSenderId || "960111862390",
+        measurementId: serverFirebaseConfig.measurementId || "",
+        oAuthClientId: serverFirebaseConfig.oAuthClientId || ""
       }
     }
   ];
@@ -165,7 +182,7 @@ async function startServer() {
     const rules = (Array.isArray(customScheduleRules) && customScheduleRules.length > 0)
       ? customScheduleRules
       : [
-          { id: "banco_03_fixo", name: "Banco 03 Teste (Todos os Usuários)", triggerHour: 0, triggerMinute: 0, presetId: "banco-03-teste" }
+          { id: "banco_oficial_fixo", name: "Banco Oficial (Todos os Usuários)", triggerHour: 0, triggerMinute: 0, presetId: SERVER_FIREBASE_PRESETS[0].id }
         ];
 
     const now = new Date();
@@ -208,9 +225,9 @@ async function startServer() {
 
   // Ensure firebase-applet-config.json has active configuration on startup
   try {
-    const banco02Config = SERVER_FIREBASE_PRESETS[0].config;
-    fs.writeFileSync(FIREBASE_CONFIG_FILE, JSON.stringify(banco02Config, null, 2), 'utf-8');
-    console.log('[ServerDB] Configuração do Banco 02 salva com sucesso em firebase-applet-config.json');
+    const officialConfig = SERVER_FIREBASE_PRESETS[0].config;
+    fs.writeFileSync(FIREBASE_CONFIG_FILE, JSON.stringify(officialConfig, null, 2), 'utf-8');
+    console.log('[ServerDB] Configuração do Banco Oficial salva com sucesso em firebase-applet-config.json');
   } catch (e) {
     console.error('[ServerDB] Erro ao sincronizar firebase-applet-config.json:', e);
   }

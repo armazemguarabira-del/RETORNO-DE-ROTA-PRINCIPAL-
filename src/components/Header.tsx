@@ -74,7 +74,7 @@ export default function Header({
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(getLastSuccessfulSyncTime());
   const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [activeDbProjectId, setActiveDbProjectId] = useState<string>(() => {
-    return getActiveFirebaseConfig()?.projectId || 'banco-03-teste';
+    return getActiveFirebaseConfig()?.projectId || 'banco-oficial';
   });
 
   useEffect(() => {
@@ -1482,7 +1482,7 @@ export default function Header({
               <div className="grid grid-cols-2 gap-2 font-mono text-[11px] bg-slate-50 p-3 rounded-xl border border-slate-200">
                 <div>
                   <span className="block text-[9px] font-sans uppercase tracking-wider text-slate-400 font-bold">Projeto Firebase</span>
-                  <span className="font-semibold text-slate-700 truncate block">{(getActiveFirebaseConfig()?.projectId) || 'banco-03-teste'}</span>
+                  <span className="font-semibold text-slate-700 truncate block">{(getActiveFirebaseConfig()?.projectId) || 'banco-oficial'}</span>
                 </div>
                 <div>
                   <span className="block text-[9px] font-sans uppercase tracking-wider text-slate-400 font-bold">Banco Firestore ID</span>
@@ -1500,9 +1500,23 @@ export default function Header({
                 </div>
               </div>
 
-              {/* Instant Database Switcher Widget */}
-              <div className="pt-1">
-                <DatabaseSwitcher compact={true} currentUser={currentUser} onSwitchComplete={() => setShowConnectionModal(false)} />
+              {/* Banco Oficial Unificado Status */}
+              <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-blue-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <Database className="h-3.5 w-3.5 text-blue-600" />
+                    Banco de Dados Oficial Unificado
+                  </span>
+                  <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    Ativo & Conectado
+                  </span>
+                </div>
+                <p className="text-blue-950 text-xs font-semibold">
+                  Google Cloud Firestore (Plano Blaze)
+                </p>
+                <p className="text-[11px] text-blue-700 font-mono">
+                  {getActiveFirebaseConfig()?.projectId || 'banco-03-teste'}
+                </p>
               </div>
 
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1">

@@ -21,39 +21,21 @@ export interface FirebasePreset {
 
 export const FIREBASE_PRESETS: FirebasePreset[] = [
   {
-    id: firebaseConfig.projectId || "gen-lang-client-0624437496",
+    id: firebaseConfig.projectId || "banco-03-teste",
     name: "Banco Oficial (Google Cloud Firestore)",
-    badge: "Cloud Principal (Ativo)",
+    badge: "Oficial (Plano Blaze)",
     badgeColor: "bg-blue-500/15 text-blue-600 border-blue-500/30",
-    description: `Banco Oficial (${firebaseConfig.firestoreDatabaseId || "(default)"})`,
+    description: `Banco de Dados Oficial Unificado (${firebaseConfig.firestoreDatabaseId || "(default)"})`,
     config: {
-      projectId: firebaseConfig.projectId,
+      projectId: firebaseConfig.projectId || "banco-03-teste",
       appId: firebaseConfig.appId,
       apiKey: firebaseConfig.apiKey,
       authDomain: firebaseConfig.authDomain,
-      firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+      firestoreDatabaseId: firebaseConfig.firestoreDatabaseId || "(default)",
       storageBucket: firebaseConfig.storageBucket,
       messagingSenderId: firebaseConfig.messagingSenderId,
       measurementId: firebaseConfig.measurementId || "",
       oAuthClientId: firebaseConfig.oAuthClientId || ""
-    }
-  },
-  {
-    id: "banco-03-teste",
-    name: "Banco 03 Teste (Secundário)",
-    badge: "Banco 03 Teste",
-    badgeColor: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
-    description: "banco-03-teste (Banco Secundário / Testes)",
-    config: {
-      projectId: "banco-03-teste",
-      appId: "1:960111862390:web:14e480b12d53eb9fb0b557",
-      apiKey: "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64",
-      authDomain: "banco-03-teste.firebaseapp.com",
-      firestoreDatabaseId: "(default)",
-      storageBucket: "banco-03-teste.firebasestorage.app",
-      messagingSenderId: "960111862390",
-      measurementId: "",
-      oAuthClientId: ""
     }
   }
 ];

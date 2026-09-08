@@ -15,7 +15,7 @@ import {
   setLogLevel,
   writeBatch
 } from "firebase/firestore";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import firebaseConfig from "../firebase-applet-config.json";
 import { DEFAULT_USERS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, DEFAULT_PRODUCTS, DEFAULT_ACTIVE_ASSETS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from "./data";
 import { FIREBASE_PRESETS } from "./firebasePresets";
@@ -184,6 +184,20 @@ export function getLastSuccessfulSyncTime(): number {
 let isFirestoreQuotaExceeded = false;
 let hasClientPermissionError = false;
 
+// --- Auto-recuperação (backoff) para erros de permissão/cota --------------
+// ANTES: uma única ocorrência de permission-denied ou resource-exhausted
+// travava hasClientPermissionError/isFirestoreQuotaExceeded em `true` para
+// sempre (só eram resetadas dentro de switchActiveFirebaseConfig, que nunca
+// é chamada automaticamente). Isso desligava TODOS os listeners do app até
+// um reload manual da página. Agora ambos os erros disparam uma rotina de
+// nova tentativa com backoff exponencial (2s, 4s, 8s... até 60s), e o app
+// se reconecta sozinho assim que o Firestore voltar a responder.
+const MAX_AUTO_RETRY_DELAY_MS = 60000;
+let permissionRetryAttempts = 0;
+let permissionRetryTimer: any = null;
+let quotaRetryAttempts = 0;
+let quotaRetryTimer: any = null;
+
 export function isPermissionError(err: any): boolean {
   if (!err) return false;
   const msg = String(err.message || err.code || err).toLowerCase();
@@ -196,15 +210,15 @@ export function isPermissionError(err: any): boolean {
 }
 
 export function checkPermissionError(err: any) {
-  if (err && isPermissionError(err)) {
-    if (!hasClientPermissionError) {
-      console.warn("[ClientFirebase] Permissões insuficientes no cliente Firestore.");
-      hasClientPermissionError = true;
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new Event('client_firestore_permission_denied'));
-      }
+  if (!err || !isPermissionError(err)) return;
+  if (!hasClientPermissionError) {
+    console.warn("[ClientFirebase] Permissões insuficientes no cliente Firestore. Iniciando recuperação automática...");
+    hasClientPermissionError = true;
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event('client_firestore_permission_denied'));
     }
   }
+  scheduleAutoRecovery('permission');
 }
 
 export function getIsFirestoreQuotaExceeded(): boolean {
@@ -215,15 +229,13 @@ export function setFirestoreQuotaExceeded(val: boolean) {
   isFirestoreQuotaExceeded = val;
   if (val) {
     if (typeof window !== 'undefined') {
-      if (firestoreInstance) {
-        try {
-          terminate(firestoreInstance).catch(() => {});
-        } catch (e) {}
-        firestoreInstance = null;
-      }
       window.dispatchEvent(new Event('firestore_quota_exceeded'));
     }
+    scheduleAutoRecovery('quota');
   } else {
+    if (permissionRetryTimer) { clearTimeout(permissionRetryTimer); permissionRetryTimer = null; }
+    if (quotaRetryTimer) { clearTimeout(quotaRetryTimer); quotaRetryTimer = null; }
+    quotaRetryAttempts = 0;
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('firestore_quota_restored'));
     }
@@ -248,6 +260,85 @@ function checkQuotaError(err: any) {
   }
 }
 
+// Agenda uma tentativa de reconexão com backoff exponencial (máx. 60s).
+// Ao expirar, limpa as flags de erro e pede para a camada de listeners
+// (subscribeToFirestore) reanexar tudo. Se o erro persistir, um novo
+// onSnapshot vai chamar checkPermissionError/checkQuotaError de novo e o
+// backoff aumenta - ele nunca desiste "para sempre" como antes.
+function scheduleAutoRecovery(kind: 'permission' | 'quota') {
+  if (kind === 'permission') {
+    if (permissionRetryTimer) return; // já agendado
+    const delay = Math.min(MAX_AUTO_RETRY_DELAY_MS, 2000 * Math.pow(2, permissionRetryAttempts));
+    permissionRetryAttempts++;
+    permissionRetryTimer = setTimeout(() => {
+      permissionRetryTimer = null;
+      console.log(`[ClientFirebase] Retomando após permission-denied (tentativa ${permissionRetryAttempts})...`);
+      hasClientPermissionError = false;
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('client_firestore_permission_restored'));
+        window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
+      }
+    }, delay);
+  } else {
+    if (quotaRetryTimer) return;
+    const delay = Math.min(MAX_AUTO_RETRY_DELAY_MS, 3000 * Math.pow(2, quotaRetryAttempts));
+    quotaRetryAttempts++;
+    quotaRetryTimer = setTimeout(() => {
+      quotaRetryTimer = null;
+      console.log(`[ClientFirebase] Retomando após resource-exhausted (tentativa ${quotaRetryAttempts})...`);
+      isFirestoreQuotaExceeded = false;
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('firestore_quota_restored'));
+        window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
+      }
+    }, delay);
+  }
+}
+
+// Reseta os contadores de backoff quando uma sincronização bem-sucedida
+// acontece, para que um problema pontual não deixe o próximo backoff mais
+// lento do que precisa ser.
+function markSyncSuccess() {
+  lastSuccessfulSyncTime = Date.now();
+  if (permissionRetryAttempts > 0 || quotaRetryAttempts > 0) {
+    permissionRetryAttempts = 0;
+    quotaRetryAttempts = 0;
+  }
+}
+
+// --- Monitoramento do estado de autenticação -------------------------------
+// ANTES: o app fazia signInAnonymously uma vez e nunca mais verificava se a
+// sessão continuava válida (sem onAuthStateChanged/onIdTokenChanged em lugar
+// nenhum do projeto). Se a sessão anônima caísse (token revogado, storage
+// limpo, etc.), isAuthenticated ficava `true` para sempre e nada tentava se
+// autenticar de novo.
+let authStateListenerAttached = false;
+
+function attachAuthStateListener() {
+  if (authStateListenerAttached || typeof window === "undefined") return;
+  authStateListenerAttached = true;
+  try {
+    const authRef = getAuth();
+    onAuthStateChanged(authRef, (user) => {
+      if (user) {
+        const wasUnauthenticated = !isAuthenticated;
+        isAuthenticated = true;
+        isAuthenticating = false;
+        clientAuthError = null;
+        if (wasUnauthenticated) {
+          window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
+        }
+      } else {
+        console.warn("[ClientFirebase] Sessão de autenticação perdida. Tentando reautenticar...");
+        isAuthenticated = false;
+        triggerAnonymousAuth();
+      }
+    });
+  } catch (e) {
+    authStateListenerAttached = false;
+  }
+}
+
 export function getClientAuthError(): string | null {
   return clientAuthError;
 }
@@ -268,6 +359,8 @@ export function getFirebaseConnectionState(): 'connected' | 'connecting' | 'disc
 }
 
 function triggerAnonymousAuth() {
+  attachAuthStateListener();
+
   const now = Date.now();
   if (now - lastAuthAttemptTime < AUTH_COOLDOWN_MS) return;
 
@@ -309,17 +402,6 @@ export function getActiveFirebaseConfig(): any {
   const activePreset = FIREBASE_PRESETS[0];
   if (typeof window !== "undefined") {
     try {
-      const stored = localStorage.getItem("active_firebase_config") || localStorage.getItem("logiroute_firebase_client_config");
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.projectId) {
-          // If stored project belongs to presets, return it; otherwise default to official activePreset
-          const matchedPreset = FIREBASE_PRESETS.find(p => p.config.projectId === parsed.projectId || p.id === parsed.projectId);
-          if (matchedPreset) {
-            return matchedPreset.config;
-          }
-        }
-      }
       localStorage.setItem("active_firebase_config", JSON.stringify(activePreset.config));
       localStorage.setItem("logiroute_firebase_client_config", JSON.stringify(activePreset.config));
     } catch (e) {}
@@ -533,6 +615,8 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     return true;
   } catch (err) {
     console.warn(`[ClientFirebase] Erro ao salvar documento na coleção '${colName}':`, err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
     return false;
   }
 }
@@ -549,6 +633,8 @@ export async function deleteDocFromFirestore(colName: string, docId: string): Pr
     return true;
   } catch (err) {
     console.warn(`[ClientFirebase] Erro ao deletar documento '${docId}' da coleção '${colName}':`, err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
     return false;
   }
 }
@@ -625,6 +711,8 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
     return true;
   } catch (err) {
     console.warn(`[ClientFirebase] Erro ao salvar documentos na coleção '${colName}':`, err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
     return false;
   }
 }
@@ -667,6 +755,95 @@ export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
   }
 }
 
+// --- Gerente de reconexão dos listeners em tempo real ----------------------
+// ANTES: cada uma das 15 coleções tinha um único onSnapshot que, ao dar
+// erro (rede instável, stream expirado, permission-denied pontual etc.),
+// simplesmente MORRIA - o SDK do Firestore não tenta de novo sozinho depois
+// que o callback de erro do onSnapshot é chamado, e nada aqui reanexava o
+// listener. Isso fazia com que, "depois de um tempo", uma ou mais coleções
+// parassem de atualizar silenciosamente (sem nenhum aviso na tela), até o
+// usuário recarregar o app manualmente.
+//
+// Agora cada coleção tem sua própria reanexação com backoff exponencial
+// (1s, 2s, 4s... até 30s), independente das outras, e existe um watchdog
+// que força a reconexão completa se nenhuma sincronização acontecer por
+// muito tempo (cobre o caso raro do stream travar sem chamar o erro).
+let reconnectGeneration = 0;
+let activeOnUpdateCallback: ((db: any) => void) | null = null;
+let activeUnsubscribes: Record<string, () => void> = {};
+const COLLECTION_RETRY_STATE: Record<string, { attempts: number; timer: any }> = {};
+let watchdogInterval: any = null;
+let reattachRequestListenerAttached = false;
+
+function resetCollectionRetryState(colName: string) {
+  const prev = COLLECTION_RETRY_STATE[colName];
+  if (prev?.timer) clearTimeout(prev.timer);
+  COLLECTION_RETRY_STATE[colName] = { attempts: 0, timer: null };
+}
+
+const MAX_COLLECTION_RETRY_DELAY_MS = 30000;
+
+function scheduleCollectionRetry(colName: string, generation: number, attach: (c: string) => void) {
+  const state = COLLECTION_RETRY_STATE[colName] || { attempts: 0, timer: null };
+  if (state.timer) return; // já existe uma tentativa agendada para essa coleção
+  const delay = Math.min(MAX_COLLECTION_RETRY_DELAY_MS, 1000 * Math.pow(2, state.attempts));
+  state.attempts++;
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    if (generation !== reconnectGeneration) return; // essa inscrição já foi encerrada/substituída
+    attach(colName);
+  }, delay);
+  COLLECTION_RETRY_STATE[colName] = state;
+}
+
+function attachReattachRequestListener() {
+  if (reattachRequestListenerAttached || typeof window === "undefined") return;
+  reattachRequestListenerAttached = true;
+  // Disparado quando uma flag global (permissão/cota/autenticação) se
+  // recupera - qualquer coleção que ainda esteja esperando seu backoff
+  // é reanexada na hora, em vez de esperar o timer correr.
+  window.addEventListener('firestore_request_reattach', () => {
+    forceReconnect();
+  });
+}
+
+const WATCHDOG_INTERVAL_MS = 45000;
+const WATCHDOG_STALE_THRESHOLD_MS = 180000; // 3 minutos sem nenhuma atualização recebida
+
+function startConnectionWatchdog() {
+  if (watchdogInterval || typeof window === "undefined") return;
+  watchdogInterval = setInterval(() => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    if (typeof document !== "undefined" && document.visibilityState !== 'visible') return;
+    if (!activeOnUpdateCallback) return;
+    if (hasClientPermissionError || isFirestoreQuotaExceeded) return; // já em recuperação (ver scheduleAutoRecovery)
+    const idle = Date.now() - lastSuccessfulSyncTime;
+    if (lastSuccessfulSyncTime > 0 && idle > WATCHDOG_STALE_THRESHOLD_MS) {
+      console.warn(`[ClientFirebase] Nenhuma sincronização em tempo real há ${Math.round(idle / 1000)}s. Forçando reconexão...`);
+      forceReconnect();
+    }
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+function stopConnectionWatchdog() {
+  if (watchdogInterval) {
+    clearInterval(watchdogInterval);
+    watchdogInterval = null;
+  }
+}
+
+/**
+ * Força o encerramento e a reconstrução de TODOS os listeners em tempo
+ * real, reaproveitando o último callback registrado. Chamada automaticamente
+ * pelo watchdog e ao restaurar permissão/cota/autenticação, e também deve
+ * ser chamada manualmente quando o app volta ao primeiro plano
+ * (ver o handler de visibilitychange em App.tsx).
+ */
+export function forceReconnect(): void {
+  if (!activeOnUpdateCallback) return;
+  subscribeToFirestore(activeOnUpdateCallback);
+}
+
 /**
  * Requirement 3: Real-time queries straight from Firestore collections.
  * Seed default initial values directly to Firestore if collections are empty.
@@ -674,6 +851,14 @@ export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
 export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
   const db = getClientFirestore();
   if (!db || hasClientPermissionError) return () => {};
+
+  const myGeneration = ++reconnectGeneration;
+  activeOnUpdateCallback = onUpdate;
+
+  // Encerra qualquer inscrição/tentativa agendada da geração anterior antes de recomeçar
+  Object.values(activeUnsubscribes).forEach((unsub) => { try { unsub(); } catch (e) {} });
+  activeUnsubscribes = {};
+  Object.values(COLLECTION_RETRY_STATE).forEach((s) => { if (s.timer) clearTimeout(s.timer); });
 
   console.log("[ClientFirebase] Inscrevendo para atualizações em tempo real nas coleções do Firestore...");
 
@@ -695,14 +880,15 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
     carregamentoProcesses: []
   };
 
-  const unsubscribes: (() => void)[] = [];
-
-  TRACKED_COLLECTIONS.forEach((colName) => {
+  const attach = (colName: string) => {
+    if (myGeneration !== reconnectGeneration) return; // geração substituída - não faz nada
     try {
       if (colName === "customManual") {
         const docRef = doc(db, "customManual", "main");
         const unsub = onSnapshot(docRef, (docSnap) => {
-          lastSuccessfulSyncTime = Date.now();
+          if (myGeneration !== reconnectGeneration) return;
+          resetCollectionRetryState(colName);
+          markSyncSuccess();
           if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
           }
@@ -720,12 +906,14 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
               }).catch(() => {});
           }
           onUpdate({ ...combinedDb });
-        }, (error) => handleSubscriptionError(error));
-        unsubscribes.push(unsub);
+        }, (error) => handleSubscriptionError(error, colName, myGeneration, attach));
+        activeUnsubscribes[colName] = unsub;
       } else {
         const collRef = collection(db, colName);
         const unsub = onSnapshot(collRef, (snapshot) => {
-          lastSuccessfulSyncTime = Date.now();
+          if (myGeneration !== reconnectGeneration) return;
+          resetCollectionRetryState(colName);
+          markSyncSuccess();
           if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
           }
@@ -803,28 +991,47 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
           }
 
           onUpdate({ ...combinedDb });
-        }, (error) => handleSubscriptionError(error));
-        unsubscribes.push(unsub);
+        }, (error) => handleSubscriptionError(error, colName, myGeneration, attach));
+        activeUnsubscribes[colName] = unsub;
       }
     } catch (err) {
-      handleSubscriptionError(err);
+      handleSubscriptionError(err, colName, myGeneration, attach);
     }
+  };
+
+  TRACKED_COLLECTIONS.forEach((colName) => {
+    resetCollectionRetryState(colName);
+    attach(colName);
   });
 
+  attachReattachRequestListener();
+  startConnectionWatchdog();
+
   return () => {
-    unsubscribes.forEach((unsub) => {
-      try {
-        unsub();
-      } catch (e) {}
-    });
+    if (myGeneration === reconnectGeneration) {
+      activeOnUpdateCallback = null;
+      stopConnectionWatchdog();
+      Object.values(activeUnsubscribes).forEach((unsub) => {
+        try {
+          unsub();
+        } catch (e) {}
+      });
+      activeUnsubscribes = {};
+      Object.values(COLLECTION_RETRY_STATE).forEach((s) => { if (s.timer) clearTimeout(s.timer); });
+    }
   };
 }
 
-function handleSubscriptionError(error: any) {
+function handleSubscriptionError(error: any, colName: string, generation: number, attach: (c: string) => void) {
   if (isPermissionError(error)) {
     checkPermissionError(error);
-  } else {
+  } else if (isQuotaError(error)) {
     checkQuotaError(error);
+  } else {
+    console.warn(`[ClientFirebase] Listener da coleção '${colName}' caiu (${error?.code || error}). Reagendando...`);
+  }
+  if (generation === reconnectGeneration) {
+    scheduleCollectionRetry(colName, generation, attach);
   }
 }
 

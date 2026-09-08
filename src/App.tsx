@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess } from './types';
 import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from './data';
 import { ImageDB } from './imageDb';
-import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig } from './clientFirebase';
+import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
 import Header from './components/Header';
 import ConferenteView from './components/ConferenteView';
 import FiscalView from './components/FiscalView';
@@ -81,15 +81,49 @@ export default function App() {
     const handleQuotaExceeded = () => setIsQuotaExceeded(true);
     const handleQuotaRestored = () => setIsQuotaExceeded(false);
     const handlePermissionDenied = () => setClientPermissionDenied(true);
+    // ANTES: não existia handler para este evento, então uma vez que
+    // clientPermissionDenied virava true, nada no React o revertia - o
+    // useEffect que assina o Firestore (abaixo) ficava travado sem
+    // reinscrever para sempre, mesmo depois do clientFirebase.ts se
+    // recuperar sozinho internamente. Agora, quando o módulo detecta que a
+    // permissão voltou, o estado do React acompanha e o efeito de
+    // inscrição roda de novo.
+    const handlePermissionRestored = () => setClientPermissionDenied(false);
 
     window.addEventListener('firestore_quota_exceeded', handleQuotaExceeded);
     window.addEventListener('firestore_quota_restored', handleQuotaRestored);
     window.addEventListener('client_firestore_permission_denied', handlePermissionDenied);
-    
+    window.addEventListener('client_firestore_permission_restored', handlePermissionRestored);
+
     return () => {
       window.removeEventListener('firestore_quota_exceeded', handleQuotaExceeded);
       window.removeEventListener('firestore_quota_restored', handleQuotaRestored);
       window.removeEventListener('client_firestore_permission_denied', handlePermissionDenied);
+      window.removeEventListener('client_firestore_permission_restored', handlePermissionRestored);
+    };
+  }, []);
+
+  // Força uma reconexão em tempo real sempre que o app volta ao primeiro
+  // plano (aba volta a ficar visível, ou o usuário retorna ao app Android
+  // empacotado via Bubblewrap depois de minimizado). ANTES não havia
+  // NENHUM tratamento de ciclo de vida de app em segundo/primeiro plano -
+  // o app dependia inteiramente do listener do Firestore se recuperar
+  // sozinho, o que nem sempre acontece em WebViews móveis após longos
+  // períodos em segundo plano.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real...');
+        forceReconnect();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    // 'pageshow' cobre o caso do WebView/Android restaurar a página do
+    // cache (bfcache) sem disparar visibilitychange de forma confiável.
+    window.addEventListener('pageshow', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handleVisibilityChange);
     };
   }, []);
 
@@ -591,6 +625,7 @@ export default function App() {
   // 4a. Setup real-time database updates via Firestore Live Sync if active
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
+    let pendingSnapshotTimeout: any = null;
 
     const initSubscription = () => {
       if (unsubscribe) {
@@ -599,9 +634,18 @@ export default function App() {
       if (!clientPermissionDenied && isClientFirebaseActive()) {
         console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore...");
         unsubscribe = subscribeToFirestore((db) => {
-          // Skip applying updates if there was a recent local write on this client to avoid race conditions
+          // If there was a recent local write on this client, schedule applying the snapshot after the cooldown
+          // so concurrent remote changes or server confirmations are never dropped
           if (Date.now() - lastWriteTime.current < 1500) {
+            if (pendingSnapshotTimeout) clearTimeout(pendingSnapshotTimeout);
+            pendingSnapshotTimeout = setTimeout(() => {
+              applyDirectDb(db);
+            }, 1600);
             return;
+          }
+          if (pendingSnapshotTimeout) {
+            clearTimeout(pendingSnapshotTimeout);
+            pendingSnapshotTimeout = null;
           }
           applyDirectDb(db);
         });
@@ -629,6 +673,9 @@ export default function App() {
     window.addEventListener('force_database_apply', handleForceApply);
 
     return () => {
+      if (pendingSnapshotTimeout) {
+        clearTimeout(pendingSnapshotTimeout);
+      }
       window.removeEventListener('firebase_config_changed', handleConfigChange);
       window.removeEventListener('force_database_apply', handleForceApply);
       if (unsubscribe) {
@@ -1026,9 +1073,9 @@ export default function App() {
             <div className="flex items-start gap-2.5">
               <AlertCircle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
               <div>
-                <span className="font-semibold block text-sm">Cota Diária Gratuita do Firebase Excedida</span>
+                <span className="font-semibold block text-sm">Limite temporário de uso do Firestore atingido</span>
                 <span className="text-xs text-slate-600 dark:text-slate-300">
-                  O limite diário gratuito do Firestore foi atingido. Ativamos o <strong>Modo de Sincronização Segura via Servidor Local</strong> para garantir que você continue trabalhando normalmente sem perder nenhum dado. As atualizações e fotos estão sendo salvas localmente no servidor e serão sincronizadas quando a cota reiniciar (amanhã).
+                  O Firestore recusou momentaneamente novas leituras/escritas (pico de tráfego). Isso pode acontecer mesmo no plano Blaze durante picos de uso. Ativamos o <strong>Modo de Sincronização Segura via Servidor Local</strong> para garantir que você continue trabalhando sem perder dados. O app está tentando se reconectar automaticamente em segundo plano.
                 </span>
               </div>
             </div>
@@ -1046,7 +1093,7 @@ export default function App() {
                 Tentar Sincronizar
               </button>
               <a 
-                href="https://console.firebase.google.com/project/scenic-year-l5xj8/firestore/databases/ai-studio-remixremixremixr-d6b6b17f-3b26-4b81-839e-531e01666411/data?openUpgradeDialog=true"
+                href={`https://console.firebase.google.com/project/${getActiveFirebaseConfig()?.projectId || 'banco-03-teste'}/firestore`}
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md shadow-xs transition-colors whitespace-nowrap inline-flex items-center gap-1 cursor-pointer"
@@ -1054,6 +1101,39 @@ export default function App() {
                 <Settings className="h-3.5 w-3.5" />
                 Upgrade no Firebase Console
               </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Permission Denied Warning Banner - ANTES não existia nenhum aviso
+          para este estado; o app parava de sincronizar em tempo real
+          silenciosamente e o usuário não tinha como saber. Agora o app
+          tenta se reconectar sozinho em segundo plano (com backoff), e
+          este banner só avisa que isso está em andamento. */}
+      {clientPermissionDenied && (
+        <div className="bg-red-500/10 border-b border-red-500/20 text-red-800 dark:text-red-200 py-3.5 px-4" id="firestore_permission_warning_banner">
+          <div className="w-full px-2 sm:px-6 lg:px-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold block text-sm">Sincronização em tempo real interrompida</span>
+                <span className="text-xs text-slate-600 dark:text-slate-300">
+                  Perdemos a conexão em tempo real com o banco de dados. O app está tentando se reconectar automaticamente. Se isso persistir por mais de um minuto, recarregue a página.
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+              <button
+                onClick={() => {
+                  console.log("[App] Recarregando para forçar reconexão com o Firebase...");
+                  window.location.reload();
+                }}
+                className="bg-white/10 hover:bg-white/20 dark:bg-white/5 dark:hover:bg-white/10 text-red-900 dark:text-red-100 text-xs font-semibold py-1.5 px-3 rounded-md border border-red-500/20 transition-all flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Recarregar Agora
+              </button>
             </div>
           </div>
         </div>

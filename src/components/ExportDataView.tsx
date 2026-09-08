@@ -101,7 +101,7 @@ export default function ExportDataView({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeConfig = getActiveFirebaseConfig();
-  const activeProjectId = activeConfig?.projectId || 'banco-03-teste';
+  const activeProjectId = activeConfig?.projectId || 'banco-oficial';
 
   // Retroactive Refugo state
   const [retroImportResult, setRetroImportResult] = useState<ProcessImportResult | null>(null);

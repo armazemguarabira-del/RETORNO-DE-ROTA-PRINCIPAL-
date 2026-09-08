@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
-import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon } from 'lucide-react';
+import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
@@ -1077,6 +1077,318 @@ export default function FiscalView({
   const [valeDescricao, setValeDescricao] = useState('');
   const [valeObservacao, setValeObservacao] = useState('');
   const [uploadingValeId, setUploadingValeId] = useState<string | null>(null);
+
+  // Vale Map mode: 'lista' (from maps with shortage) or 'manual' (type any map number)
+  const [valeMapMode, setValeMapMode] = useState<'lista' | 'manual'>('lista');
+  const [valeAssociatedInfo, setValeAssociatedInfo] = useState<{
+    found: boolean;
+    hasShortage: boolean;
+    map: string;
+    driverName?: string;
+    driverId?: string;
+    plate?: string;
+    totalValue?: number;
+    description?: string;
+    alreadyHasVale?: boolean;
+    items?: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }>;
+  } | null>(null);
+
+  // Dynamic helper to inspect and associate any map (manual or list) with audits and missing items
+  const inspectAndAssociateMap = (mapCode: string, autoFill = true) => {
+    const raw = (mapCode || '').trim();
+    if (!raw) {
+      setValeAssociatedInfo(null);
+      return null;
+    }
+
+    const norm = raw.toUpperCase();
+    const cleanNum = normalizeMapCode(raw);
+
+    // Look in audits first
+    const matchingAudit = (audits || []).find(a => {
+      const aMap = (a.routeMap || '').trim();
+      return aMap.toUpperCase() === norm || (cleanNum && normalizeMapCode(aMap) === cleanNum);
+    });
+
+    if (matchingAudit) {
+      let totalVal = 0;
+      const parts: string[] = [];
+      const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
+
+      (matchingAudit.items || []).forEach(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
+          itemDetails.push({
+            name: i.productDescription || `Produto ${i.productCode}`,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: false
+          });
+        }
+      });
+
+      (matchingAudit.assets || []).forEach(a => {
+        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = a.cost ?? 18.0;
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}`);
+          itemDetails.push({
+            name: a.assetName || (a as any).assetCode || a.assetId,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: true
+          });
+        }
+      });
+
+      const matchedDriver = drivers.find(d => d.id === matchingAudit.driverId);
+      const matchedRoute = (importedRoutes || []).find(r => (r.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(r.routeMap) === cleanNum));
+      const driverName = matchedDriver?.name || matchedRoute?.driverName || (matchingAudit.driverId ? `Motorista (${matchingAudit.driverId})` : 'Motorista não vinculado');
+      const plate = matchingAudit.plate || matchedRoute?.plate || '---';
+      const alreadyHasVale = (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(v.routeMap) === cleanNum));
+
+      const info = {
+        found: true,
+        hasShortage: totalVal > 0 || itemDetails.length > 0,
+        map: matchingAudit.routeMap || raw,
+        driverName,
+        driverId: matchingAudit.driverId || matchedRoute?.driverId,
+        plate,
+        totalValue: totalVal,
+        description: parts.join(' e ') || `Conferência do mapa ${matchingAudit.routeMap || raw} sem divergências de falta.`,
+        alreadyHasVale,
+        items: itemDetails
+      };
+
+      setValeAssociatedInfo(info);
+
+      if (autoFill) {
+        if (info.driverId) {
+          setValeColaboradorId(info.driverId);
+        }
+        if (info.hasShortage) {
+          setValeValeValor(totalVal.toFixed(2));
+          setValeDescricao(info.description);
+        }
+      }
+      return info;
+    }
+
+    // Check importedRoutes
+    const matchedRoute = (importedRoutes || []).find(r => (r.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(r.routeMap) === cleanNum));
+    if (matchedRoute) {
+      const matchedDriver = drivers.find(d => d.id === matchedRoute.driverId || d.name?.toUpperCase() === matchedRoute.driverName?.toUpperCase());
+      const alreadyHasVale = (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(v.routeMap) === cleanNum));
+      const info = {
+        found: true,
+        hasShortage: false,
+        map: matchedRoute.routeMap || raw,
+        driverName: matchedDriver?.name || matchedRoute.driverName || 'Motorista da rota',
+        driverId: matchedDriver?.id || matchedRoute.driverId,
+        plate: matchedRoute.plate || '---',
+        totalValue: 0,
+        description: `Mapa ${raw} localizado na grade de rotas (sem divergência cadastrada).`,
+        alreadyHasVale,
+        items: []
+      };
+      setValeAssociatedInfo(info);
+      if (autoFill && info.driverId) {
+        setValeColaboradorId(info.driverId);
+      }
+      return info;
+    }
+
+    // Completely manual / unlisted map
+    const info = {
+      found: false,
+      hasShortage: false,
+      map: raw,
+      driverName: undefined,
+      driverId: undefined,
+      plate: undefined,
+      totalValue: 0,
+      description: `Mapa ${raw} manual (avulso). Preencha o colaborador, valor e motivo.`,
+      alreadyHasVale: (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(v.routeMap) === cleanNum)),
+      items: []
+    };
+    setValeAssociatedInfo(info);
+    return info;
+  };
+
+  // Comprehensive list of maps with registered shortages
+  const mapsWithShortagesList = React.useMemo(() => {
+    const list: Array<{
+      routeMap: string;
+      driverId?: string;
+      driverName: string;
+      plate: string;
+      totalShortageValue: number;
+      description: string;
+      missingCount: number;
+      alreadyHasVale: boolean;
+      items: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }>;
+    }> = [];
+
+    const seen = new Set<string>();
+
+    (audits || []).forEach(audit => {
+      const rawMap = (audit.routeMap || '').trim();
+      if (!rawMap) return;
+      const key = rawMap.toUpperCase();
+      if (seen.has(key)) return;
+
+      let totalVal = 0;
+      const parts: string[] = [];
+      const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
+
+      (audit.items || []).forEach(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
+          itemDetails.push({
+            name: i.productDescription || `SKU ${i.productCode}`,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: false
+          });
+        }
+      });
+
+      (audit.assets || []).forEach(a => {
+        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = a.cost ?? 18.0;
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}`);
+          itemDetails.push({
+            name: a.assetName || (a as any).assetCode || a.assetId,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: true
+          });
+        }
+      });
+
+      if (totalVal > 0 || itemDetails.length > 0) {
+        seen.add(key);
+        const matchedDriver = drivers.find(d => d.id === audit.driverId);
+        const matchedRoute = (importedRoutes || []).find(r => (r.routeMap || '').trim().toUpperCase() === key);
+        const driverName = matchedDriver?.name || matchedRoute?.driverName || (audit.driverId ? `Motorista (${audit.driverId})` : 'Motorista não vinculado');
+        const plate = audit.plate || matchedRoute?.plate || '---';
+        const alreadyHasVale = (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === key);
+
+        list.push({
+          routeMap: audit.routeMap,
+          driverId: audit.driverId || matchedRoute?.driverId,
+          driverName,
+          plate,
+          totalShortageValue: totalVal,
+          description: parts.join(' e ') || `Faltas encontradas no mapa ${rawMap}`,
+          missingCount: itemDetails.length,
+          alreadyHasVale,
+          items: itemDetails
+        });
+      }
+    });
+
+    (importedRoutes || []).forEach(r => {
+      const rawMap = (r.routeMap || '').trim();
+      if (!rawMap) return;
+      const key = rawMap.toUpperCase();
+      if (seen.has(key)) return;
+
+      const audit = (audits || []).find(a => (a.routeMap || '').trim().toUpperCase() === key);
+      if (!audit) return;
+
+      let totalVal = 0;
+      const parts: string[] = [];
+      const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
+
+      (audit.items || []).forEach(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
+          itemDetails.push({
+            name: i.productDescription || `SKU ${i.productCode}`,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: false
+          });
+        }
+      });
+
+      (audit.assets || []).forEach(a => {
+        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = a.cost ?? 18.0;
+          const subtotal = diff * unitCost;
+          totalVal += subtotal;
+          parts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}`);
+          itemDetails.push({
+            name: a.assetName || (a as any).assetCode || a.assetId,
+            qty: diff,
+            unitCost,
+            totalCost: subtotal,
+            isAsset: true
+          });
+        }
+      });
+
+      if (totalVal > 0) {
+        seen.add(key);
+        const matchedDriver = drivers.find(d => d.id === r.driverId || d.name?.toUpperCase() === r.driverName?.toUpperCase());
+        const driverName = matchedDriver?.name || r.driverName || 'Motorista da rota';
+        const alreadyHasVale = (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === key);
+
+        list.push({
+          routeMap: r.routeMap,
+          driverId: r.driverId,
+          driverName,
+          plate: r.plate || '---',
+          totalShortageValue: totalVal,
+          description: parts.join(' e ') || `Faltas encontradas no mapa ${rawMap}`,
+          missingCount: itemDetails.length,
+          alreadyHasVale,
+          items: itemDetails
+        });
+      }
+    });
+
+    return list.sort((a, b) => {
+      if (a.alreadyHasVale !== b.alreadyHasVale) return a.alreadyHasVale ? 1 : -1;
+      return b.totalShortageValue - a.totalShortageValue;
+    });
+  }, [audits, drivers, importedRoutes, vales]);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -7490,95 +7802,199 @@ export default function FiscalView({
                       </select>
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Mapa / Rota Relacionado</label>
-                      <select
-                        value={valeRouteMap}
-                        onChange={(e) => {
-                          const selectedMap = e.target.value;
-                          setValeRouteMap(selectedMap);
-                          if (!selectedMap) {
-                            setValeColaboradorId('');
-                            setValeValeValor('');
-                            setValeDescricao('');
-                            return;
-                          }
+                    {/* Seleção ou Inserção Manual de Mapa com Falta */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
+                          Mapa / Rota Relacionado
+                        </label>
+                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => setValeMapMode('lista')}
+                            className={`px-2 py-0.5 font-bold rounded-md transition ${
+                              valeMapMode === 'lista'
+                                ? 'bg-white text-amber-700 shadow-xs'
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            📋 Lista de Faltas ({mapsWithShortagesList.filter(m => !m.alreadyHasVale).length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setValeMapMode('manual')}
+                            className={`px-2 py-0.5 font-bold rounded-md transition ${
+                              valeMapMode === 'manual'
+                                ? 'bg-white text-blue-700 shadow-xs'
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            ✍️ Inserir Manual
+                          </button>
+                        </div>
+                      </div>
 
-                          // Find matching audit session
-                          const matchingAudit = audits.find(a => a.routeMap.toUpperCase() === selectedMap.toUpperCase());
-                          if (matchingAudit) {
-                            // 1. Auto-select driver
-                            if (matchingAudit.driverId) {
-                              setValeColaboradorId(matchingAudit.driverId);
-                            }
-
-                            // 2. Calculate total shortage cost and build a descriptive string
-                            let totalShortageValue = 0;
-                            const descriptionParts: string[] = [];
-
-                            matchingAudit.items.forEach(i => {
-                              const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                              const fisc = i.fiscalQty ?? 0;
-                              if (phys < fisc) {
-                                const diff = fisc - phys;
-                                const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
-                                totalShortageValue += diff * unitCost;
-                                descriptionParts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
+                      {valeMapMode === 'lista' ? (
+                        <div className="space-y-1">
+                          <select
+                            value={valeRouteMap}
+                            onChange={(e) => {
+                              const selectedMap = e.target.value;
+                              setValeRouteMap(selectedMap);
+                              if (!selectedMap) {
+                                setValeColaboradorId('');
+                                setValeValeValor('');
+                                setValeDescricao('');
+                                setValeAssociatedInfo(null);
+                                return;
                               }
-                            });
-
-                            matchingAudit.assets.forEach(a => {
-                              const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                              const fisc = a.fiscalQty ?? 0;
-                              if (phys < fisc) {
-                                const diff = fisc - phys;
-                                const unitCost = a.cost ?? 18.0;
-                                totalShortageValue += diff * unitCost;
-                                descriptionParts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}`);
-                              }
-                            });
-
-                            setValeValeValor(totalShortageValue.toFixed(2));
-                            setValeDescricao(descriptionParts.join(' e ') || `Faltas encontradas no mapa ${selectedMap}`);
-                          }
-                        }}
-                        className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
-                      >
-                        <option value="">Nenhum ou selecione o mapa...</option>
-                        {(() => {
-                          const eligibleRoutes = importedRoutes.filter(r => {
-                            // 1. Must be closed (fechado)
-                            if (r.status !== 'fechado') return false;
-
-                            // 2. Must not already have a vale in history
-                            const alreadyHasVale = (vales || []).some(v => v.routeMap?.toUpperCase() === r.routeMap.toUpperCase());
-                            if (alreadyHasVale) return false;
-
-                            // 3. Must have shortages (faltas) in the associated audit
-                            const audit = (audits || []).find(a => a.routeMap.toUpperCase() === r.routeMap.toUpperCase());
-                            if (!audit) return false;
-
-                            const itemShortages = (audit.items || []).some(i => {
-                              const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                              const fisc = i.fiscalQty ?? 0;
-                              return phys < fisc;
-                            });
-
-                            const assetShortages = (audit.assets || []).some(a => {
-                              const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                              const fisc = a.fiscalQty ?? 0;
-                              return phys < fisc;
-                            });
-
-                            return itemShortages || assetShortages;
-                          });
-
-                          return eligibleRoutes.map(r => (
-                            <option key={r.id} value={r.routeMap}>Mapa {r.routeMap} - Placa {r.plate}</option>
-                          ));
-                        })()}
-                      </select>
+                              inspectAndAssociateMap(selectedMap, true);
+                            }}
+                            className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
+                          >
+                            <option value="">Selecione um mapa com divergência de falta...</option>
+                            {mapsWithShortagesList.length === 0 && (
+                              <option value="" disabled>Nenhum mapa com faltas registrado no momento</option>
+                            )}
+                            {mapsWithShortagesList.filter(m => !m.alreadyHasVale).length > 0 && (
+                              <optgroup label={`Mapas com Faltas Pendentes de Vale (${mapsWithShortagesList.filter(m => !m.alreadyHasVale).length})`}>
+                                {mapsWithShortagesList.filter(m => !m.alreadyHasVale).map(m => (
+                                  <option key={`pend_${m.routeMap}`} value={m.routeMap}>
+                                    Mapa {m.routeMap} • {m.driverName} • Placa {m.plate} • R$ {m.totalShortageValue.toFixed(2)} ({m.missingCount} divergência{m.missingCount > 1 ? 's' : ''})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            {mapsWithShortagesList.filter(m => m.alreadyHasVale).length > 0 && (
+                              <optgroup label={`Mapas com Vale Já Emitido (${mapsWithShortagesList.filter(m => m.alreadyHasVale).length})`}>
+                                {mapsWithShortagesList.filter(m => m.alreadyHasVale).map(m => (
+                                  <option key={`emit_${m.routeMap}`} value={m.routeMap}>
+                                    [JÁ EMITIDO] Mapa {m.routeMap} • {m.driverName} • R$ {m.totalShortageValue.toFixed(2)}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </select>
+                          <p className="text-[10px] text-slate-400">
+                            A lista carrega automaticamente todos os mapas com faltas registradas nas conferências físicas.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              value={valeRouteMap}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setValeRouteMap(val);
+                                inspectAndAssociateMap(val, true);
+                              }}
+                              placeholder="Digite o número do mapa (ex: 108, 1029, ROTA-04)..."
+                              className="flex-1 text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 transition font-mono uppercase font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!valeRouteMap.trim()) {
+                                  alert('Informe o número ou código do mapa para buscar.');
+                                  return;
+                                }
+                                inspectAndAssociateMap(valeRouteMap, true);
+                              }}
+                              className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1 shrink-0"
+                            >
+                              <Search className="h-3.5 w-3.5" />
+                              <span>Buscar Falta</span>
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-slate-400">
+                            O colaborador pode colocar o mapa manualmente. O sistema identifica e associa a falta automaticamente caso exista histórico no sistema.
+                          </p>
+                        </div>
+                      )}
                     </div>
+
+                    {/* Card de Associação Automática da Falta do Mapa */}
+                    {valeAssociatedInfo && (
+                      <div className={`p-3 rounded-xl border text-xs transition-all ${
+                        valeAssociatedInfo.hasShortage
+                          ? 'bg-amber-50/70 border-amber-300 text-amber-950 shadow-xs'
+                          : valeAssociatedInfo.found
+                            ? 'bg-blue-50/70 border-blue-200 text-blue-950'
+                            : 'bg-slate-50 border-slate-200 text-slate-800'
+                      }`}>
+                        <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-black/5">
+                          <div className="flex items-center gap-1.5">
+                            {valeAssociatedInfo.hasShortage ? (
+                              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                            ) : valeAssociatedInfo.found ? (
+                              <Info className="h-4 w-4 text-blue-600 shrink-0" />
+                            ) : (
+                              <AlertCircle className="h-4 w-4 text-slate-400 shrink-0" />
+                            )}
+                            <span className="font-bold text-[11px] uppercase tracking-wide">
+                              {valeAssociatedInfo.hasShortage
+                                ? `✓ Falta Associada Automaticamente: Mapa ${valeAssociatedInfo.map}`
+                                : valeAssociatedInfo.found
+                                  ? `Mapa ${valeAssociatedInfo.map} Localizado (Sem Faltas)`
+                                  : `Mapa ${valeAssociatedInfo.map} Inserido Manualmente`}
+                            </span>
+                          </div>
+
+                          {valeAssociatedInfo.alreadyHasVale && (
+                            <span className="bg-red-100 text-red-800 text-[9px] font-black px-1.5 py-0.5 rounded border border-red-200">
+                              Vale já emitido
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 mt-2 font-mono text-[10px]">
+                          <div>
+                            <span className="text-slate-500 font-sans block text-[9px] uppercase font-bold">Motorista Vinculado</span>
+                            <span className="font-bold truncate block">{valeAssociatedInfo.driverName || 'Não identificado'}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-sans block text-[9px] uppercase font-bold">Placa do Veículo</span>
+                            <span className="font-bold truncate block">{valeAssociatedInfo.plate || '---'}</span>
+                          </div>
+                          {valeAssociatedInfo.hasShortage && (
+                            <div className="col-span-2 bg-white/80 p-2 rounded-lg border border-amber-200/70 mt-1">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="font-sans text-[9px] uppercase font-bold text-amber-800">
+                                  Itens em Falta ({valeAssociatedInfo.items?.length || 0} divergências)
+                                </span>
+                                <span className="font-extrabold text-xs text-amber-900">
+                                  Total: R$ {valeAssociatedInfo.totalValue?.toFixed(2)}
+                                </span>
+                              </div>
+                              <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                                {valeAssociatedInfo.items?.map((it, idx) => (
+                                  <div key={idx} className="flex justify-between items-center text-[10px] text-slate-700 bg-amber-50/50 px-1.5 py-0.5 rounded">
+                                    <span className="truncate max-w-[200px] font-medium">{it.qty}x {it.name}</span>
+                                    <span className="font-bold shrink-0 text-slate-900">R$ {it.totalCost.toFixed(2)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {valeAssociatedInfo.hasShortage && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (valeAssociatedInfo.driverId) setValeColaboradorId(valeAssociatedInfo.driverId);
+                              if (valeAssociatedInfo.totalValue) setValeValeValor(valeAssociatedInfo.totalValue.toFixed(2));
+                              if (valeAssociatedInfo.description) setValeDescricao(valeAssociatedInfo.description);
+                            }}
+                            className="mt-2 w-full text-center py-1 bg-amber-600/10 hover:bg-amber-600/20 text-amber-900 rounded font-bold text-[10px] border border-amber-300 transition cursor-pointer"
+                          >
+                            ↻ Reaplicar Valores e Descrição da Falta no Formulário
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     <div className="space-y-1">
                       <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Valor do Desconto (R$)</label>
@@ -7674,6 +8090,7 @@ export default function FiscalView({
                         setValeValeValor('');
                         setValeDescricao('');
                         setValeObservacao('');
+                        setValeAssociatedInfo(null);
                       }}
                       className="w-full bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs py-2.5 rounded-lg transition shadow-xs cursor-pointer text-center uppercase"
                     >
@@ -7683,16 +8100,73 @@ export default function FiscalView({
                 </div>
 
                 {/* List of generated vales (Right) */}
-                <div className="lg:col-span-7 xl:col-span-8 bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-xs min-w-0">
-                  <h3 className="font-sans font-bold text-sm text-slate-900 border-b border-slate-100 pb-2 flex items-center justify-between font-bold">
-                    <span className="flex items-center space-x-1.5">
-                      <FileText className="h-4 w-4 text-slate-600" />
-                      <span>Histórico Geral de Vales Emitidos</span>
-                    </span>
-                    <span className="text-xxs bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-black">
-                      Total: {vales.length} Vales
-                    </span>
-                  </h3>
+                <div className="lg:col-span-7 xl:col-span-8 space-y-6 min-w-0">
+                  {/* Mapas com Falta Identificada na Auditoria Aguardando Emissão */}
+                  {mapsWithShortagesList.filter(m => !m.alreadyHasVale).length > 0 && (
+                    <div className="bg-amber-50/60 rounded-xl border border-amber-200 p-4 space-y-3 shadow-xs">
+                      <div className="flex items-center justify-between border-b border-amber-200/60 pb-2">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-amber-600" />
+                          <h4 className="font-sans font-bold text-xs text-amber-950 uppercase tracking-wide">
+                            Mapas com Falta Identificada ({mapsWithShortagesList.filter(m => !m.alreadyHasVale).length} Pendente{mapsWithShortagesList.filter(m => !m.alreadyHasVale).length > 1 ? 's' : ''})
+                          </h4>
+                        </div>
+                        <span className="text-[10px] font-bold text-amber-700 font-mono">
+                          Informações carregadas automaticamente
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto pr-1">
+                        {mapsWithShortagesList.filter(m => !m.alreadyHasVale).map((m) => (
+                          <div
+                            key={`card_${m.routeMap}`}
+                            className="bg-white p-3 rounded-lg border border-amber-200/80 shadow-2xs hover:border-amber-400 transition flex flex-col justify-between gap-2"
+                          >
+                            <div>
+                              <div className="flex items-center justify-between">
+                                <span className="font-mono font-bold text-xs text-slate-900">
+                                  Mapa {m.routeMap}
+                                </span>
+                                <span className="text-[10px] font-extrabold text-amber-800 font-mono">
+                                  R$ {m.totalShortageValue.toFixed(2)}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-700 font-medium truncate mt-0.5">
+                                {m.driverName} • Placa {m.plate}
+                              </p>
+                              <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">
+                                {m.description}
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setValeMapMode('lista');
+                                setValeRouteMap(m.routeMap);
+                                inspectAndAssociateMap(m.routeMap, true);
+                              }}
+                              className="w-full text-center py-1.5 px-2 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-[10px] transition shadow-2xs flex items-center justify-center gap-1 cursor-pointer"
+                            >
+                              <Plus className="h-3 w-3" />
+                              <span>Emitir Vale Deste Mapa</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-xs min-w-0">
+                    <h3 className="font-sans font-bold text-sm text-slate-900 border-b border-slate-100 pb-2 flex items-center justify-between font-bold">
+                      <span className="flex items-center space-x-1.5">
+                        <FileText className="h-4 w-4 text-slate-600" />
+                        <span>Histórico Geral de Vales Emitidos</span>
+                      </span>
+                      <span className="text-xxs bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-black">
+                        Total: {vales.length} Vales
+                      </span>
+                    </h3>
 
                   {vales.length === 0 ? (
                     <div className="text-center py-16 text-slate-400 text-xs italic">
@@ -7824,6 +8298,7 @@ export default function FiscalView({
                   )}
                 </div>
               </div>
+            </div>
 
               {/* Modal de Importação de PDF Assinado */}
               {uploadingValeId && (() => {

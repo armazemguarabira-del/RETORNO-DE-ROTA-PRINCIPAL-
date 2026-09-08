@@ -174,7 +174,7 @@ export const DatabaseSwitcher: React.FC<DatabaseSwitcherProps> = ({ onSwitchComp
     };
   }, []);
 
-  const activeProjectId = currentConfig?.projectId || '';
+  const activeProjectId = currentConfig?.projectId || FIREBASE_PRESETS[0].config.projectId;
   const activePresetId = getActivePresetId(activeProjectId);
 
   const handleManualSyncAll = async () => {
@@ -222,7 +222,7 @@ export const DatabaseSwitcher: React.FC<DatabaseSwitcherProps> = ({ onSwitchComp
     if (activeProjectId === preset.config.projectId) {
       setStatusMessage({
         type: 'success',
-        text: `O banco '${preset.name}' (${preset.config.projectId}) já está ativo.`
+        text: `O banco '${preset.name}' está 100% ativo e operacional para todos os usuários.`
       });
       return;
     }

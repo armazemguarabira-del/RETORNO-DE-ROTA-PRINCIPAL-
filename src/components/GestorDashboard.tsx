@@ -4,7 +4,7 @@ import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Land
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES } from '../data';
 import { DEFAULT_MANUAL_HTML } from './DefaultManualContent';
-import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, getActiveFirebaseConfig } from '../clientFirebase';
 import { DatabaseSwitcher } from './DatabaseSwitcher';
 import { triggerGlobalDatabaseSwitch } from '../utils/databaseScheduler';
 import ExportDataView from './ExportDataView';
@@ -301,7 +301,7 @@ export default function GestorDashboard({
     }
   }, [forceTab]);
 
-  const [cadastroSubTab, setCadastroSubTab] = useState<'usuarios' | 'produtos' | 'veiculos' | 'motoristas' | 'manutencao' | 'firebase' | 'exportar' | 'manual_diretrizes' | 'simular_troca'>('usuarios');
+  const [cadastroSubTab, setCadastroSubTab] = useState<'usuarios' | 'produtos' | 'veiculos' | 'motoristas' | 'manutencao' | 'firebase' | 'exportar' | 'manual_diretrizes'>('usuarios');
 
   // Firebase Firestore Connection Status States
   const [firebaseStatus, setFirebaseStatus] = useState<{
@@ -4029,20 +4029,6 @@ export default function GestorDashboard({
             {currentUser.role === 'gestor' && (
               <>
                 <button
-                  id="subtab_simular_troca"
-                  onClick={() => { setCadastroSubTab('simular_troca'); setSearchQuery(''); }}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-xs font-bold flex items-center space-x-2.5 transition cursor-pointer ${
-                    cadastroSubTab === 'simular_troca' 
-                      ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold' 
-                      : 'text-amber-800 bg-amber-50/80 hover:bg-amber-100 border border-amber-200/80'
-                  }`}
-                >
-                  <RefreshCw className={`h-4 w-4 ${cadastroSubTab === 'simular_troca' ? 'animate-spin' : 'text-amber-600'}`} />
-                  <span className="flex-1">Trocar Banco de Dados</span>
-                  <span className="text-[8px] font-black bg-slate-950 text-amber-400 px-1.5 py-0.5 rounded-full font-sans uppercase">Gestor</span>
-                </button>
-
-                <button
                   id="subtab_firebase"
                   onClick={() => { setCadastroSubTab('firebase'); setSearchQuery(''); }}
                   className={`w-full text-left px-4 py-2.5 rounded-lg text-xs font-semibold flex items-center space-x-2.5 transition ${
@@ -4941,30 +4927,12 @@ export default function GestorDashboard({
               </div>
             )}
 
-            {cadastroSubTab === 'simular_troca' && currentUser.role === 'gestor' && (
-              <div className="space-y-6">
-                <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
-                  <div>
-                    <h3 className="font-sans font-bold text-base text-slate-900 flex items-center space-x-2">
-                      <RefreshCw className="h-5 w-5 text-amber-500 animate-spin" />
-                      <span>Simulação e Automação de Banco de Dados</span>
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Teste a troca de banco de dados em tempo real e veja refletir simultaneamente no PC e Celular.
-                    </p>
-                  </div>
-                </div>
-
-                <DatabaseSwitcher compact={false} currentUser={currentUser} onSwitchComplete={fetchFirebaseStatus} />
-              </div>
-            )}
-
             {cadastroSubTab === 'firebase' && currentUser.role === 'gestor' && (
               <div className="space-y-6">
                 <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
                   <div>
                     <h3 className="font-sans font-bold text-base text-slate-900">Conexão Firebase Store</h3>
-                    <p className="text-xxs text-slate-400 mt-0.5">Visão geral do canal de sincronização em tempo real e alternador de bancos de dados.</p>
+                    <p className="text-xxs text-slate-400 mt-0.5">Visão geral do canal de sincronização em tempo real com o Banco Oficial.</p>
                   </div>
                   <button
                     onClick={fetchFirebaseStatus}
@@ -4976,8 +4944,42 @@ export default function GestorDashboard({
                   </button>
                 </div>
 
-                {/* 1-Click Database Switcher */}
-                <DatabaseSwitcher compact={false} currentUser={currentUser} onSwitchComplete={fetchFirebaseStatus} />
+                {/* Status do Banco de Dados Oficial */}
+                <div className="bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 text-white rounded-xl p-6 shadow-md border border-blue-500/30 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="p-3 bg-blue-600/30 text-blue-300 rounded-xl border border-blue-500/40">
+                        <Database className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-extrabold text-base text-white">Banco Oficial de Produção</h4>
+                          <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full uppercase">
+                            100% Ativo & Unificado
+                          </span>
+                        </div>
+                        <p className="text-xs text-blue-200 mt-1">
+                          Google Cloud Firestore (Plano Blaze) • Todos os usuários e dispositivos operam neste mesmo banco oficial.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-blue-800/60 text-xs">
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3">
+                      <span className="text-[10px] text-blue-300 uppercase tracking-wider block font-bold">Projeto Cloud</span>
+                      <span className="font-mono text-white text-xs truncate block mt-0.5">{getActiveFirebaseConfig()?.projectId || 'banco-03-teste'}</span>
+                    </div>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3">
+                      <span className="text-[10px] text-blue-300 uppercase tracking-wider block font-bold">Banco Firestore</span>
+                      <span className="font-mono text-emerald-400 text-xs font-bold block mt-0.5">(default) - Produção</span>
+                    </div>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3">
+                      <span className="text-[10px] text-blue-300 uppercase tracking-wider block font-bold">Sincronização</span>
+                      <span className="text-blue-200 text-xs font-bold block mt-0.5">WebSocket Contínuo em Tempo Real</span>
+                    </div>
+                  </div>
+                </div>
 
                 {/* Configuration Form Card matching the requested style */}
                 <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-sm">
@@ -5580,50 +5582,6 @@ export default function GestorDashboard({
                       </div>
                     </div>
                   )}
-                </div>
-
-                {/* Global Card for Real Database Switch 1-Minute Final Countdown */}
-                <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-xl p-5 border border-amber-400/40 shadow-md space-y-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2.5 bg-amber-400 text-slate-950 rounded-xl font-bold">
-                      <Clock className="h-6 w-6 animate-pulse" />
-                    </div>
-                    <div>
-                      <h4 className="font-extrabold text-sm text-amber-300 uppercase tracking-wide">
-                        🚨 Troca de Banco de Dados para Todos os Usuários (1 Minuto com Regressão)
-                      </h4>
-                      <p className="text-xs text-indigo-100 leading-relaxed mt-0.5">
-                        Acione a troca real de banco de dados para todos os usuários conectados. O sistema exibirá o alerta no topo com contagem regressiva de 60 segundos antes de efetuar a comutação automática.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-indigo-900/60">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const requesterText = currentUser 
-                          ? `${currentUser.name || 'Gestor'} (${currentUser.username || 'g1009'})` 
-                          : 'Gestor Administrador G1009 (g1009)';
-                        await triggerGlobalDatabaseSwitch(60, undefined, requesterText, 'manual');
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
-                      className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-black px-4 py-2.5 rounded-lg text-xs flex items-center space-x-2 shadow-lg transition-all cursor-pointer active:scale-95 border border-amber-500"
-                    >
-                      <Clock className="h-4 w-4 text-slate-950 animate-spin" />
-                      <span>🚨 Iniciar Troca de Banco (1 Minuto com Regressão)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCadastroSubTab('simular_troca');
-                      }}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-4 py-2.5 rounded-lg text-xs font-bold transition cursor-pointer"
-                    >
-                      <span>Gerenciar Alternador e Agendamento Completo</span>
-                    </button>
-                  </div>
                 </div>
               </div>
             )}

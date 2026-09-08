@@ -25,7 +25,7 @@ export const DatabaseScheduleBanner: React.FC<DatabaseScheduleBannerProps> = ({ 
   const lastWarnedLevel = useRef<string>('none');
 
   const activeConfig = getActiveFirebaseConfig();
-  const activeProjectId = activeConfig?.projectId || 'banco-03-teste';
+  const activeProjectId = activeConfig?.projectId || FIREBASE_PRESETS[0]?.config?.projectId || 'banco-oficial';
 
   // Determine next target preset
   const currentIndex = FIREBASE_PRESETS.findIndex(p => p.config.projectId === activeProjectId);
@@ -289,7 +289,7 @@ export const DatabaseScheduleBanner: React.FC<DatabaseScheduleBannerProps> = ({ 
       ? `${currentUser.name || 'Usuário'} (${currentUser.username || 'g1009'})` 
       : 'Gestor Administrador';
     const targetPreset = pendingTarget?.config || nextPresetConfig;
-    const targetPresetId = targetPreset?.projectId || 'banco-03-teste';
+    const targetPresetId = targetPreset?.projectId || FIREBASE_PRESETS[0]?.config?.projectId || 'banco-oficial';
     await triggerGlobalDatabaseSwitch(2, targetPresetId, requesterText, 'manual');
   };
 
