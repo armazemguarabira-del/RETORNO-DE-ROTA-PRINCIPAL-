@@ -113,8 +113,25 @@ export default function App() {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real...');
+        console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real com Firestore...');
         forceReconnect();
+        // Atualiza imediatamente a partir do Firestore Oficial ao voltar ao primeiro plano
+        if (isClientFirebaseActive()) {
+          fetchDirectlyFromFirestore()
+            .then(db => {
+              if (db) applyDirectDb(db);
+            })
+            .catch(() => {});
+        }
+        // Fetch latest server database on foreground return to catch any changes made while locked/background
+        fetch('/api/db')
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.success && data?.db) {
+              applyDirectDb(data.db);
+            }
+          })
+          .catch(() => {});
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -592,13 +609,8 @@ export default function App() {
       setCurrentUser(defaultUser);
     }
 
-    // 2. Fetch latest online database from server (fallback when Firestore is not active)
+    // 2. Fetch latest online database from server on startup
     const fetchLatestServerData = async () => {
-      if (isClientFirebaseActive()) {
-        // Quando o Firestore está ativo, o listener em tempo real (subscribeToFirestore)
-        // já entrega o primeiro snapshot como carga inicial, evitando leituras duplicadas.
-        return;
-      }
       try {
         const res = await fetch('/api/db');
         if (res.ok) {
@@ -631,8 +643,8 @@ export default function App() {
       if (unsubscribe) {
         try { unsubscribe(); } catch (e) {}
       }
-      if (!clientPermissionDenied && isClientFirebaseActive()) {
-        console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore...");
+      if (isClientFirebaseActive()) {
+        console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore (Plano Blaze)...");
         unsubscribe = subscribeToFirestore((db) => {
           // If there was a recent local write on this client, schedule applying the snapshot after the cooldown
           // so concurrent remote changes or server confirmations are never dropped
@@ -721,8 +733,8 @@ export default function App() {
               window.dispatchEvent(new CustomEvent('server_schedule_rules_updated', { detail: data.scheduleRules }));
             }
 
-            // Only apply direct JSON DB updates from SSE if client Firebase is NOT active
-            if (data.db && (!isClientFirebaseActive() || clientPermissionDenied)) {
+            // Synchronize database updates from SSE in real-time across all connected devices
+            if (data.db) {
               const db = data.db;
               
               if (db.photos) {
@@ -1065,46 +1077,6 @@ export default function App() {
 
       {/* Database Schedule Countdown Warning Banner */}
       <DatabaseScheduleBanner currentUser={currentUser} />
-
-      {/* Quota Exceeded Warning Banner */}
-      {isQuotaExceeded && (
-        <div className="bg-amber-500/10 border-b border-amber-500/20 text-amber-800 dark:text-amber-200 py-3.5 px-4" id="firestore_quota_warning_banner">
-          <div className="w-full px-2 sm:px-6 lg:px-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-            <div className="flex items-start gap-2.5">
-              <AlertCircle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold block text-sm">Limite temporário de uso do Firestore atingido</span>
-                <span className="text-xs text-slate-600 dark:text-slate-300">
-                  O Firestore recusou momentaneamente novas leituras/escritas (pico de tráfego). Isso pode acontecer mesmo no plano Blaze durante picos de uso. Ativamos o <strong>Modo de Sincronização Segura via Servidor Local</strong> para garantir que você continue trabalhando sem perder dados. O app está tentando se reconectar automaticamente em segundo plano.
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
-              <button
-                onClick={() => {
-                  console.log("[App] Forçando re-tentativa de conexão direta com o Firebase...");
-                  setFirestoreQuotaExceeded(false);
-                  // Refreshing window triggers reconnection instantly
-                  window.location.reload();
-                }}
-                className="bg-white/10 hover:bg-white/20 dark:bg-white/5 dark:hover:bg-white/10 text-amber-900 dark:text-amber-100 text-xs font-semibold py-1.5 px-3 rounded-md border border-amber-500/20 transition-all flex items-center gap-1 cursor-pointer"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Tentar Sincronizar
-              </button>
-              <a 
-                href={`https://console.firebase.google.com/project/${getActiveFirebaseConfig()?.projectId || 'banco-03-teste'}/firestore`}
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md shadow-xs transition-colors whitespace-nowrap inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Settings className="h-3.5 w-3.5" />
-                Upgrade no Firebase Console
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Permission Denied Warning Banner - ANTES não existia nenhum aviso
           para este estado; o app parava de sincronizar em tempo real

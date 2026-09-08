@@ -18036,7 +18036,6 @@
       "driverId": "G1111"
     }
   ],
-  "vales": [],
   "returnForecasts": [],
   "fiscalAlerts": [
     {
@@ -23147,6 +23146,9 @@
       "updatedAt": "2026-08-01T21:01:07.902Z"
     }
   ],
+  "vales": [],
   "photos": [],
-  "customManual": ""
+  "customManual": "",
+  "empilhadores": [],
+  "carregamentoProcesses": []
 }

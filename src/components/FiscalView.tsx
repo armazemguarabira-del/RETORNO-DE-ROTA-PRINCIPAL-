@@ -1579,9 +1579,6 @@ export default function FiscalView({
       const isDifferent = updated.some((r, idx) => r.isBlitz !== importedRoutes[idx].isBlitz);
       if (isDifferent) {
         onSaveImportedRoutes(updated);
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({ importedRoutes: updated });
-        }
       }
     }
   }, [importedRoutes, routeImportDate, returnForecasts, audits, onSaveImportedRoutes]);

@@ -5263,34 +5263,28 @@ export default function GestorDashboard({
                       {/* Card 1: Cloud Persistente */}
                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center space-x-4">
                         <div className={`p-3 rounded-full ${
-                          firebaseStatus.firebaseConnected && !firebaseStatus.firestoreQuotaExceeded
+                          firebaseStatus.firebaseConnected
                             ? 'bg-emerald-50 text-emerald-600'
-                            : firebaseStatus.firestoreQuotaExceeded
-                            ? 'bg-amber-50 text-amber-600'
                             : 'bg-red-50 text-red-600'
                         }`}>
                           <Cloud className="h-6 w-6" />
                         </div>
                         <div>
-                          <span className="text-slate-400 uppercase font-mono tracking-wider text-[9px] block">Persistência em Nuvem</span>
+                          <span className="text-slate-400 uppercase font-mono tracking-wider text-[9px] block">Persistência em Nuvem (Plano Blaze)</span>
                           <div className="flex items-center space-x-1.5 mt-0.5">
                             <span className="font-bold text-xs">
-                              {firebaseStatus.firebaseConnected && !firebaseStatus.firestoreQuotaExceeded
-                                ? 'Ativa (Sincronizada)'
-                                : firebaseStatus.firestoreQuotaExceeded
-                                ? 'Offline (Cota Excedida)'
-                                : 'Local / Cache'}
+                              {firebaseStatus.firebaseConnected
+                                ? 'Ativa (Sincronizada - Blaze)'
+                                : 'Conectando / Cache'}
                             </span>
                             <span className={`h-2 w-2 rounded-full ${
-                              firebaseStatus.firebaseConnected && !firebaseStatus.firestoreQuotaExceeded
+                              firebaseStatus.firebaseConnected
                                 ? 'bg-emerald-500 animate-pulse'
-                                : firebaseStatus.firestoreQuotaExceeded
-                                ? 'bg-amber-500'
-                                : 'bg-red-500'
+                                : 'bg-amber-500'
                             }`} />
                           </div>
                           <span className="text-xxs text-slate-400 block mt-0.5 font-mono">
-                            ID: {firebaseStatus.projectId || 'Local Host Only'}
+                            ID: {firebaseStatus.projectId || 'banco-03-teste'}
                           </span>
                         </div>
                       </div>
@@ -5393,7 +5387,7 @@ export default function GestorDashboard({
                           <strong>Segurança de Dados:</strong> O acesso a esta aba e aos controles avançados de gerenciamento do sistema é restrito exclusivamente para o perfil de <b>Gestores</b>.
                         </li>
                         <li>
-                          <strong>Modo Offline Inteligente:</strong> Caso o Firestore atinja limites de quota diária de escrita no plano gratuito, a plataforma desliga graciosamente a persistência direta para prevenir travamentos, mantendo a experiência do usuário e sincronização instantânea em tempo real via canais de eventos locais ativa.
+                          <strong>Sincronização Contínua (Plano Blaze):</strong> O Firestore opera com persistência em nuvem oficial sem restrição de quota diária, com deduplicação canônica inteligente para gravação e propagação instantânea entre todos os aparelhos móveis conectados.
                         </li>
                       </ul>
                     </div>

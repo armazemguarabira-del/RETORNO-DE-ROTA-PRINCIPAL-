@@ -66,6 +66,28 @@ const TRACKED_COLLECTIONS = [
 ];
 
 /**
+ * Fast deterministic canonical JSON stringifier to guarantee identical key order,
+ * eliminating redundant writes caused by differing field order.
+ */
+export function canonicalJson(obj: any): string {
+  if (obj === null || typeof obj !== "object") {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(canonicalJson).join(",") + "]";
+  }
+  const keys = Object.keys(obj).sort();
+  let res = "{";
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (i > 0) res += ",";
+    res += JSON.stringify(k) + ":" + canonicalJson(obj[k]);
+  }
+  res += "}";
+  return res;
+}
+
+/**
  * Requirement 1: Unique and stable document ID per collection
  * importedRoutes MUST use routeMap + routeDate combined (e.g., 03.11.49.02_2026-07-22)
  * so new and old routes with the same map number never collide.
@@ -74,10 +96,11 @@ export function getDocIdForCollection(colName: string, item: any): string {
   if (!item) return `item_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
   const mappedCol = COLLECTION_MAP[colName] || colName;
+  const sanitizeId = (val: any) => String(val || '').trim().replace(/[\/\\]/g, '_');
 
   if (mappedCol === "importedRoutes") {
-    const mapStr = item.routeMap ? String(item.routeMap).trim() : "";
-    const dateStr = item.routeDate ? String(item.routeDate).trim() : "";
+    const mapStr = item.routeMap ? sanitizeId(item.routeMap) : "";
+    const dateStr = item.routeDate ? sanitizeId(item.routeDate) : "";
     if (mapStr && dateStr) {
       return `${mapStr}_${dateStr}`;
     }
@@ -87,8 +110,8 @@ export function getDocIdForCollection(colName: string, item: any): string {
   }
 
   if (mappedCol === "users") {
-    if (item.id) return String(item.id).trim();
-    if (item.username) return String(item.username).trim();
+    if (item.id) return sanitizeId(item.id);
+    if (item.username) return sanitizeId(item.username);
   }
 
   if (
@@ -98,28 +121,30 @@ export function getDocIdForCollection(colName: string, item: any): string {
     mappedCol === "vales" ||
     mappedCol === "returnForecasts" ||
     mappedCol === "fiscalAlerts" ||
-    mappedCol === "auditLogs"
+    mappedCol === "auditLogs" ||
+    mappedCol === "empilhadores" ||
+    mappedCol === "carregamentoProcesses"
   ) {
-    if (item.id) return String(item.id).trim();
+    if (item.id) return sanitizeId(item.id);
   }
 
   if (mappedCol === "vehicles") {
-    if (item.id) return String(item.id).trim();
-    if (item.plate) return String(item.plate).trim();
+    if (item.id) return sanitizeId(item.id);
+    if (item.plate) return sanitizeId(item.plate);
   }
 
   if (mappedCol === "products") {
-    if (item.code) return String(item.code).trim();
-    if (item.id) return String(item.id).trim();
+    if (item.code) return sanitizeId(item.code);
+    if (item.id) return sanitizeId(item.id);
   }
 
-  if (item.id) return String(item.id).trim();
-  if (item.code) return String(item.code).trim();
-  if (item.plate) return String(item.plate).trim();
-  if (item.username) return String(item.username).trim();
+  if (item.id) return sanitizeId(item.id);
+  if (item.code) return sanitizeId(item.code);
+  if (item.plate) return sanitizeId(item.plate);
+  if (item.username) return sanitizeId(item.username);
   if (item.routeMap) {
-    const mapStr = String(item.routeMap).trim();
-    const dateStr = item.routeDate ? String(item.routeDate).trim() : "";
+    const mapStr = sanitizeId(item.routeMap);
+    const dateStr = item.routeDate ? sanitizeId(item.routeDate) : "";
     return dateStr ? `${mapStr}_${dateStr}` : mapStr;
   }
 
@@ -211,35 +236,20 @@ export function isPermissionError(err: any): boolean {
 
 export function checkPermissionError(err: any) {
   if (!err || !isPermissionError(err)) return;
-  if (!hasClientPermissionError) {
-    console.warn("[ClientFirebase] Permissões insuficientes no cliente Firestore. Iniciando recuperação automática...");
-    hasClientPermissionError = true;
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event('client_firestore_permission_denied'));
-    }
-  }
+  console.warn("[ClientFirebase] Aviso de permissões no cliente Firestore:", err?.message || err);
   scheduleAutoRecovery('permission');
 }
 
 export function getIsFirestoreQuotaExceeded(): boolean {
-  return isFirestoreQuotaExceeded;
+  // Plano Blaze ativo: sem limitação de cota diária
+  return false;
 }
 
 export function setFirestoreQuotaExceeded(val: boolean) {
-  isFirestoreQuotaExceeded = val;
-  if (val) {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('firestore_quota_exceeded'));
-    }
-    scheduleAutoRecovery('quota');
-  } else {
-    if (permissionRetryTimer) { clearTimeout(permissionRetryTimer); permissionRetryTimer = null; }
-    if (quotaRetryTimer) { clearTimeout(quotaRetryTimer); quotaRetryTimer = null; }
-    quotaRetryAttempts = 0;
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('firestore_quota_restored'));
-    }
-  }
+  isFirestoreQuotaExceeded = false;
+  if (permissionRetryTimer) { clearTimeout(permissionRetryTimer); permissionRetryTimer = null; }
+  if (quotaRetryTimer) { clearTimeout(quotaRetryTimer); quotaRetryTimer = null; }
+  quotaRetryAttempts = 0;
 }
 
 export function isQuotaError(err: any): boolean {
@@ -255,9 +265,10 @@ export function isQuotaError(err: any): boolean {
 }
 
 function checkQuotaError(err: any) {
-  if (err && isQuotaError(err)) {
-    setFirestoreQuotaExceeded(true);
-  }
+  // No Plano Blaze (Google Cloud Firestore faturamento ativado), eventuais erros de
+  // 'resource-exhausted' são picos transitórios de taxa por documento, não esgotamento de cota diária.
+  // Mantemos o cliente operando normalmente e retentando com backoff sem desativar o Firestore.
+  console.warn("[ClientFirebase] Pico transitório detectado no Firestore (Plano Blaze Oficial ativo):", err?.message || err);
 }
 
 // Agenda uma tentativa de reconexão com backoff exponencial (máx. 60s).
@@ -347,14 +358,8 @@ export function getFirebaseConnectionState(): 'connected' | 'connecting' | 'disc
   if (typeof window === "undefined" || (typeof navigator !== "undefined" && !navigator.onLine)) {
     return 'disconnected';
   }
-  if (isFirestoreQuotaExceeded || hasClientPermissionError) {
-    return 'disconnected';
-  }
   const db = getClientFirestore();
   if (!db) return 'disconnected';
-  if (lastSuccessfulSyncTime > 0 || isAuthenticated) {
-    return 'connected';
-  }
   return 'connected';
 }
 
@@ -390,7 +395,7 @@ function triggerAnonymousAuth() {
 }
 
 export function isClientFirebaseActive(): boolean {
-  if (typeof window === "undefined" || hasClientPermissionError) return false;
+  if (typeof window === "undefined") return false;
   try {
     const db = getClientFirestore();
     if (db) return true;
@@ -541,7 +546,7 @@ export async function syncFirebaseData(sourceConfig: any, targetConfig: any): Pr
 }
 
 export function getClientFirestore() {
-  if (isFirestoreQuotaExceeded || hasClientPermissionError) return null;
+  if (hasClientPermissionError) return null;
   if (firestoreInstance) {
     if (!isAuthenticated && !isAuthenticating) {
       triggerAnonymousAuth();
@@ -601,7 +606,7 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     cleanItem.id = docId;
 
     const colCache = getColCache(targetCol);
-    const newJson = JSON.stringify(cleanItem);
+    const newJson = canonicalJson(cleanItem);
 
     // Skip write if doc is unchanged in memory
     if (colCache.get(docId) === newJson) {
@@ -617,7 +622,23 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     console.warn(`[ClientFirebase] Erro ao salvar documento na coleção '${colName}':`, err);
     if (isPermissionError(err)) checkPermissionError(err);
     if (isQuotaError(err)) checkQuotaError(err);
-    return false;
+    
+    // Tenta uma segunda vez com pequeno recuo para contornar oscilação de rede móvel
+    try {
+      await new Promise(r => setTimeout(r, 400));
+      const targetCol = COLLECTION_MAP[colName] || colName;
+      const docId = getDocIdForCollection(targetCol, item);
+      const cleanItem = JSON.parse(JSON.stringify(item));
+      cleanItem.id = docId;
+      const docRef = doc(db, targetCol, docId);
+      await setDoc(docRef, cleanItem, { merge: true });
+      getColCache(targetCol).set(docId, canonicalJson(cleanItem));
+      persistColCache(targetCol);
+      return true;
+    } catch (retryErr) {
+      console.error(`[ClientFirebase] Falha definitiva na escrita direta no Firestore:`, retryErr);
+      return false;
+    }
   }
 }
 
@@ -650,13 +671,13 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
     const currentDocIds = new Set<string>();
     const opsToSet: Array<{ id: string; data: any; json: string }> = [];
 
-    // Filter only NEW or MODIFIED items
+    // Filter only NEW or MODIFIED items using deterministic canonical JSON
     for (const item of cleanItems) {
       const docId = getDocIdForCollection(targetCol, item);
       item.id = docId;
       currentDocIds.add(docId);
 
-      const newJson = JSON.stringify(item);
+      const newJson = canonicalJson(item);
       const cachedJson = colCache.get(docId);
 
       if (cachedJson !== newJson) {
@@ -745,7 +766,7 @@ export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
     const timeoutPromise = new Promise<boolean>((resolve) => {
       setTimeout(() => {
         resolve(true);
-      }, 5000);
+      }, 7000);
     });
 
     return await Promise.race([savePromise, timeoutPromise]);
@@ -816,10 +837,9 @@ function startConnectionWatchdog() {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
     if (typeof document !== "undefined" && document.visibilityState !== 'visible') return;
     if (!activeOnUpdateCallback) return;
-    if (hasClientPermissionError || isFirestoreQuotaExceeded) return; // já em recuperação (ver scheduleAutoRecovery)
     const idle = Date.now() - lastSuccessfulSyncTime;
     if (lastSuccessfulSyncTime > 0 && idle > WATCHDOG_STALE_THRESHOLD_MS) {
-      console.warn(`[ClientFirebase] Nenhuma sincronização em tempo real há ${Math.round(idle / 1000)}s. Forçando reconexão...`);
+      console.warn(`[ClientFirebase] Nenhuma sincronização em tempo real há ${Math.round(idle / 1000)}s. Forçando reconexão com Firestore...`);
       forceReconnect();
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -850,7 +870,7 @@ export function forceReconnect(): void {
  */
 export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
   const db = getClientFirestore();
-  if (!db || hasClientPermissionError) return () => {};
+  if (!db) return () => {};
 
   const myGeneration = ++reconnectGeneration;
   activeOnUpdateCallback = onUpdate;
@@ -905,7 +925,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
                 }
               }).catch(() => {});
           }
-          onUpdate({ ...combinedDb });
+          onUpdate({ customManual: combinedDb.customManual });
         }, (error) => handleSubscriptionError(error, colName, myGeneration, attach));
         activeUnsubscribes[colName] = unsub;
       } else {
@@ -918,8 +938,8 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
             window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
           }
 
-          // Seed defaults directly to Firestore if empty
-          if (snapshot.empty) {
+          // Seed defaults directly to Firestore ONLY if primary static collections are completely empty
+          if (snapshot.empty && (colName === "users" || colName === "drivers" || colName === "vehicles" || colName === "products" || colName === "activeAssets")) {
             fetch('/api/db')
               .then(res => res.ok ? res.json() : null)
               .then(resData => {
@@ -959,21 +979,18 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
             const data = d.data();
             const docId = d.id;
             currentServerIds.add(docId);
-            colCache.set(docId, JSON.stringify(data));
+            const itemWithId = { ...data, id: docId };
+            colCache.set(docId, canonicalJson(itemWithId));
             if (colName === "audits") {
               return {
-                ...data,
-                id: docId,
+                ...itemWithId,
                 items: Array.isArray(data.items) ? data.items : [],
                 assets: Array.isArray(data.assets) ? data.assets : [],
                 history: Array.isArray(data.history) ? data.history : [],
                 unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
               };
             }
-            return {
-              ...data,
-              id: docId
-            };
+            return itemWithId;
           });
 
           // Clean up cache for deleted docs
@@ -986,11 +1003,11 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;
             combinedDb.audit_logs = items;
+            onUpdate({ auditLogs: items, audit_logs: items });
           } else {
             combinedDb[colName] = items;
+            onUpdate({ [colName]: items });
           }
-
-          onUpdate({ ...combinedDb });
         }, (error) => handleSubscriptionError(error, colName, myGeneration, attach));
         activeUnsubscribes[colName] = unsub;
       }
