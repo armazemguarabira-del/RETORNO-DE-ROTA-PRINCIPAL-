@@ -119,13 +119,14 @@ async function startServer() {
   } catch (e) {}
 
   if (!serverFirebaseConfig.projectId) {
-    serverFirebaseConfig.projectId = "banco-03-teste";
-    serverFirebaseConfig.appId = "1:960111862390:web:14e480b12d53eb9fb0b557";
-    serverFirebaseConfig.apiKey = "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64";
-    serverFirebaseConfig.authDomain = "banco-03-teste.firebaseapp.com";
-    serverFirebaseConfig.storageBucket = "banco-03-teste.firebasestorage.app";
-    serverFirebaseConfig.firestoreDatabaseId = "(default)";
-    serverFirebaseConfig.messagingSenderId = "960111862390";
+    serverFirebaseConfig.projectId = "retorno-de-rota-pau-brasil";
+    serverFirebaseConfig.appId = "1:792483558739:web:1bcaba10d2038d7a6ddda6";
+    serverFirebaseConfig.apiKey = "AIzaSyC8Xkvh4Nj-VjzzDwqSNjefu3a79Y6ti2A";
+    serverFirebaseConfig.authDomain = "retorno-de-rota-pau-brasil.firebaseapp.com";
+    serverFirebaseConfig.storageBucket = "retorno-de-rota-pau-brasil.firebasestorage.app";
+    serverFirebaseConfig.firestoreDatabaseId = "default";
+    serverFirebaseConfig.messagingSenderId = "792483558739";
+    serverFirebaseConfig.measurementId = "G-FTGZF84NKM";
   }
 
   const SERVER_FIREBASE_PRESETS = [
@@ -133,14 +134,14 @@ async function startServer() {
       id: "banco-oficial",
       name: "Banco de Dados Oficial (Google Cloud Firestore)",
       config: {
-        projectId: serverFirebaseConfig.projectId || "banco-03-teste",
-        appId: serverFirebaseConfig.appId || "1:960111862390:web:14e480b12d53eb9fb0b557",
-        apiKey: serverFirebaseConfig.apiKey || "AIzaSyCRqq7FK0L9m_aEqte7BXCu5q0C68JbJ64",
-        authDomain: serverFirebaseConfig.authDomain || "banco-03-teste.firebaseapp.com",
-        firestoreDatabaseId: serverFirebaseConfig.firestoreDatabaseId || "(default)",
-        storageBucket: serverFirebaseConfig.storageBucket || "banco-03-teste.firebasestorage.app",
-        messagingSenderId: serverFirebaseConfig.messagingSenderId || "960111862390",
-        measurementId: serverFirebaseConfig.measurementId || "",
+        projectId: serverFirebaseConfig.projectId || "retorno-de-rota-pau-brasil",
+        appId: serverFirebaseConfig.appId || "1:792483558739:web:1bcaba10d2038d7a6ddda6",
+        apiKey: serverFirebaseConfig.apiKey || "AIzaSyC8Xkvh4Nj-VjzzDwqSNjefu3a79Y6ti2A",
+        authDomain: serverFirebaseConfig.authDomain || "retorno-de-rota-pau-brasil.firebaseapp.com",
+        firestoreDatabaseId: serverFirebaseConfig.firestoreDatabaseId || "default",
+        storageBucket: serverFirebaseConfig.storageBucket || "retorno-de-rota-pau-brasil.firebasestorage.app",
+        messagingSenderId: serverFirebaseConfig.messagingSenderId || "792483558739",
+        measurementId: serverFirebaseConfig.measurementId || "G-FTGZF84NKM",
         oAuthClientId: serverFirebaseConfig.oAuthClientId || ""
       }
     }
@@ -223,11 +224,13 @@ async function startServer() {
     return found || SERVER_FIREBASE_PRESETS[0];
   }
 
-  // Ensure firebase-applet-config.json has active configuration on startup
+  // Ensure firebase-applet-config.json has active configuration on startup if not already present
   try {
-    const officialConfig = SERVER_FIREBASE_PRESETS[0].config;
-    fs.writeFileSync(FIREBASE_CONFIG_FILE, JSON.stringify(officialConfig, null, 2), 'utf-8');
-    console.log('[ServerDB] Configuração do Banco Oficial salva com sucesso em firebase-applet-config.json');
+    if (!fs.existsSync(FIREBASE_CONFIG_FILE) || !serverFirebaseConfig.projectId) {
+      const officialConfig = SERVER_FIREBASE_PRESETS[0].config;
+      fs.writeFileSync(FIREBASE_CONFIG_FILE, JSON.stringify(officialConfig, null, 2), 'utf-8');
+      console.log('[ServerDB] Configuração inicial do Firebase gravada em firebase-applet-config.json');
+    }
   } catch (e) {
     console.error('[ServerDB] Erro ao sincronizar firebase-applet-config.json:', e);
   }
@@ -411,16 +414,53 @@ async function startServer() {
     }
   });
 
-  app.post('/api/firebase/test', (req, res) => {
+  app.post('/api/firebase/test', async (req, res) => {
     try {
       const config = req.body;
       if (!config || !config.apiKey || !config.projectId) {
         return res.status(400).json({ success: false, error: 'API Key e Project ID são obrigatórios para testar a conexão.' });
       }
-      return res.json({
-        success: true,
-        message: 'Conexão com o Firebase/Firestore estabelecida com sucesso!'
-      });
+      const dbId = config.firestoreDatabaseId || 'default';
+      // Query exact document path in Firestore REST API
+      const testUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(config.projectId)}/databases/${encodeURIComponent(dbId)}/documents/system_status/database_info?key=${encodeURIComponent(config.apiKey)}`;
+      
+      try {
+        const response = await fetch(testUrl);
+        if (response.ok) {
+          return res.json({
+            success: true,
+            message: `Conexão bem sucedida com o Google Cloud Firestore! Projeto: "${config.projectId}", Banco: "${dbId}".`
+          });
+        }
+        if (response.status === 404) {
+          // Fallback check on documents/users
+          const usersTestUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(config.projectId)}/databases/${encodeURIComponent(dbId)}/documents/users?key=${encodeURIComponent(config.apiKey)}`;
+          const usersRes = await fetch(usersTestUrl);
+          if (usersRes.ok) {
+            return res.json({
+              success: true,
+              message: `Conexão bem sucedida com o Google Cloud Firestore! Projeto: "${config.projectId}", Banco: "${dbId}".`
+            });
+          }
+          return res.status(404).json({
+            success: false,
+            error: `Projeto "${config.projectId}" ou Banco "${dbId}" não foi encontrado no Google Cloud. Verifique se o ID do banco é 'default' ou '(default)'.`
+          });
+        }
+        if (response.status === 403) {
+          return res.status(403).json({
+            success: false,
+            error: `Acesso negado (403). Verifique se a API Key é válida ou se as Regras de Segurança do Firestore estão configuradas.`
+          });
+        }
+        const errText = await response.text();
+        return res.status(response.status).json({
+          success: false,
+          error: `Resposta do Google Cloud (${response.status}): ${errText.slice(0, 150)}`
+        });
+      } catch (fetchErr: any) {
+        return res.status(500).json({ success: false, error: `Erro ao contatar Google Cloud: ${fetchErr?.message}` });
+      }
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || 'Erro no teste de conexão.' });
     }

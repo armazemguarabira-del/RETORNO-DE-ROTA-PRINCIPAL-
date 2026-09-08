@@ -438,7 +438,25 @@ export async function switchActiveFirebaseConfig(newConfig: any): Promise<boolea
       } catch (e) {}
       firestoreInstance = null;
     }
+    for (const a of getApps()) {
+      try {
+        await deleteApp(a);
+      } catch (e) {}
+    }
+    authStateListenerAttached = false;
+    isAuthenticated = false;
+    isAuthenticating = false;
     Object.keys(inMemoryDocCache).forEach(k => delete inMemoryDocCache[k]);
+    if (typeof window !== "undefined") {
+      try {
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const key = sessionStorage.key(i);
+          if (key && key.startsWith('logiroute_doc_cache_')) {
+            sessionStorage.removeItem(key);
+          }
+        }
+      } catch (e) {}
+    }
 
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("firebase_config_changed", { detail: newConfig }));
@@ -660,7 +678,7 @@ export async function deleteDocFromFirestore(colName: string, docId: string): Pr
   }
 }
 
-export async function saveDocsToFirestore(colName: string, items: any[], syncDeletions: boolean = false): Promise<boolean> {
+export async function saveDocsToFirestore(colName: string, items: any[], syncDeletions: boolean = false, forceWrite: boolean = false): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !items) return false;
   try {
@@ -680,7 +698,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
       const newJson = canonicalJson(item);
       const cachedJson = colCache.get(docId);
 
-      if (cachedJson !== newJson) {
+      if (forceWrite || cachedJson !== newJson) {
         opsToSet.push({ id: docId, data: item, json: newJson });
       }
     }
@@ -738,7 +756,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   }
 }
 
-export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
+export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !payload) return false;
   try {
@@ -757,7 +775,7 @@ export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
         }
 
         if (Array.isArray(rawData)) {
-          await saveDocsToFirestore(colName, rawData, true);
+          await saveDocsToFirestore(colName, rawData, true, forceWrite);
         }
       }
       return true;
@@ -766,7 +784,7 @@ export async function saveDirectlyToFirestore(payload: any): Promise<boolean> {
     const timeoutPromise = new Promise<boolean>((resolve) => {
       setTimeout(() => {
         resolve(true);
-      }, 7000);
+      }, 15000);
     });
 
     return await Promise.race([savePromise, timeoutPromise]);

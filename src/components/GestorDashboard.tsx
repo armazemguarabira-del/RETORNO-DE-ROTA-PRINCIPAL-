@@ -4,7 +4,7 @@ import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Land
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES } from '../data';
 import { DEFAULT_MANUAL_HTML } from './DefaultManualContent';
-import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, getActiveFirebaseConfig } from '../clientFirebase';
+import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig } from '../clientFirebase';
 import { DatabaseSwitcher } from './DatabaseSwitcher';
 import { triggerGlobalDatabaseSwitch } from '../utils/databaseScheduler';
 import ExportDataView from './ExportDataView';
@@ -382,6 +382,11 @@ export default function GestorDashboard({
   const [formMeasurementId, setFormMeasurementId] = useState('');
   const [formFirestoreDatabaseId, setFormFirestoreDatabaseId] = useState('');
 
+  const [quickSnippet, setQuickSnippet] = useState('');
+  const [showQuickImport, setShowQuickImport] = useState(false);
+  const [uploadingAllDocs, setUploadingAllDocs] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ total: number; done: number; status: string } | null>(null);
+
   const [formGeminiApiKey, setFormGeminiApiKey] = useState('');
   const [geminiSaveLoading, setGeminiSaveLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -448,6 +453,114 @@ export default function GestorDashboard({
     }
   };
 
+  const handleParseQuickSnippet = (text: string) => {
+    if (!text || !text.trim()) return;
+    try {
+      const trimmed = text.trim();
+      let obj: any = null;
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          obj = JSON.parse(trimmed);
+        } catch (e) {}
+      }
+
+      const extractKey = (key: string): string => {
+        if (obj && obj[key]) return String(obj[key]);
+        const regex = new RegExp(`${key}['"\\s]*:['"\\s]*([^'",;\\n\\r]+)['"]?`, 'i');
+        const match = text.match(regex);
+        return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+      };
+
+      const parsedApiKey = extractKey('apiKey');
+      const parsedAuthDomain = extractKey('authDomain');
+      const parsedProjectId = extractKey('projectId');
+      const parsedStorageBucket = extractKey('storageBucket');
+      const parsedMessagingSenderId = extractKey('messagingSenderId');
+      const parsedAppId = extractKey('appId');
+      const parsedMeasurementId = extractKey('measurementId');
+      const parsedDatabaseId = extractKey('firestoreDatabaseId') || extractKey('databaseId') || 'default';
+
+      if (parsedApiKey) setFormApiKey(parsedApiKey);
+      if (parsedAuthDomain) setFormAuthDomain(parsedAuthDomain);
+      if (parsedProjectId) setFormProjectId(parsedProjectId);
+      if (parsedStorageBucket) setFormStorageBucket(parsedStorageBucket);
+      if (parsedMessagingSenderId) setFormMessagingSenderId(parsedMessagingSenderId);
+      if (parsedAppId) setFormAppId(parsedAppId);
+      if (parsedMeasurementId) setFormMeasurementId(parsedMeasurementId);
+      if (parsedDatabaseId) setFormFirestoreDatabaseId(parsedDatabaseId);
+
+      if (parsedApiKey || parsedProjectId) {
+        setTestResult({
+          success: true,
+          message: `Configurações extraídas com sucesso! Projeto identificado: "${parsedProjectId || 'detectado'}". Clique em "Salvar" para conectar a plataforma.`
+        });
+      } else {
+        setTestResult({
+          success: false,
+          message: "Não foi possível encontrar as chaves 'apiKey' ou 'projectId' no texto colado. Certifique-se de copiar o bloco firebaseConfig do Firebase Console."
+        });
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: `Erro ao processar snippet: ${e?.message || e}` });
+    }
+  };
+
+  const handlePopulateFirestore = async () => {
+    const currentConfig = getActiveFirebaseConfig();
+    const targetProject = currentConfig?.projectId || formProjectId;
+    if (!targetProject) {
+      alert("Nenhum banco de dados configurado no momento. Salve a conexão antes de povoar o Firestore.");
+      return;
+    }
+    const countItems = users.length + drivers.length + vehicles.length + products.length + activeAssets.length + audits.length + vales.length + importedRoutes.length;
+    if (!confirm(`Deseja enviar todos os ${countItems} registros da plataforma (usuários, produtos, motoristas, veículos, auditorias e rotas) diretamente para o Firestore no projeto '${targetProject}'?`)) {
+      return;
+    }
+
+    setUploadingAllDocs(true);
+    setUploadProgress({ total: 10, done: 1, status: 'Preparando base completa para envio...' });
+
+    const fullPayload = {
+      users,
+      drivers,
+      vehicles,
+      products,
+      activeAssets,
+      audits,
+      vales,
+      importedRoutes,
+      auditLogs: auditLogs || [],
+      carregamentoProcesses: carregamentos || [],
+      customManual: customManualHTML || '',
+    };
+
+    try {
+      setUploadProgress({ total: 10, done: 4, status: 'Gravando coleções no Google Cloud Firestore (Plano Blaze)...' });
+      const success = await saveDirectlyToFirestore(fullPayload, true);
+      if (success) {
+        setUploadProgress({ total: 10, done: 10, status: 'Concluído com sucesso!' });
+        setTestResult({
+          success: true,
+          message: `Todos os dados foram gravados com sucesso no Firestore (${targetProject})! Atualize o console do Firebase para visualizar as coleções criadas em tempo real.`
+        });
+        fetchFirebaseStatus();
+      } else {
+        setTestResult({
+          success: false,
+          message: "Falha ao gravar alguns documentos no Firestore. Verifique se as Regras de Segurança no console permitem gravação."
+        });
+      }
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: `Erro durante o envio dos dados: ${err?.message || err}`
+      });
+    } finally {
+      setUploadingAllDocs(false);
+      setTimeout(() => setUploadProgress(null), 5000);
+    }
+  };
+
   const handleSaveFirebaseConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formApiKey || !formProjectId) {
@@ -456,52 +569,44 @@ export default function GestorDashboard({
     }
     setSaveLoading(true);
     setTestResult(null);
-    if (isClientFirebaseActive()) {
-      try {
-        const config = {
-          apiKey: formApiKey.trim(),
-          authDomain: formAuthDomain.trim(),
-          projectId: formProjectId.trim(),
-          storageBucket: formStorageBucket.trim(),
-          messagingSenderId: formMessagingSenderId.trim(),
-          appId: formAppId.trim(),
-          measurementId: formMeasurementId.trim(),
-          firestoreDatabaseId: formFirestoreDatabaseId.trim(),
-        };
-        localStorage.setItem('logiroute_firebase_client_config', JSON.stringify(config));
-        setTestResult({ success: true, message: "Configuração do Firebase salva localmente no navegador!" });
-        fetchFirebaseStatus();
-      } catch (err: any) {
-        setTestResult({ success: false, message: err?.message || "Erro ao salvar localmente." });
-      } finally {
-        setSaveLoading(false);
-      }
-      return;
-    }
+
+    const config = {
+      apiKey: formApiKey.trim(),
+      authDomain: formAuthDomain.trim(),
+      projectId: formProjectId.trim(),
+      storageBucket: formStorageBucket.trim(),
+      messagingSenderId: formMessagingSenderId.trim(),
+      appId: formAppId.trim(),
+      measurementId: formMeasurementId.trim(),
+      firestoreDatabaseId: formFirestoreDatabaseId.trim() || "(default)",
+    };
+
     try {
-      const res = await fetch('/api/firebase/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: formApiKey.trim(),
-          authDomain: formAuthDomain.trim(),
-          projectId: formProjectId.trim(),
-          storageBucket: formStorageBucket.trim(),
-          messagingSenderId: formMessagingSenderId.trim(),
-          appId: formAppId.trim(),
-          measurementId: formMeasurementId.trim(),
-          firestoreDatabaseId: formFirestoreDatabaseId.trim(),
-        }),
+      // 1. Alterna o SDK cliente do Firebase e reinicializa ouvintes em tempo real
+      await switchActiveFirebaseConfig(config);
+
+      // 2. Salva no servidor para persistência em arquivo e propagação para todos os dispositivos
+      try {
+        await fetch('/api/firebase/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+      } catch (e) {}
+
+      setTestResult({
+        success: true,
+        message: `Configuração do Firebase salva e ativada! Conectado ao projeto "${config.projectId}" no Plano Blaze.`
       });
-      const data = await res.json();
-      if (data.success) {
-        setTestResult({ success: true, message: "Configurações salvas e aplicadas com sucesso para todos os usuários!" });
-        fetchFirebaseStatus();
-      } else {
-        setTestResult({ success: false, message: data.error || "Erro ao salvar configurações do Firebase." });
+      fetchFirebaseStatus();
+
+      // Pergunta se o gestor quer exportar toda a base atual para o novo Firestore imediatamente
+      const shouldSync = confirm(`Banco de dados conectado ao projeto "${config.projectId}"!\n\nDeseja exportar e criar todas as coleções com os registros atuais da plataforma agora mesmo no seu Firestore?`);
+      if (shouldSync) {
+        handlePopulateFirestore();
       }
     } catch (err: any) {
-      setTestResult({ success: false, message: err?.message || "Erro na conexão com o servidor." });
+      setTestResult({ success: false, message: err?.message || "Erro ao conectar com o Firebase." });
     } finally {
       setSaveLoading(false);
     }
@@ -514,11 +619,6 @@ export default function GestorDashboard({
     }
     setTestLoading(true);
     setTestResult(null);
-    if (isClientFirebaseActive()) {
-      setTestResult({ success: true, message: "Em modo cliente direto, a conexão é verificada dinamicamente pelo SDK." });
-      setTestLoading(false);
-      return;
-    }
     try {
       const res = await fetch('/api/firebase/test', {
         method: 'POST',
@@ -531,14 +631,14 @@ export default function GestorDashboard({
           messagingSenderId: formMessagingSenderId.trim(),
           appId: formAppId.trim(),
           measurementId: formMeasurementId.trim(),
-          firestoreDatabaseId: formFirestoreDatabaseId.trim(),
+          firestoreDatabaseId: formFirestoreDatabaseId.trim() || "(default)",
         }),
       });
       const data = await res.json();
       if (data.success) {
-        setTestResult({ success: true, message: "Teste bem sucedido! Conexão realizada com sucesso." });
+        setTestResult({ success: true, message: data.message || "Conexão estabelecida com sucesso com o Google Cloud Firestore!" });
       } else {
-        setTestResult({ success: false, message: data.error || "Falha no teste de conexão. Verifique as credenciais." });
+        setTestResult({ success: false, message: data.error || "Falha no teste de conexão. Verifique o Project ID e a API Key." });
       }
     } catch (err: any) {
       setTestResult({ success: false, message: err?.message || "Erro de rede ao testar conexão." });
@@ -553,8 +653,14 @@ export default function GestorDashboard({
     }
     setClearLoading(true);
     setTestResult(null);
-    if (isClientFirebaseActive()) {
+
+    try {
       localStorage.removeItem('logiroute_firebase_client_config');
+      localStorage.removeItem('active_firebase_config');
+      try {
+        await fetch('/api/firebase/clear', { method: 'POST' });
+      } catch (e) {}
+
       setFormApiKey('');
       setFormAuthDomain('');
       setFormProjectId('');
@@ -563,30 +669,10 @@ export default function GestorDashboard({
       setFormAppId('');
       setFormMeasurementId('');
       setFormFirestoreDatabaseId('default');
-      setTestResult({ success: true, message: "Configuração do Firebase removida." });
+      setTestResult({ success: true, message: "Configuração do Firebase removida com sucesso." });
       fetchFirebaseStatus();
-      setClearLoading(false);
-      return;
-    }
-    try {
-      const res = await fetch('/api/firebase/clear', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setFormApiKey('');
-        setFormAuthDomain('');
-        setFormProjectId('');
-        setFormStorageBucket('');
-        setFormMessagingSenderId('');
-        setFormAppId('');
-        setFormMeasurementId('');
-        setFormFirestoreDatabaseId('default');
-        setTestResult({ success: true, message: "Configuração apagada e retornada para modo offline/local." });
-        fetchFirebaseStatus();
-      } else {
-        setTestResult({ success: false, message: data.error || "Erro ao apagar configurações." });
-      }
     } catch (err: any) {
-      setTestResult({ success: false, message: err?.message || "Erro de rede ao limpar conexão." });
+      setTestResult({ success: false, message: err?.message || "Erro ao limpar conexão." });
     } finally {
       setClearLoading(false);
     }
@@ -4982,11 +5068,70 @@ export default function GestorDashboard({
                 </div>
 
                 {/* Configuration Form Card matching the requested style */}
-                <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-sm">
-                  <h4 className="font-sans font-bold text-xs text-slate-900 flex items-center space-x-2 pb-3 border-b border-slate-100">
-                    <SlidersHorizontal className="h-4 w-4 text-[#0f35a9]" />
-                    <span>Configurações do Banco de Dados Firebase</span>
-                  </h4>
+                <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
+                    <h4 className="font-sans font-bold text-xs text-slate-900 flex items-center space-x-2">
+                      <SlidersHorizontal className="h-4 w-4 text-[#0f35a9]" />
+                      <span>Configurações do Banco de Dados Firebase (Plano Blaze)</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickImport(!showQuickImport)}
+                      className="text-[11px] font-bold text-[#0f35a9] hover:underline flex items-center gap-1 self-start sm:self-auto cursor-pointer"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      <span>{showQuickImport ? 'Ocultar Importação Rápida' : 'Importação Rápida (Colar firebaseConfig)'}</span>
+                    </button>
+                  </div>
+
+                  {/* Quick Import Snippet Box */}
+                  {showQuickImport && (
+                    <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-4 space-y-3">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <span className="font-bold text-xs text-blue-900 block">Importação Direta do Firebase Console</span>
+                          <span className="text-[11px] text-blue-700 block mt-0.5">
+                            Copie o bloco <code>const firebaseConfig = &#123; ... &#125;;</code> gerado no Firebase Console e cole abaixo:
+                          </span>
+                        </div>
+                      </div>
+                      <textarea
+                        value={quickSnippet}
+                        onChange={(e) => {
+                          setQuickSnippet(e.target.value);
+                          handleParseQuickSnippet(e.target.value);
+                        }}
+                        rows={5}
+                        placeholder={`const firebaseConfig = {\n  apiKey: "AIzaSy...",\n  authDomain: "retorno-de-rota-pau-brasil.firebaseapp.com",\n  projectId: "retorno-de-rota-pau-brasil",\n  storageBucket: "...",\n  messagingSenderId: "...",\n  appId: "..."\n};`}
+                        className="w-full px-3 py-2 border border-blue-300 rounded-lg text-xs font-mono bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleParseQuickSnippet(quickSnippet)}
+                          className="px-4 py-2 text-xs font-bold bg-[#0f35a9] hover:bg-[#0c2a86] text-white rounded-lg shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                          <span>Preencher Campos Automaticamente</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quick Step by Step for Blaze */}
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-4 text-xs text-slate-600 space-y-2">
+                    <div className="flex items-center gap-2 text-slate-800 font-bold text-xs">
+                      <Shield className="h-4 w-4 text-[#0f35a9]" />
+                      <span>Passo a passo para conectar seu projeto do Firebase:</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-600 pl-1 leading-relaxed">
+                      <li>Acesse o <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-[#0f35a9] underline font-bold">Firebase Console</a> e abra seu projeto (ex: <strong>RETORNO DE ROTA PAU BRASIL</strong>).</li>
+                      <li>Clique no ícone de engrenagem ⚙️ (no canto superior esquerdo) &gt; <strong>Configurações do projeto</strong> &gt; aba <strong>Geral</strong>.</li>
+                      <li>Role até a seção <strong>Seus aplicativos</strong>. Se ainda não criou, adicione um app Web (ícone <code>&lt;/&gt;</code>).</li>
+                      <li>Copie as chaves do <code>firebaseConfig</code> e cole na <strong>Importação Rápida</strong> acima ou preencha os campos abaixo e clique em <strong>Salvar</strong>.</li>
+                      <li>Após salvar, clique no botão <strong>"Povoar / Exportar Todos os Dados para o Firestore Agora"</strong> para transferir todos os produtos, motoristas, veículos e conferências para a sua nuvem oficial!</li>
+                    </ol>
+                  </div>
 
                   <form onSubmit={handleSaveFirebaseConfig} className="space-y-4">
                     {/* API KEY */}
@@ -5014,7 +5159,7 @@ export default function GestorDashboard({
                           type="text"
                           value={formAuthDomain}
                           onChange={(e) => setFormAuthDomain(e.target.value)}
-                          placeholder="armazemfacil-b2292.firebaseapp.com"
+                          placeholder="seu-projeto.firebaseapp.com"
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
                           required
                         />
@@ -5027,7 +5172,7 @@ export default function GestorDashboard({
                           type="text"
                           value={formProjectId}
                           onChange={(e) => setFormProjectId(e.target.value)}
-                          placeholder="armazemfacil-b2292"
+                          placeholder="seu-projeto-id"
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
                           required
                         />
@@ -5044,7 +5189,7 @@ export default function GestorDashboard({
                           type="text"
                           value={formStorageBucket}
                           onChange={(e) => setFormStorageBucket(e.target.value)}
-                          placeholder="armazemfacil-b2292.appspot.com"
+                          placeholder="seu-projeto.appspot.com"
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
                         />
                       </div>
@@ -5087,7 +5232,7 @@ export default function GestorDashboard({
                           type="text"
                           value={formMeasurementId}
                           onChange={(e) => setFormMeasurementId(e.target.value)}
-                          placeholder="G-6HFDEKWVDB"
+                          placeholder="G-..."
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
                         />
                       </div>
@@ -5099,11 +5244,30 @@ export default function GestorDashboard({
                           type="text"
                           value={formFirestoreDatabaseId}
                           onChange={(e) => setFormFirestoreDatabaseId(e.target.value)}
-                          placeholder="default"
+                          placeholder="(default)"
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
                         />
                       </div>
                     </div>
+
+                    {/* Upload progress banner if actively uploading */}
+                    {uploadProgress && (
+                      <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 space-y-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold flex items-center gap-2">
+                            <RefreshCw className="h-4 w-4 animate-spin text-[#0f35a9]" />
+                            <span>{uploadProgress.status}</span>
+                          </span>
+                          <span className="font-mono font-bold text-blue-700">{uploadProgress.done} / {uploadProgress.total}</span>
+                        </div>
+                        <div className="w-full bg-blue-200 h-2 rounded-full overflow-hidden">
+                          <div
+                            className="bg-[#0f35a9] h-full transition-all duration-300 rounded-full"
+                            style={{ width: `${(uploadProgress.done / uploadProgress.total) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {/* Test/Connection Results Alert */}
                     {testResult && (
@@ -5118,19 +5282,19 @@ export default function GestorDashboard({
                           <XCircle className="h-5 w-5 text-red-600 flex-shrink-0" />
                         )}
                         <div className="flex-1">
-                          <strong className="block font-bold">{testResult.success ? 'Sucesso!' : 'Ocorreu um erro:'}</strong>
+                          <strong className="block font-bold">{testResult.success ? 'Sucesso!' : 'Aviso / Erro:'}</strong>
                           <span className="opacity-95">{testResult.message}</span>
                         </div>
                       </div>
                     )}
 
-                    {/* Action buttons matching screenshot exactly */}
-                    <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        {/* SALVAR (orange/yellow style) */}
+                    {/* Action buttons matching requested layout and functionality */}
+                    <div className="pt-4 border-t border-slate-100 flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
+                      <div className="flex flex-wrap gap-2.5 items-center">
+                        {/* SALVAR */}
                         <button
                           type="submit"
-                          disabled={saveLoading || testLoading || clearLoading}
+                          disabled={saveLoading || testLoading || clearLoading || uploadingAllDocs}
                           className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-[#d97706] hover:bg-[#b45309] text-white transition flex items-center justify-center space-x-2 shadow-sm cursor-pointer disabled:opacity-50"
                         >
                           {saveLoading ? (
@@ -5138,14 +5302,14 @@ export default function GestorDashboard({
                           ) : (
                             <FileText className="h-3.5 w-3.5" />
                           )}
-                          <span>Salvar</span>
+                          <span>Salvar &amp; Ativar</span>
                         </button>
 
-                        {/* TESTAR CONEXÃO (blue-slate light style) */}
+                        {/* TESTAR CONEXÃO */}
                         <button
                           type="button"
                           onClick={handleTestFirebaseConfig}
-                          disabled={saveLoading || testLoading || clearLoading}
+                          disabled={saveLoading || testLoading || clearLoading || uploadingAllDocs}
                           className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
                         >
                           {testLoading ? (
@@ -5155,14 +5319,30 @@ export default function GestorDashboard({
                           )}
                           <span>Testar Conexão</span>
                         </button>
+
+                        {/* POVOAR / EXPORTAR TODA BASE PARA O FIRESTORE */}
+                        <button
+                          type="button"
+                          onClick={handlePopulateFirestore}
+                          disabled={saveLoading || testLoading || clearLoading || uploadingAllDocs}
+                          className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white transition flex items-center justify-center space-x-2 shadow-sm cursor-pointer disabled:opacity-50"
+                          title="Grava todos os registros da plataforma (produtos, motoristas, conferências) diretamente no Firestore"
+                        >
+                          {uploadingAllDocs ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <UploadCloud className="h-3.5 w-3.5" />
+                          )}
+                          <span>Povoar / Exportar Todos os Dados para o Firestore Agora</span>
+                        </button>
                       </div>
 
-                      {/* LIMPAR (red light/pink style) */}
+                      {/* LIMPAR */}
                       <button
                         type="button"
                         onClick={handleClearFirebaseConfig}
-                        disabled={saveLoading || testLoading || clearLoading}
-                        className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                        disabled={saveLoading || testLoading || clearLoading || uploadingAllDocs}
+                        className="px-4 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50 self-start lg:self-auto"
                       >
                         {clearLoading ? (
                           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
