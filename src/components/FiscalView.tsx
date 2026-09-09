@@ -1557,9 +1557,10 @@ export default function FiscalView({
     // Find routes that are currently marked as blitz
     const currentBlitzRoutes = routesForActiveDate.filter(r => r.isBlitz);
     
-    // Check if any current blitz route is on a pernoite vehicle, or if we don't have exactly 2 blitzes
+    // Check if any current blitz route is on a pernoite vehicle, or if we don't match the target blitz count
     const hasPernoiteInBlitz = currentBlitzRoutes.some(r => r.plate && pernoitePlates.has(r.plate.trim().toUpperCase()));
-    const needsRecalculation = currentBlitzRoutes.length !== 2 || hasPernoiteInBlitz;
+    const targetBlitzCount = Math.min(2, routesForActiveDate.length);
+    const needsRecalculation = (currentBlitzRoutes.length !== targetBlitzCount && routesForActiveDate.length > 0) || hasPernoiteInBlitz;
 
     if (needsRecalculation) {
       // Choose exactly 2 circular blitz routes, avoiding pernoite plates
@@ -2136,6 +2137,32 @@ export default function FiscalView({
     (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && 
     a.financeiroCiente !== true
   );
+
+  // Memoized process metrics for "Monitoramento Integrado de Processos"
+  const processProgressMetrics = React.useMemo(() => {
+    const totalWorking = importedRoutes.filter(r => (r.status === 'conferindo' || r.status === 'reconferir') && !isRouteClosed(r.routeMap)).length;
+    const totalPending = importedRoutes.filter(r => (r.status === 'pendente' || !r.status) && (r.status as string) !== 'fechado' && !isRouteClosed(r.routeMap)).length;
+    const totalWaiting = pendingAudits.length;
+    const totalReconciled = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente').length;
+
+    const totalCalculated = totalWorking + totalPending + totalWaiting + totalReconciled;
+    const pendingPct = totalCalculated > 0 ? (totalPending / totalCalculated) * 100 : 0;
+    const workingPct = totalCalculated > 0 ? (totalWorking / totalCalculated) * 100 : 0;
+    const waitingPct = totalCalculated > 0 ? (totalWaiting / totalCalculated) * 100 : 0;
+    const reconciledPct = totalCalculated > 0 ? (totalReconciled / totalCalculated) * 100 : 0;
+
+    return {
+      totalWorking,
+      totalPending,
+      totalWaiting,
+      totalReconciled,
+      totalCalculated,
+      pendingPct,
+      workingPct,
+      waitingPct,
+      reconciledPct
+    };
+  }, [importedRoutes, audits, pendingAudits]);
 
   const getDriverName = (id: string) => id === 'temporario' ? 'Temporário' : (drivers.find(d => d.id === id)?.name || id);
   const getHelperName = (id?: string) => id ? drivers.find(d => d.id === id)?.name || id : 'Sem ajudante';
@@ -5898,16 +5925,16 @@ export default function FiscalView({
 
             {/* Process Progress Chart */}
             {(() => {
-              const totalWorking = importedRoutes.filter(r => (r.status === 'conferindo' || r.status === 'reconferir') && !isRouteClosed(r.routeMap)).length;
-              const totalPending = importedRoutes.filter(r => (r.status === 'pendente' || !r.status) && (r.status as string) !== 'fechado' && !isRouteClosed(r.routeMap)).length;
-              const totalWaiting = pendingAudits.length;
-              const totalReconciled = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente').length;
-
-              const totalCalculated = totalWorking + totalPending + totalWaiting + totalReconciled;
-              const pendingPct = totalCalculated > 0 ? (totalPending / totalCalculated) * 100 : 0;
-              const workingPct = totalCalculated > 0 ? (totalWorking / totalCalculated) * 100 : 0;
-              const waitingPct = totalCalculated > 0 ? (totalWaiting / totalCalculated) * 100 : 0;
-              const reconciledPct = totalCalculated > 0 ? (totalReconciled / totalCalculated) * 100 : 0;
+              const {
+                totalWorking,
+                totalPending,
+                totalWaiting,
+                totalReconciled,
+                pendingPct,
+                workingPct,
+                waitingPct,
+                reconciledPct
+              } = processProgressMetrics;
 
               return (
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">

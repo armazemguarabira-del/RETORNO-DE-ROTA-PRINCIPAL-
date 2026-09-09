@@ -21,7 +21,15 @@ function getCachedAppDb() {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem('logiroute_cached_app_db');
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // If cached data contains stale mock audits from legacy testing (> 20 audits), purge cache
+      if (parsed && Array.isArray(parsed.audits) && parsed.audits.length > 20) {
+        localStorage.removeItem('logiroute_cached_app_db');
+        return null;
+      }
+      return parsed;
+    }
   } catch (e) {}
   return null;
 }
@@ -609,8 +617,13 @@ export default function App() {
       setCurrentUser(defaultUser);
     }
 
-    // 2. Fetch latest online database from server on startup
+    // 2. Fetch latest online database from server on startup (only if Firebase is not active)
     const fetchLatestServerData = async () => {
+      // If Firestore client is active, Cloud Firestore is the authoritative source of truth.
+      // Do not fetch /api/db which might contain stale server cache.
+      if (isClientFirebaseActive()) {
+        return;
+      }
       try {
         const res = await fetch('/api/db');
         if (res.ok) {
@@ -739,6 +752,14 @@ export default function App() {
               
               if (db.photos) {
                 ImageDB.syncPhotos(db.photos).catch(e => console.error("Error syncing photos from SSE:", e));
+              }
+
+              // When Client Firebase is active, all primary collections are synchronized
+              // directly and authoritatively via Firestore onSnapshot listeners.
+              // We MUST NOT apply stale server db collections here, which would create
+              // oscillating conflicts between server file cache and Cloud Firestore.
+              if (isClientFirebaseActive()) {
+                return;
               }
 
               // Skip applying updates if there was a recent local write on this client to avoid race conditions
