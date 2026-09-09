@@ -60,7 +60,6 @@ const TRACKED_COLLECTIONS = [
   "importedRoutes",
   "auditLogs",
   "customManual",
-  "photos",
   "empilhadores",
   "carregamentoProcesses"
 ];
@@ -956,8 +955,8 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
             window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
           }
 
-          // Seed defaults directly to Firestore ONLY if primary static collections are completely empty
-          if (snapshot.empty && (colName === "users" || colName === "drivers" || colName === "vehicles" || colName === "products" || colName === "activeAssets")) {
+          // Seed defaults directly to Firestore ONLY if primary static collections are completely empty and confirmed by server (not local cache)
+          if (!snapshot.metadata.fromCache && snapshot.empty && (colName === "users" || colName === "drivers" || colName === "vehicles" || colName === "products" || colName === "activeAssets")) {
             fetch('/api/db')
               .then(res => res.ok ? res.json() : null)
               .then(resData => {

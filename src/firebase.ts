@@ -1,10 +1,37 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  getDocFromServer
+} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
+
+function initFirestoreInstance() {
+  const dbId = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)")
+    ? firebaseConfig.firestoreDatabaseId
+    : undefined;
+
+  try {
+    if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
+      return initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      }, dbId);
+    }
+  } catch (e) {
+    // If already initialized in another mode
+  }
+  return dbId ? getFirestore(app, dbId) : getFirestore(app);
+}
+
+export const db = initFirestoreInstance(); /* CRITICAL: The app will break without this line */
 export const auth = getAuth(app);
 
 export enum OperationType {
@@ -54,8 +81,8 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Test initial connection to Firestore server
-async function testConnection() {
+// Test initial connection to Firestore server (manual check if needed)
+export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -64,4 +91,3 @@ async function testConnection() {
     }
   }
 }
-testConnection();

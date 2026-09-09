@@ -111,27 +111,21 @@ export default function App() {
     };
   }, []);
 
-  // Força uma reconexão em tempo real sempre que o app volta ao primeiro
-  // plano (aba volta a ficar visível, ou o usuário retorna ao app Android
-  // empacotado via Bubblewrap depois de minimizado). ANTES não havia
-  // NENHUM tratamento de ciclo de vida de app em segundo/primeiro plano -
-  // o app dependia inteiramente do listener do Firestore se recuperar
-  // sozinho, o que nem sempre acontece em WebViews móveis após longos
-  // períodos em segundo plano.
+  // Trata o ciclo de vida do app ao voltar ao primeiro plano (aba visível ou retorno do app minimizado).
+  // Usa forceReconnect() para revalidar os ouvintes onSnapshot (que aproveitam o cache local do IndexedDB sem custos extras)
+  // e busca apenas do servidor local (/api/db) com custo ZERO no Firestore.
   useEffect(() => {
+    let hasMounted = false;
     const handleVisibilityChange = () => {
+      // Ignora o primeiro instante da montagem da página
+      if (!hasMounted) {
+        hasMounted = true;
+        return;
+      }
       if (document.visibilityState === 'visible') {
         console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real com Firestore...');
         forceReconnect();
-        // Atualiza imediatamente a partir do Firestore Oficial ao voltar ao primeiro plano
-        if (isClientFirebaseActive()) {
-          fetchDirectlyFromFirestore()
-            .then(db => {
-              if (db) applyDirectDb(db);
-            })
-            .catch(() => {});
-        }
-        // Fetch latest server database on foreground return to catch any changes made while locked/background
+        // Busca do servidor local Express com custo zero no Firestore
         fetch('/api/db')
           .then(res => res.ok ? res.json() : null)
           .then(data => {
@@ -142,13 +136,13 @@ export default function App() {
           .catch(() => {});
       }
     };
+
+    // Marca como montado após o primeiro frame
+    const timer = setTimeout(() => { hasMounted = true; }, 1000);
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    // 'pageshow' cobre o caso do WebView/Android restaurar a página do
-    // cache (bfcache) sem disparar visibilitychange de forma confiável.
-    window.addEventListener('pageshow', handleVisibilityChange);
     return () => {
+      clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('pageshow', handleVisibilityChange);
     };
   }, []);
 
