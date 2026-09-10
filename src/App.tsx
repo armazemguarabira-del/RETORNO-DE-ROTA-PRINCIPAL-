@@ -405,10 +405,10 @@ export default function App() {
     return list.filter(Boolean).map(r => {
       const normMap = normalizeMapCode(r.routeMap).toUpperCase();
       const isClosedByAudit = effectiveAudits.some(a => {
-        if (a.reopeningRequested) return false;
+        if (a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
         const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
         const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-        const isCompleted = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
+        const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopened;
         return matches && isCompleted;
       });
 
@@ -676,9 +676,6 @@ export default function App() {
     const handleConfigChange = () => {
       console.log("[ClientFirebase] Configuração de banco alterada. Reinicializando inscrição...");
       initSubscription();
-      fetchDirectlyFromFirestore().then(db => {
-        if (db) applyDirectDb(db);
-      }).catch(() => {});
     };
 
     const handleForceApply = (e: any) => {

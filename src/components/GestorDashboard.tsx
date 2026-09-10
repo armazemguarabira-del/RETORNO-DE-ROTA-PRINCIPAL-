@@ -42,43 +42,68 @@ interface GestorDashboardProps {
 function AuditPhotoViewer({ auditId, onSelectPhoto }: { auditId: string; onSelectPhoto: (photo: PhotoRecord) => void }) {
   const [photos, setPhotos] = React.useState<PhotoRecord[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
+
+  const reloadPhotos = React.useCallback((forceCloud: boolean = false) => {
+    if (forceCloud) setIsRefreshing(true);
+    ImageDB.getPhotosByAudit(auditId, forceCloud)
+      .then(res => {
+        setPhotos(res);
+        setLoading(false);
+        setIsRefreshing(false);
+      })
+      .catch(() => {
+        setLoading(false);
+        setIsRefreshing(false);
+      });
+  }, [auditId]);
 
   React.useEffect(() => {
-    let active = true;
-    
-    const loadPhotos = () => {
-      ImageDB.getPhotosByAudit(auditId)
-        .then(res => {
-          if (active) {
-            setPhotos(res);
-            setLoading(false);
-          }
-        })
-        .catch(() => {
-          if (active) setLoading(false);
-        });
-    };
+    reloadPhotos(false);
 
-    loadPhotos();
-    const interval = setInterval(loadPhotos, 3000);
+    const handlePhotosUpdated = () => {
+      reloadPhotos(false);
+    };
+    window.addEventListener('logiroute_photos_updated', handlePhotosUpdated);
 
     return () => {
-      active = false;
-      clearInterval(interval);
+      window.removeEventListener('logiroute_photos_updated', handlePhotosUpdated);
     };
-  }, [auditId]);
+  }, [auditId, reloadPhotos]);
 
   if (loading) {
     return <div className="text-xxs text-slate-400 animate-pulse py-1">Carregando fotos dos PA e AG...</div>;
   }
 
   if (photos.length === 0) {
-    return <div className="text-xxs text-slate-400 italic py-1">Nenhuma foto de evidência cadastrada.</div>;
+    return (
+      <div className="flex items-center space-x-2 text-xxs text-slate-400 italic py-1">
+        <span>Nenhuma foto de evidência cadastrada.</span>
+        <button
+          type="button"
+          onClick={() => reloadPhotos(true)}
+          disabled={isRefreshing}
+          className="text-[9px] font-medium text-indigo-600 hover:text-indigo-800 not-italic underline cursor-pointer"
+        >
+          {isRefreshing ? 'Buscando...' : 'Buscar fotos na nuvem'}
+        </button>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-1.5 pt-2">
-      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Evidências Fotográficas (PA / AG / Refugos):</div>
+      <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+        <span>Evidências Fotográficas (PA / AG / Refugos):</span>
+        <button
+          type="button"
+          onClick={() => reloadPhotos(true)}
+          disabled={isRefreshing}
+          className="text-[9px] font-semibold text-indigo-500 hover:text-indigo-700 normal-case flex items-center space-x-1 cursor-pointer"
+        >
+          <span>{isRefreshing ? 'Atualizando...' : '↻ Recarregar fotos'}</span>
+        </button>
+      </div>
       <div className="flex flex-wrap gap-2">
         {photos.map(p => (
           <div 

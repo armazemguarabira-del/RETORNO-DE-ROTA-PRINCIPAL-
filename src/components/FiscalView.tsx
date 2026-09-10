@@ -18,51 +18,70 @@ const normalizeMapCode = (mapCode: any): string => {
 function AuditPhotoViewer({ auditId }: { auditId: string }) {
   const [photos, setPhotos] = React.useState<PhotoRecord[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [previewPhoto, setPreviewPhoto] = React.useState<PhotoRecord | null>(null);
   const [scale, setScale] = React.useState(1);
 
-  React.useEffect(() => {
-    let active = true;
-    
-    const loadPhotos = () => {
-      ImageDB.getPhotosByAudit(auditId)
-        .then(res => {
-          if (active) {
-            setPhotos(res);
-            setLoading(false);
-          }
-        })
-        .catch(() => {
-          if (active) setLoading(false);
-        });
-    };
+  const reloadPhotos = React.useCallback((forceCloud: boolean = false) => {
+    if (forceCloud) setIsRefreshing(true);
+    ImageDB.getPhotosByAudit(auditId, forceCloud)
+      .then(res => {
+        setPhotos(res);
+        setLoading(false);
+        setIsRefreshing(false);
+      })
+      .catch(() => {
+        setLoading(false);
+        setIsRefreshing(false);
+      });
+  }, [auditId]);
 
-    loadPhotos();
-    const interval = setInterval(loadPhotos, 3000);
+  React.useEffect(() => {
+    reloadPhotos(false);
 
     const handlePhotosUpdated = () => {
-      loadPhotos();
+      reloadPhotos(false);
     };
     window.addEventListener('logiroute_photos_updated', handlePhotosUpdated);
 
     return () => {
-      active = false;
-      clearInterval(interval);
       window.removeEventListener('logiroute_photos_updated', handlePhotosUpdated);
     };
-  }, [auditId]);
+  }, [auditId, reloadPhotos]);
 
   if (loading) {
     return <div className="text-xxs text-slate-400 animate-pulse py-1">Carregando fotos dos PA e AG...</div>;
   }
 
   if (photos.length === 0) {
-    return <div className="text-xxs text-slate-400 italic py-1">Nenhuma foto de evidência cadastrada.</div>;
+    return (
+      <div className="flex items-center space-x-2 text-xxs text-slate-400 italic py-1">
+        <span>Nenhuma foto de evidência cadastrada.</span>
+        <button
+          type="button"
+          onClick={() => reloadPhotos(true)}
+          disabled={isRefreshing}
+          className="text-[9px] font-medium text-indigo-600 hover:text-indigo-800 not-italic underline cursor-pointer"
+        >
+          {isRefreshing ? 'Buscando...' : 'Buscar fotos na nuvem'}
+        </button>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-1.5 pt-2">
-      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Evidências Fotográficas (PA / AG / Refugos):</div>
+      <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+        <span>Evidências Fotográficas (PA / AG / Refugos):</span>
+        <button
+          type="button"
+          onClick={() => reloadPhotos(true)}
+          disabled={isRefreshing}
+          className="text-[9px] font-semibold text-indigo-500 hover:text-indigo-700 normal-case flex items-center space-x-1 cursor-pointer"
+        >
+          <span>{isRefreshing ? 'Atualizando...' : '↻ Recarregar fotos'}</span>
+        </button>
+      </div>
       <div className="flex flex-wrap gap-2">
         {photos.map(p => (
           <div 
@@ -844,12 +863,12 @@ export default function FiscalView({
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = routeMap.trim().toUpperCase();
     return audits.some(a => {
-      if (a.reopeningRequested) return false;
+      if (a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
       const aUpper = a.routeMap.trim().toUpperCase();
       const isMatch = aNorm === norm || aUpper === upper ||
         (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
-      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
+      const isFinished = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopened;
       return isMatch && isFinished;
     });
   };
@@ -1446,7 +1465,6 @@ export default function FiscalView({
 
     if (activeSession?.id) {
       load();
-      interval = setInterval(load, 3000);
     } else {
       setActiveSessionPhotos([]);
     }
@@ -1458,7 +1476,6 @@ export default function FiscalView({
 
     return () => {
       active = false;
-      if (interval) clearInterval(interval);
       window.removeEventListener('logiroute_photos_updated', handlePhotosUpdated);
     };
   }, [activeSession?.id, activeSession?.status, activeSession?.refugos?.length, activeSession?.history?.length]);
@@ -2091,8 +2108,14 @@ export default function FiscalView({
 
   // Pending for fiscal verification (filtering out maps that are already closed or downloaded)
   const pendingAudits = audits.filter(a => {
-    // If reopening was requested by fiscal/conferente, keep in pending so fiscal can re-reconcile
+    // If reopening was requested by fiscal/conferente/auxiliar, keep in pending so fiscal can re-reconcile
     if (a.reopeningRequested) return true;
+
+    // If audit was reopened, and status is conferido_fisico or recontagem_finalizada, ALWAYS show in pending!
+    const wasReopened = a.reopened === true || (a.history && a.history.some(h => h.action.includes('Reabert') || h.action.includes('Reabertura')));
+    if (wasReopened && (a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada')) {
+      return true;
+    }
 
     // If PDF was downloaded or status is already finalized or surplus status is BAIXADO
     if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
@@ -2105,19 +2128,19 @@ export default function FiscalView({
     const normMap = normalizeMapCode(a.routeMap).toUpperCase();
     const upperMap = a.routeMap.trim().toUpperCase();
 
-    // Check if importedRoute is already closed
+    // Check if importedRoute is already closed (only applies if audit is not actively in conferido_fisico/recontagem_finalizada)
     const isRouteClosedInImports = importedRoutes.some(r => {
       const normR = normalizeMapCode(r.routeMap).toUpperCase();
       return (normR === normMap || r.routeMap.trim().toUpperCase() === upperMap) && r.status === 'fechado';
     });
-    if (isRouteClosedInImports) return false;
+    if (isRouteClosedInImports && !wasReopened) return false;
 
     // Check if another audit session for the same map is already finished
     const isAuditClosedInOthers = audits.some(other => {
-      if (other.id === a.id || other.reopeningRequested) return false;
+      if (other.id === a.id || other.reopeningRequested || other.reopened) return false;
       const otherNorm = normalizeMapCode(other.routeMap).toUpperCase();
       const isMapMatch = otherNorm === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-      const isFinished = other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || other.pdfDownloaded === true || other.surplusFlowStatus === 'BAIXADO';
+      const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente') && !other.reopened;
       return isMapMatch && isFinished;
     });
     if (isAuditClosedInOthers) return false;
@@ -2129,7 +2152,8 @@ export default function FiscalView({
   const historyAudits = audits.filter(a => 
     a.status === 'finalizado_ok' || 
     a.status === 'finalizado_divergente' ||
-    a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto'))
+    a.reopened === true ||
+    a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto') || h.action.includes('Mapa Reaberto'))
   );
 
   // Unacknowledged baixas for financeiro (Aguardando Fechamento Promax)
@@ -2857,7 +2881,107 @@ export default function FiscalView({
     doc.save(`sobras_e_faltas_pendentes_${filterDesc}_${dateStr}.pdf`);
   };
 
-  // Reopening handlers for Auxiliar de Logística and Financeiro
+  // Reopening handlers for Auxiliar de Logística, Gestor and Financeiro
+  const handleExecuteReopening = (auditId: string, customJustification?: string) => {
+    const targetAudit = audits.find(a => a.id === auditId);
+    if (!targetAudit) return;
+
+    if (currentUser.role !== 'auxiliar_logistica' && currentUser.role !== 'financeiro' && currentUser.role !== 'gestor') {
+      alert("Você não tem permissão para reabrir mapas.");
+      return;
+    }
+
+    const note = (customJustification || reopeningJustificationText).trim() || targetAudit.reopeningJustification || 'Reabertura de mapa solicitada para conciliação fiscal';
+
+    requestConfirm(
+      "🔓 Confirmar Reabertura do Mapa?",
+      `Tem certeza que deseja reabrir o mapa ${targetAudit.routeMap}? Ele retornará imediatamente para a coluna "Aguardando Conciliação" para conferência e conciliação fiscal.`,
+      () => {
+        const userRoleTitle = currentUser.role === 'auxiliar_logistica' 
+          ? 'Auxiliar de Logística' 
+          : currentUser.role === 'gestor' 
+            ? 'Gestor' 
+            : 'Financeiro';
+
+        const updatedAudits = audits.map(audit => {
+          if (audit.id === auditId) {
+            const updatedHistory = [
+              ...(audit.history || []),
+              {
+                timestamp: new Date().toISOString(),
+                action: `Mapa Reaberto por ${currentUser.name} (${userRoleTitle})`,
+                user: currentUser.name,
+                details: `Motivo da Reabertura: ${note}`
+              }
+            ];
+            return {
+              ...audit,
+              status: 'conferido_fisico' as const,
+              reopeningRequested: false,
+              reopened: true,
+              reopenedAt: new Date().toISOString(),
+              reopenedBy: currentUser.name,
+              reopeningJustification: note,
+              pdfDownloaded: false,
+              surplusFlowStatus: undefined,
+              financeiroCiente: false,
+              closedAt: undefined,
+              baixaConcluida: false,
+              history: updatedHistory,
+              updatedAt: new Date().toISOString(),
+              lastUpdatedBy: currentUser.name
+            };
+          }
+          return audit;
+        });
+
+        let updatedAlerts = [...fiscalAlerts];
+        const newAlert: FiscalAlert = {
+          id: 'al_reopen_done_' + Date.now(),
+          routeMap: targetAudit.routeMap,
+          plate: targetAudit.plate,
+          status: 'conferido_fisico',
+          timestamp: new Date().toISOString(),
+          read: false,
+          title: `🔓 Mapa ${targetAudit.routeMap} Reaberto`,
+          message: `O mapa ${targetAudit.routeMap} foi reaberto por ${currentUser.name} (${userRoleTitle}) e retornou para "Aguardando Conciliação".`,
+          targetRole: 'auxiliar_logistica'
+        };
+        updatedAlerts = [newAlert, ...updatedAlerts];
+
+        onSaveAudits(updatedAudits);
+
+        if (onSaveImportedRoutes && importedRoutes) {
+          const targetNorm = normalizeMapCode(targetAudit.routeMap).toUpperCase();
+          const targetUpper = targetAudit.routeMap.trim().toUpperCase();
+          const updatedRoutes = importedRoutes.map(r => {
+            const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+            const rUpper = r.routeMap.trim().toUpperCase();
+            const isMatched = rNorm === targetNorm || rUpper === targetUpper ||
+              (targetAudit.unifiedMaps && targetAudit.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === rNorm || m.trim().toUpperCase() === rUpper));
+            if (isMatched) {
+              return { ...r, status: 'em_analise' as const };
+            }
+            return r;
+          });
+          onSaveImportedRoutes(updatedRoutes);
+        }
+
+        if (onSaveAlerts) {
+          onSaveAlerts(updatedAlerts);
+        }
+
+        const currentSelected = updatedAudits.find(a => a.id === auditId);
+        if (currentSelected) {
+          setSelectedHistoryAudit(currentSelected);
+        }
+
+        setReopeningJustificationText('');
+        alert(`O mapa ${targetAudit.routeMap} foi reaberto com sucesso e retornou para "Aguardando Conciliação"!`);
+      }
+    );
+  };
+
   const handleRequestReopening = (auditId: string) => {
     if (!reopeningJustificationText.trim()) {
       alert("Por favor, preencha a justificativa para solicitar a reabertura.");
@@ -2917,91 +3041,27 @@ export default function FiscalView({
     }
 
     setReopeningJustificationText('');
-    alert("Solicitação de reabertura enviada com sucesso ao Financeiro!");
+    alert("Solicitação de reabertura registrada com sucesso!");
   };
 
   const handleApproveReopening = (auditId: string) => {
     const targetAudit = audits.find(a => a.id === auditId);
     if (!targetAudit) return;
 
-    if (currentUser.role !== 'financeiro' && currentUser.role !== 'gestor') {
-      alert("Apenas usuários do Financeiro ou Gestores podem autorizar reaberturas.");
+    if (currentUser.role !== 'auxiliar_logistica' && currentUser.role !== 'financeiro' && currentUser.role !== 'gestor') {
+      alert("Você não tem permissão para reabrir mapas.");
       return;
     }
 
-    requestConfirm(
-      "🔓 Confirmar Reabertura?",
-      `Tem certeza que deseja reabrir o mapa ${targetAudit.routeMap}? Ele retornará para "Aguardando Conciliação" para nova conferência ou conciliação.`,
-      () => {
-        const updatedAudits = audits.map(audit => {
-          if (audit.id === auditId) {
-            const updatedHistory = [
-              ...(audit.history || []),
-              {
-                timestamp: new Date().toISOString(),
-                action: `Reabertura Aprovada pelo Financeiro`,
-                user: currentUser.name,
-                details: `Justificativa da solicitação: ${audit.reopeningJustification}`
-              }
-            ];
-            return {
-              ...audit,
-              status: 'conferido_fisico' as const,
-              reopeningRequested: false,
-              history: updatedHistory,
-              updatedAt: new Date().toISOString(),
-              lastUpdatedBy: currentUser.name
-            };
-          }
-          return audit;
-        });
-
-        let updatedAlerts = [...fiscalAlerts];
-        const newAlert: FiscalAlert = {
-          id: 'al_reopen_approved_' + Date.now(),
-          routeMap: targetAudit.routeMap,
-          plate: targetAudit.plate,
-          status: 'conferido_fisico',
-          timestamp: new Date().toISOString(),
-          read: false,
-          title: `✅ Mapa Reaberto pelo Financeiro`,
-          message: `O mapa ${targetAudit.routeMap} foi reaberto por ${currentUser.name} e está disponível para nova conciliação.`,
-          targetRole: 'auxiliar_logistica'
-        };
-        updatedAlerts = [newAlert, ...updatedAlerts];
-
-        onSaveAudits(updatedAudits);
-        if (onSaveImportedRoutes && importedRoutes) {
-          const updatedRoutes = importedRoutes.map(r => {
-            const isMatched = r.routeMap.toUpperCase() === targetAudit.routeMap.toUpperCase() ||
-              (targetAudit.unifiedMaps && targetAudit.unifiedMaps.some(m => m.toUpperCase() === r.routeMap.toUpperCase()));
-            if (isMatched) {
-              return { ...r, status: 'em_analise' as const };
-            }
-            return r;
-          });
-          onSaveImportedRoutes(updatedRoutes);
-        }
-        if (onSaveAlerts) {
-          onSaveAlerts(updatedAlerts);
-        }
-
-        const currentSelected = updatedAudits.find(a => a.id === auditId);
-        if (currentSelected) {
-          setSelectedHistoryAudit(currentSelected);
-        }
-
-        alert(`O mapa ${targetAudit.routeMap} foi reaberto com sucesso e retornou para "Aguardando Conciliação"!`);
-      }
-    );
+    handleExecuteReopening(auditId, targetAudit.reopeningJustification);
   };
 
   const handleRejectReopening = (auditId: string) => {
     const targetAudit = audits.find(a => a.id === auditId);
     if (!targetAudit) return;
 
-    if (currentUser.role !== 'financeiro' && currentUser.role !== 'gestor') {
-      alert("Apenas usuários do Financeiro ou Gestores podem recusar reaberturas.");
+    if (currentUser.role !== 'auxiliar_logistica' && currentUser.role !== 'financeiro' && currentUser.role !== 'gestor') {
+      alert("Você não tem permissão para recusar reaberturas.");
       return;
     }
 
@@ -3009,13 +3069,19 @@ export default function FiscalView({
       "❌ Recusar Reabertura?",
       `Deseja recusar o pedido de reabertura do mapa ${targetAudit.routeMap}?`,
       () => {
+        const userRoleTitle = currentUser.role === 'auxiliar_logistica' 
+          ? 'Auxiliar de Logística' 
+          : currentUser.role === 'gestor' 
+            ? 'Gestor' 
+            : 'Financeiro';
+
         const updatedAudits = audits.map(audit => {
           if (audit.id === auditId) {
             const updatedHistory = [
               ...(audit.history || []),
               {
                 timestamp: new Date().toISOString(),
-                action: `Reabertura Recusada pelo Financeiro`,
+                action: `Reabertura Recusada por ${currentUser.name} (${userRoleTitle})`,
                 user: currentUser.name,
                 details: `Recusado`
               }
@@ -5862,12 +5928,12 @@ export default function FiscalView({
                           Solicitações de Reabertura de Mapas ({requestedAudits.length})
                         </h4>
                         <p className="text-[10px] text-amber-700 font-mono">
-                          As solicitações listadas abaixo aguardam análise do Financeiro
+                          As solicitações listadas abaixo podem ser reabertas pelo Auxiliar de Logística, Gestor ou Financeiro
                         </p>
                       </div>
                     </div>
                     <span className="bg-amber-200/60 text-amber-800 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider animate-pulse">
-                      Pendente de Aprovação
+                      Pendente de Reabertura
                     </span>
                   </div>
 
@@ -5886,7 +5952,7 @@ export default function FiscalView({
 
                         <div className="text-xs bg-amber-50/40 p-2.5 rounded border border-amber-100 italic text-slate-700">
                           <strong className="text-[10px] uppercase text-amber-800 block not-italic font-sans mb-1">
-                            Justificativa de {audit.reopeningRequestUser || 'Auxiliar'}:
+                            Justificativa de {audit.reopeningRequestUser || 'Solicitante'}:
                           </strong>
                           "{audit.reopeningJustification}"
                         </div>
@@ -5899,13 +5965,13 @@ export default function FiscalView({
                             Ver Detalhes do Mapa
                           </button>
 
-                          {(currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (
+                          {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (
                             <div className="flex items-center space-x-2">
                               <button
                                 onClick={() => handleApproveReopening(audit.id)}
                                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg transition shadow-2xs cursor-pointer flex items-center space-x-1 font-sans"
                               >
-                                <span>Aprovar Reabertura</span>
+                                <span>Aprovar e Reabrir</span>
                               </button>
                               <button
                                 onClick={() => handleRejectReopening(audit.id)}
@@ -10937,14 +11003,14 @@ export default function FiscalView({
                       </div>
                     </div>
 
-                    {/* Se o usuário atual for Financeiro ou Gestor, ele pode aprovar ou recusar */}
-                    {(currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (
+                    {/* Se o usuário atual for Auxiliar de Logística, Financeiro ou Gestor, ele pode aprovar ou recusar */}
+                    {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (
                       <div className="flex items-center space-x-2 pt-1">
                         <button
                           onClick={() => handleApproveReopening(selectedHistoryAudit.id)}
                           className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg transition-all shadow-xs cursor-pointer flex items-center space-x-1"
                         >
-                          <span>Aprovar Reabertura</span>
+                          <span>Aprovar e Reabrir para Conciliação</span>
                         </button>
                         <button
                           onClick={() => handleRejectReopening(selectedHistoryAudit.id)}
@@ -10957,24 +11023,30 @@ export default function FiscalView({
                   </div>
                 ) : (
                   <>
-                    {/* Auxiliar de logística ou Gestor pode solicitar se o mapa estiver baixado */}
-                    {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'gestor') && (
+                    {/* Auxiliar de logística, Gestor ou Financeiro pode reabrir diretamente */}
+                    {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'gestor' || currentUser.role === 'financeiro') && (
                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                        <label className="text-[10px] text-slate-500 font-semibold uppercase block">
-                          Justificativa para solicitar reabertura:
-                        </label>
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-slate-700 font-bold uppercase block">
+                            Observação / Motivo da Reabertura:
+                          </label>
+                          <span className="text-[9px] text-amber-700 font-mono font-bold bg-amber-100 px-2 py-0.5 rounded">
+                            Permissão: {currentUser.role === 'auxiliar_logistica' ? 'Auxiliar de Logística' : currentUser.role}
+                          </span>
+                        </div>
                         <textarea
-                          placeholder="Digite aqui o motivo detalhado pelo qual este mapa precisa ser reaberto pelo Financeiro..."
+                          placeholder="Digite aqui a observação/motivo detalhado pelo qual este mapa está sendo reaberto para conciliação..."
                           value={reopeningJustificationText}
                           onChange={(e) => setReopeningJustificationText(e.target.value)}
                           className="w-full text-xs bg-white border border-slate-200 rounded-lg p-2.5 h-16 focus:outline-none focus:ring-1 focus:ring-amber-500"
                         />
-                        <div className="flex justify-end">
+                        <div className="flex justify-end items-center space-x-2">
                           <button
-                            onClick={() => handleRequestReopening(selectedHistoryAudit.id)}
-                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-lg transition-all shadow-xs cursor-pointer"
+                            onClick={() => handleExecuteReopening(selectedHistoryAudit.id, reopeningJustificationText)}
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-lg transition-all shadow-xs cursor-pointer flex items-center space-x-1.5"
                           >
-                            Solicitar Reabertura do Mapa
+                            <span className="text-sm">🔓</span>
+                            <span>Reabrir Mapa para Conciliação</span>
                           </button>
                         </div>
                       </div>

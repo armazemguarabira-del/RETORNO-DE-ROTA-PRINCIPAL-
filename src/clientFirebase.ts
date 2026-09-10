@@ -845,8 +845,7 @@ function attachReattachRequestListener() {
   });
 }
 
-const WATCHDOG_INTERVAL_MS = 45000;
-const WATCHDOG_STALE_THRESHOLD_MS = 180000; // 3 minutos sem nenhuma atualização recebida
+const WATCHDOG_INTERVAL_MS = 60000;
 
 function startConnectionWatchdog() {
   if (watchdogInterval || typeof window === "undefined") return;
@@ -854,9 +853,10 @@ function startConnectionWatchdog() {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
     if (typeof document !== "undefined" && document.visibilityState !== 'visible') return;
     if (!activeOnUpdateCallback) return;
-    const idle = Date.now() - lastSuccessfulSyncTime;
-    if (lastSuccessfulSyncTime > 0 && idle > WATCHDOG_STALE_THRESHOLD_MS) {
-      console.warn(`[ClientFirebase] Nenhuma sincronização em tempo real há ${Math.round(idle / 1000)}s. Forçando reconexão com Firestore...`);
+    // Only re-attach if listeners were unexpectedly lost or cleared
+    const activeCount = Object.keys(activeUnsubscribes).length;
+    if (activeCount === 0 && TRACKED_COLLECTIONS.length > 0) {
+      console.warn(`[ClientFirebase] Listeners do Firestore vazios. Restaurando escuta em tempo real...`);
       forceReconnect();
     }
   }, WATCHDOG_INTERVAL_MS);

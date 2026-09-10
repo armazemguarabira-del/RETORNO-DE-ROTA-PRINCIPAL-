@@ -169,11 +169,14 @@ export interface AuditSession {
   updatedAt?: string;
   lastUpdatedBy?: string;
 
-  // Reopening request fields
+  // Reopening request and execution fields
   reopeningRequested?: boolean;
   reopeningJustification?: string;
   reopeningRequestDate?: string;
   reopeningRequestUser?: string;
+  reopened?: boolean;
+  reopenedAt?: string;
+  reopenedBy?: string;
 }
 
 export interface RouteObservation {

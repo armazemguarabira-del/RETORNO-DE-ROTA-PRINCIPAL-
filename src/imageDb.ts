@@ -372,16 +372,20 @@ export class ImageDB {
   }
 
   /**
-   * Retrieve all photos for a specific audit, querying the server first
-   * for absolute real-time simultaneity and falling back instantly to local IndexedDB.
+   * Retrieve all photos for a specific audit. Checks local IndexedDB first for 0-cost instant render.
+   * Only fetches from the server if local cache has no photos for this audit (or forceRefresh is true).
    */
-  static async getPhotosByAudit(auditId: string): Promise<PhotoRecord[]> {
-    const localPromise = this.getLocalPhotosByAudit(auditId);
+  static async getPhotosByAudit(auditId: string, forceRefresh: boolean = false): Promise<PhotoRecord[]> {
+    const localPhotos = await this.getLocalPhotosByAudit(auditId);
+    if (!forceRefresh && localPhotos && localPhotos.length > 0) {
+      return localPhotos;
+    }
 
+    // Only query server when not cached locally
     const serverFetchWithTimeout = new Promise<PhotoRecord[]>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Server photo fetch timed out'));
-      }, 1000);
+      }, 1500);
 
       this.fetchPhotosFromServer(auditId)
         .then((serverPhotos) => {
@@ -396,24 +400,11 @@ export class ImageDB {
 
     try {
       const serverPhotos = await serverFetchWithTimeout;
-      const localPhotos = await localPromise;
-      const localMap = new Map(localPhotos.map(p => [p.id, p]));
-
       if (serverPhotos.length > 0) {
-        // Merge server photos with local photos to preserve base64 strings!
-        const mergedPhotos = serverPhotos.map(sp => {
-          const lp = localMap.get(sp.id);
-          if (lp && lp.photoUrl && lp.photoUrl.startsWith('data:') && (!sp.photoUrl || !sp.photoUrl.startsWith('data:'))) {
-            // Keep the local base64 photoUrl!
-            return { ...sp, photoUrl: lp.photoUrl };
-          }
-          return sp;
-        });
-
-        // Sync them into local IndexedDB/Memory
+        // Sync them into local IndexedDB/Memory so future views cost 0 reads
         const db = await this.getDB();
         if (this.isInMemoryFallback || !db) {
-          mergedPhotos.forEach((photo: PhotoRecord) => {
+          serverPhotos.forEach((photo: PhotoRecord) => {
             this.memoryStore.set(photo.id, photo);
           });
         } else {
@@ -422,27 +413,27 @@ export class ImageDB {
               const transaction = db.transaction(STORE_NAME, 'readwrite');
               const store = transaction.objectStore(STORE_NAME);
               let count = 0;
-              mergedPhotos.forEach((photo: PhotoRecord) => {
+              serverPhotos.forEach((photo: PhotoRecord) => {
                 const req = store.put(photo);
                 req.onsuccess = req.onerror = () => {
                   count++;
-                  if (count === mergedPhotos.length) resolve();
+                  if (count === serverPhotos.length) resolve();
                 };
               });
             });
           } catch (err) {
-            mergedPhotos.forEach((photo: PhotoRecord) => {
+            serverPhotos.forEach((photo: PhotoRecord) => {
               this.memoryStore.set(photo.id, photo);
             });
           }
         }
-        return mergedPhotos;
+        return serverPhotos;
       }
     } catch (e) {
       console.log('Failing over to local storage photos gracefully:', e);
     }
 
-    return localPromise;
+    return localPhotos || [];
   }
 
   /**
