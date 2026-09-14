@@ -1144,7 +1144,7 @@ export default function GestorDashboard({
             carregamentos: updatedCarreg,
             carregamentoProcesses: updatedCarreg,
             vales: updatedVales
-          });
+          }, true, true);
         }
         
         alert(`Todos os mapas, descarregamentos e auditorias do dia ${new Date(selectedDeleteDate + 'T00:00:00').toLocaleDateString('pt-BR')} foram excluídos com sucesso.`);

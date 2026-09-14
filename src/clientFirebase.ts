@@ -158,43 +158,19 @@ let firestoreInstance: any = null;
 let isAuthenticating = false;
 let isAuthenticated = false;
 
-// In-memory + session cache of document JSON hashes to eliminate redundant reads and writes
+// In-memory cache of document JSON hashes for the active session to avoid redundant network churn
 const inMemoryDocCache: Record<string, Map<string, string>> = {};
 
 function getColCache(colName: string): Map<string, string> {
   const targetCol = COLLECTION_MAP[colName] || colName;
   if (!inMemoryDocCache[targetCol]) {
-    const map = new Map<string, string>();
-    if (typeof window !== "undefined") {
-      try {
-        const stored = sessionStorage.getItem(`logiroute_doc_cache_${targetCol}`);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          Object.entries(parsed).forEach(([k, v]) => {
-            if (typeof v === "string") map.set(k, v);
-          });
-        }
-      } catch (e) {}
-    }
-    inMemoryDocCache[targetCol] = map;
+    inMemoryDocCache[targetCol] = new Map<string, string>();
   }
   return inMemoryDocCache[targetCol];
 }
 
-function persistColCache(colName: string) {
-  const targetCol = COLLECTION_MAP[colName] || colName;
-  const map = inMemoryDocCache[targetCol];
-  if (!map || typeof window === "undefined") return;
-  try {
-    const obj: Record<string, string> = {};
-    // Cap cache entries to avoid storage overflow
-    let count = 0;
-    for (const [k, v] of map.entries()) {
-      if (count++ > 500) break;
-      obj[k] = v;
-    }
-    sessionStorage.setItem(`logiroute_doc_cache_${targetCol}`, JSON.stringify(obj));
-  } catch (e) {}
+function persistColCache(_colName: string) {
+  // Ephemeral in-memory cache only; no sessionStorage persistence to prevent stale cross-user cache
 }
 let clientAuthError: string | null = null;
 let lastAuthAttemptTime = 0;
@@ -625,15 +601,9 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     const colCache = getColCache(targetCol);
     const newJson = canonicalJson(cleanItem);
 
-    // Skip write if doc is unchanged in memory
-    if (colCache.get(docId) === newJson) {
-      return true;
-    }
-
     const docRef = doc(db, targetCol, docId);
     await setDoc(docRef, cleanItem, { merge: true });
     colCache.set(docId, newJson);
-    persistColCache(targetCol);
     return true;
   } catch (err) {
     console.warn(`[ClientFirebase] Erro ao salvar documento na coleção '${colName}':`, err);
@@ -755,7 +725,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   }
 }
 
-export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false): Promise<boolean> {
+export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = false): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !payload) return false;
   try {
@@ -774,7 +744,7 @@ export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean 
         }
 
         if (Array.isArray(rawData)) {
-          await saveDocsToFirestore(colName, rawData, true, forceWrite);
+          await saveDocsToFirestore(colName, rawData, syncDeletions, forceWrite);
         }
       }
       return true;

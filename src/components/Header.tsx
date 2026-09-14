@@ -73,6 +73,35 @@ export default function Header({
   const [showConnectionModal, setShowConnectionModal] = useState(false);
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(getLastSuccessfulSyncTime());
   const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
+  const handleClearCacheAndReload = async () => {
+    setIsClearingCache(true);
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.unregister();
+        }
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        for (const key of keys) {
+          await caches.delete(key);
+        }
+      }
+      localStorage.removeItem('logiroute_cached_app_db');
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const k = sessionStorage.key(i);
+        if (k && k.startsWith('logiroute_doc_cache_')) {
+          sessionStorage.removeItem(k);
+        }
+      }
+    } catch (e) {
+      console.warn("Erro ao limpar cache:", e);
+    }
+    window.location.reload();
+  };
   const [activeDbProjectId, setActiveDbProjectId] = useState<string>(() => {
     return getActiveFirebaseConfig()?.projectId || 'banco-oficial';
   });
@@ -572,6 +601,17 @@ export default function Header({
               >
                 <Smartphone className="h-4 w-4 shrink-0" />
                 <span className="hidden lg:inline">Baixar APK Mobile</span>
+              </button>
+
+              {/* Botão Limpar Cache e Recarregar */}
+              <button
+                id="clear_platform_cache_btn"
+                onClick={handleClearCacheAndReload}
+                disabled={isClearingCache}
+                className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-sm shrink-0"
+                title="Limpar Cache da Plataforma e Recarregar Dados Atualizados"
+              >
+                <RefreshCw className={`h-4 w-4 text-sky-400 ${isClearingCache ? 'animate-spin' : ''}`} />
               </button>
 
               {/* Theme Toggle */}

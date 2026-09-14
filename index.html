@@ -9,6 +9,10 @@
     <meta property="og:description" content="Plataforma de conferência de retorno de rota com controle físico de produtos e ativos de giro, reconciliação fiscal e dashboard gerencial." />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Desativação de Cache no Navegador -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="manifest" href="./manifest.json" />
     <link rel="icon" type="image/jpeg" href="./pau_brasil_logo.jpg" />
     <title>Aferição de Retorno de Rota - Pau Brasil Guarabira</title>
@@ -61,15 +65,20 @@
     </script>
     <script type="module" src="/src/main.tsx" onerror="showRawSourceWarning()"></script>
     <script>
-      if ('serviceWorker' in navigator && window.location.protocol === 'https:' && !window.location.hostname.includes('ais-dev')) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js')
-            .then(reg => {
-              console.log('PWA Service Worker registrado com sucesso:', reg.scope);
-              reg.update();
-            })
-            .catch(err => console.warn('Erro ao registrar Service Worker do PWA:', err));
-        });
+      // Desativa e remove qualquer Service Worker e limpa todo o Cache Storage da plataforma
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (var i = 0; i < registrations.length; i++) {
+            registrations[i].unregister();
+          }
+        }).catch(function() {});
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(keys) {
+          for (var i = 0; i < keys.length; i++) {
+            caches.delete(keys[i]);
+          }
+        }).catch(function() {});
       }
     </script>
   </body>

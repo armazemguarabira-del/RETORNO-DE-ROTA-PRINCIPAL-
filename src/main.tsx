@@ -184,6 +184,35 @@ try {
   console.warn("Date prototype toLocaleDateString override skipped:", e);
 }
 
+// Auto-purge all platform caches on startup (Service Workers, Cache Storage, Local Cache)
+if (typeof window !== 'undefined') {
+  try {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        for (const reg of registrations) {
+          reg.unregister().catch(() => {});
+        }
+      }).catch(() => {});
+    }
+    if ('caches' in window) {
+      caches.keys().then((names) => {
+        for (const name of names) {
+          caches.delete(name).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+    localStorage.removeItem('logiroute_cached_app_db');
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith('logiroute_doc_cache_')) {
+        sessionStorage.removeItem(k);
+      }
+    }
+  } catch (e) {
+    console.warn("Auto cache purge encountered error:", e);
+  }
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

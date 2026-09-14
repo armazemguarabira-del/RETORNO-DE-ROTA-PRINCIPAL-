@@ -16,60 +16,29 @@ import AIAgentChat from './components/AIAgentChat';
 import { DatabaseScheduleBanner } from './components/DatabaseScheduleBanner';
 import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2, Settings, RefreshCw, Layers } from 'lucide-react';
 
-// Helper to retrieve locally cached database state for instantaneous, 0-read load on refresh
-function getCachedAppDb() {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem('logiroute_cached_app_db');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // If cached data contains stale mock audits from legacy testing (> 20 audits), purge cache
-      if (parsed && Array.isArray(parsed.audits) && parsed.audits.length > 20) {
-        localStorage.removeItem('logiroute_cached_app_db');
-        return null;
-      }
-      return parsed;
-    }
-  } catch (e) {}
-  return null;
-}
-
 export default function App() {
   const lastWriteTime = useRef<number>(0);
   const pendingUpdatesRef = useRef<any>({});
   const pushTimeoutRef = useRef<any>(null);
   const lastSyncAlertTime = useRef<number>(0);
-  const initialCache = useRef<any>(getCachedAppDb()).current;
 
-  // Database states loaded from AppStore (hydrated from local cache on refresh)
-  const [users, setUsers] = useState<User[]>(() => (initialCache?.users && initialCache.users.length > 0 ? initialCache.users : DEFAULT_USERS));
-  const [drivers, setDrivers] = useState<Driver[]>(() => initialCache?.drivers || []);
-  const [vehicles, setVehicles] = useState<Vehicle[]>(() => initialCache?.vehicles || []);
-  const [products, setProducts] = useState<Product[]>(() => initialCache?.products || []);
-  const [activeAssets, setActiveAssets] = useState<ActiveAsset[]>(() => initialCache?.activeAssets || []);
-  const [audits, setAudits] = useState<AuditSession[]>(() => initialCache?.audits || []);
-  const [vales, setVales] = useState<Vale[]>(() => initialCache?.vales || []);
-  const [empilhadores, setEmpilhadores] = useState<Empilhador[]>(() => {
-    const raw = initialCache?.empilhadores || DEFAULT_EMPILHADORES;
-    return raw.map((emp: Empilhador) => ({
-      ...emp,
-      totalPalletsLoadedToday: typeof emp.totalPalletsLoadedToday === 'number' && emp.totalPalletsLoadedToday > 0 && !emp.id.startsWith('EMP-0') ? emp.totalPalletsLoadedToday : 0
-    }));
-  });
-  const [carregamentos, setCarregamentos] = useState<CarregamentoProcess[]>(() => {
-    const raw = initialCache?.carregamentoProcesses || initialCache?.carregamentos || DEFAULT_CARREGAMENTOS;
-    if (Array.isArray(raw)) {
-      return raw.filter((c: CarregamentoProcess) => !c.id.startsWith('CRG-40') && !c.id.startsWith('MOCK-') && !c.processNumber?.startsWith('CARGA-40'));
-    }
-    return [];
-  });
-  const [auditLogs, setAuditLogs] = useState<any[]>(() => initialCache?.auditLogs || initialCache?.audit_logs || []);
-  const [customManualHTML, setCustomManualHTML] = useState<string>(() => initialCache?.customManual || '');
+  // Database states loaded from AppStore (direct from live database without stale cache)
+  const [users, setUsers] = useState<User[]>(DEFAULT_USERS);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [products, setProducts] = useState<Product[]>(DEFAULT_PRODUCTS);
+  const [activeAssets, setActiveAssets] = useState<ActiveAsset[]>([]);
+  const [audits, setAudits] = useState<AuditSession[]>([]);
+  const [vales, setVales] = useState<Vale[]>([]);
+  const [empilhadores, setEmpilhadores] = useState<Empilhador[]>(DEFAULT_EMPILHADORES);
+  const [carregamentos, setCarregamentos] = useState<CarregamentoProcess[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [customManualHTML, setCustomManualHTML] = useState<string>('');
 
   // Forecasts and Notifications
-  const [returnForecasts, setReturnForecasts] = useState<ReturnForecast[]>(() => initialCache?.returnForecasts || []);
-  const [fiscalAlerts, setFiscalAlerts] = useState<FiscalAlert[]>(() => initialCache?.fiscalAlerts || []);
-  const [importedRoutes, setImportedRoutes] = useState<ImportedRoute[]>(() => initialCache?.importedRoutes || []);
+  const [returnForecasts, setReturnForecasts] = useState<ReturnForecast[]>([]);
+  const [fiscalAlerts, setFiscalAlerts] = useState<FiscalAlert[]>([]);
+  const [importedRoutes, setImportedRoutes] = useState<ImportedRoute[]>([]);
 
   // Session & UI Navigation states
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -125,15 +94,17 @@ export default function App() {
       if (document.visibilityState === 'visible') {
         console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real com Firestore...');
         forceReconnect();
-        // Busca do servidor local Express com custo zero no Firestore
-        fetch('/api/db')
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data?.success && data?.db) {
-              applyDirectDb(data.db);
-            }
-          })
-          .catch(() => {});
+        // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
+        if (!isClientFirebaseActive()) {
+          fetch('/api/db')
+            .then(res => res.ok ? res.json() : null)
+            .then(data => {
+              if (data?.success && data?.db) {
+                applyDirectDb(data.db);
+              }
+            })
+            .catch(() => {});
+        }
       }
     };
 
@@ -225,7 +196,7 @@ export default function App() {
     };
 
     if (isClientFirebaseActive()) {
-      await saveDirectlyToFirestore(emptyPayload);
+      await saveDirectlyToFirestore(emptyPayload, true, true);
     }
 
     try {
@@ -475,15 +446,19 @@ export default function App() {
     if (db.users !== undefined && Array.isArray(db.users)) {
       const activeUsers = db.users.length > 0 ? db.users : DEFAULT_USERS;
       setUsers(activeUsers);
-      const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-      let matchedUser = activeUsers.find((u: User) => u.id === savedUserId);
-      if (!matchedUser) {
-        matchedUser = activeUsers.find((u: User) => u.role === 'gestor') || activeUsers[0];
-      }
-      if (matchedUser) {
-        setCurrentUser(matchedUser);
-        localStorage.setItem('logiroute_authenticated_user_id', matchedUser.id);
-      }
+      setCurrentUser(prevUser => {
+        if (prevUser) {
+          // Keep current logged in user and refresh data if updated in users collection
+          const matched = activeUsers.find((u: User) => u.id === prevUser.id);
+          return matched || prevUser;
+        }
+        const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
+        if (savedUserId) {
+          const matched = activeUsers.find((u: User) => u.id === savedUserId);
+          if (matched) return matched;
+        }
+        return activeUsers.find((u: User) => u.role === 'gestor') || activeUsers[0] || null;
+      });
     }
 
     if (db.drivers !== undefined && Array.isArray(db.drivers)) {
@@ -547,26 +522,6 @@ export default function App() {
       const manualContent = typeof db.customManual === 'string' ? db.customManual : db.customManual?.html || '';
       setCustomManualHTML(manualContent);
     }
-
-    // Persist snapshot to localStorage so subsequent page reloads start instantaneously with 0 initial delay
-    try {
-      localStorage.setItem('logiroute_cached_app_db', JSON.stringify({
-        users: db.users !== undefined ? db.users : users,
-        drivers: db.drivers !== undefined ? db.drivers : drivers,
-        vehicles: db.vehicles !== undefined ? db.vehicles : vehicles,
-        products: db.products !== undefined ? db.products : products,
-        activeAssets: db.activeAssets !== undefined ? db.activeAssets : activeAssets,
-        audits: db.audits !== undefined ? db.audits : audits,
-        vales: db.vales !== undefined ? db.vales : vales,
-        empilhadores: db.empilhadores !== undefined ? db.empilhadores : empilhadores,
-        carregamentoProcesses: db.carregamentoProcesses !== undefined ? db.carregamentoProcesses : (db.carregamentos !== undefined ? db.carregamentos : carregamentos),
-        returnForecasts: db.returnForecasts !== undefined ? db.returnForecasts : returnForecasts,
-        fiscalAlerts: db.fiscalAlerts !== undefined ? db.fiscalAlerts : fiscalAlerts,
-        importedRoutes: db.importedRoutes !== undefined ? db.importedRoutes : importedRoutes,
-        auditLogs: db.auditLogs || db.audit_logs || auditLogs,
-        customManual: db.customManual !== undefined ? (typeof db.customManual === 'string' ? db.customManual : db.customManual?.html || '') : customManualHTML
-      }));
-    } catch (e) {}
   };
 
   // Immediate flush of pending database updates on page reload / unload
@@ -604,6 +559,11 @@ export default function App() {
 
   // Establish direct Firestore / server synchronization on mount
   useEffect(() => {
+    // Limpa imediatamente qualquer cache legado de banco local
+    try {
+      localStorage.removeItem('logiroute_cached_app_db');
+    } catch (e) {}
+
     // 1. Check persistent user ID if authenticated
     const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
     const defaultUser = users.find(u => u.id === savedUserId) || users.find(u => u.id === 'usr_1') || users[0];
