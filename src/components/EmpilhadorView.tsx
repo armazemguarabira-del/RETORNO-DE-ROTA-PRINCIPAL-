@@ -191,6 +191,8 @@ export default function EmpilhadorView({
   const [checkAberturaBaias, setCheckAberturaBaias] = useState(false);
   const [checklistStartTime, setChecklistStartTime] = useState('');
   const [checklistPallets, setChecklistPallets] = useState<number>(8);
+  const [checklistEmpilhadorId, setChecklistEmpilhadorId] = useState('');
+  const [checklistDock, setChecklistDock] = useState('DOCA 01');
 
   // Add Plate Modal States
   const [showAddPlateModal, setShowAddPlateModal] = useState(false);
@@ -654,6 +656,9 @@ export default function EmpilhadorView({
     const mm = String(now.getMinutes()).padStart(2, '0');
     setChecklistStartTime(`${hh}:${mm}`);
     setChecklistPallets(vehicle.totalPallets || 8);
+    const initialEmpId = vehicle.empilhadorId || currentOperator?.id || empilhadores[0]?.id || '';
+    setChecklistEmpilhadorId(initialEmpId);
+    setChecklistDock(vehicle.dock && vehicle.dock !== 'D0' ? vehicle.dock : 'DOCA 01');
     setShowChecklistModal(true);
   };
 
@@ -664,11 +669,12 @@ export default function EmpilhadorView({
     if (!isChecklistComplete) return;
 
     const nowIso = new Date().toISOString();
-    const opName = currentOperator?.name || currentUser.name;
-    const opId = currentOperator?.id || currentUser.id;
+    const selectedEmp = empilhadores.find(e => e.id === checklistEmpilhadorId) || currentOperator;
+    const opName = selectedEmp?.name || currentOperator?.name || currentUser.name;
+    const opId = selectedEmp?.id || currentOperator?.id || currentUser.id;
+    const dockToUse = checklistDock || (checklistVehicle.dock !== 'D0' ? checklistVehicle.dock : 'DOCA 01');
     const note = `Início com Giro 360º e Trava-rodas (${opName})`;
     const startTimeIso = checklistStartTime ? `${todayStr}T${checklistStartTime}:00.000Z` : nowIso;
-    const dockToUse = checklistVehicle.dock !== 'D0' ? checklistVehicle.dock : 'DOCA 01';
 
     const checklistData = {
       giro360: true,
@@ -2019,6 +2025,44 @@ export default function EmpilhadorView({
               <p className="text-[11px] leading-relaxed">
                 <strong>Lembrete Operacional:</strong> Ao finalizar a retirada dos paletes, o calço deve ser retirado e o <strong>MOTORISTA</strong> deve ser acionado para manobrar o veículo até o estacionamento.
               </p>
+            </div>
+
+            {/* Selection: Operador Empilhador & Doca */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
+                  EMPILHADOR RESPONSÁVEL:
+                </label>
+                <select
+                  value={checklistEmpilhadorId}
+                  onChange={(e) => setChecklistEmpilhadorId(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                >
+                  {empilhadores.map(op => (
+                    <option key={op.id} value={op.id}>
+                      {op.name} ({op.forkliftCode || 'EMP'})
+                    </option>
+                  ))}
+                  {empilhadores.length === 0 && (
+                    <option value="emp_01">Paulo Pereira (EMP-01)</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
+                  DOCA DE DESCARGA:
+                </label>
+                <select
+                  value={checklistDock}
+                  onChange={(e) => setChecklistDock(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                >
+                  {['DOCA 01', 'DOCA 02', 'DOCA 03', 'DOCA 04', 'DOCA 05', 'DOCA 06', 'DOCA 07', 'DOCA 08'].map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {/* Inputs: Horário de Início & Qtd Paletes */}

@@ -203,6 +203,8 @@ function AuditHistoryDetails({ audit }: { audit: AuditSession }) {
                       <th className="p-2">Item</th>
                       <th className="p-2 text-center">Físico</th>
                       <th className="p-2 text-center">Fiscal</th>
+                      <th className="p-2 text-center">Como.</th>
+                      <th className="p-2 text-center">Rec.</th>
                       <th className="p-2 text-right">Divergência</th>
                     </tr>
                   </thead>
@@ -210,12 +212,16 @@ function AuditHistoryDetails({ audit }: { audit: AuditSession }) {
                     {audit.items.map(item => {
                       const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
                       const fisc = item.fiscalQty ?? 0;
-                      const diff = phys - fisc;
+                      const comodato = item.comodatoQty ?? 0;
+                      const recolha = item.recolhaQty ?? 0;
+                      const diff = (phys + comodato - recolha) - fisc;
                       return (
                         <tr key={item.productCode} className="hover:bg-slate-100/30">
                           <td className="p-2 font-medium">{item.productDescription || item.productCode}</td>
                           <td className="p-2 text-center font-mono">{phys}</td>
                           <td className="p-2 text-center font-mono">{fisc}</td>
+                          <td className="p-2 text-center font-mono text-slate-500">{comodato || '-'}</td>
+                          <td className="p-2 text-center font-mono text-slate-500">{recolha || '-'}</td>
                           <td className={`p-2 text-right font-bold font-mono ${
                             diff === 0 ? 'text-emerald-600' : diff > 0 ? 'text-amber-600' : 'text-red-600'
                           }`}>
@@ -1137,8 +1143,11 @@ export default function FiscalView({
       (matchingAudit.items || []).forEach(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
         const fisc = i.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1154,10 +1163,18 @@ export default function FiscalView({
       });
 
       (matchingAudit.assets || []).forEach(a => {
+        const idLower = (a.assetId || '').toLowerCase();
+        const nameUpper = (a.assetName || '').toUpperCase();
+        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+        if (isChapatex) return;
+
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
         const fisc = a.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = a.cost ?? 18.0;
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1275,8 +1292,11 @@ export default function FiscalView({
       (audit.items || []).forEach(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
         const fisc = i.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1292,10 +1312,18 @@ export default function FiscalView({
       });
 
       (audit.assets || []).forEach(a => {
+        const idLower = (a.assetId || '').toLowerCase();
+        const nameUpper = (a.assetName || '').toUpperCase();
+        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+        if (isChapatex) return;
+
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
         const fisc = a.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = a.cost ?? 18.0;
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1348,8 +1376,11 @@ export default function FiscalView({
       (audit.items || []).forEach(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
         const fisc = i.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1365,10 +1396,18 @@ export default function FiscalView({
       });
 
       (audit.assets || []).forEach(a => {
+        const idLower = (a.assetId || '').toLowerCase();
+        const nameUpper = (a.assetName || '').toUpperCase();
+        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+        if (isChapatex) return;
+
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
         const fisc = a.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = a.cost ?? 18.0;
           const subtotal = diff * unitCost;
           totalVal += subtotal;
@@ -1490,7 +1529,9 @@ export default function FiscalView({
           const localItem = activeSession.items.find(i => i.productCode === item.productCode);
           return {
             ...item,
-            fiscalQty: localItem && localItem.fiscalQty !== undefined ? localItem.fiscalQty : item.fiscalQty
+            fiscalQty: localItem && localItem.fiscalQty !== undefined ? localItem.fiscalQty : item.fiscalQty,
+            comodatoQty: localItem && localItem.comodatoQty !== undefined ? localItem.comodatoQty : item.comodatoQty,
+            recolhaQty: localItem && localItem.recolhaQty !== undefined ? localItem.recolhaQty : item.recolhaQty
           };
         });
 
@@ -2236,7 +2277,10 @@ export default function FiscalView({
       if (!audit) return false;
       const hasProductDiff = (audit.items || []).some(item => {
         const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-        return phys !== (item.fiscalQty ?? 0);
+        const fisc = item.fiscalQty ?? 0;
+        const comodato = item.comodatoQty ?? 0;
+        const recolha = item.recolhaQty ?? 0;
+        return (phys + comodato - recolha) !== fisc;
       });
       const hasAssetDiff = (audit.assets || []).some(asset => {
         const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
@@ -2246,7 +2290,13 @@ export default function FiscalView({
         return phys !== (fisc - comodato + recolha);
       });
 
-      const hasProductSurplus = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) > (i.fiscalQty ?? 0));
+      const hasProductSurplus = (audit.items || []).some(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        return (phys + comodato - recolha) > fisc;
+      });
       const hasAssetSurplus = (audit.assets || []).some(a => {
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
         const fisc = a.fiscalQty ?? 0;
@@ -2256,7 +2306,13 @@ export default function FiscalView({
       });
       const hasSurplus = hasProductSurplus || hasAssetSurplus;
 
-      const hasProductDeficit = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) < (i.fiscalQty ?? 0));
+      const hasProductDeficit = (audit.items || []).some(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        return (phys + comodato - recolha) < fisc;
+      });
       const hasAssetDeficit = (audit.assets || []).some(a => {
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
         const fisc = a.fiscalQty ?? 0;
@@ -2304,7 +2360,10 @@ export default function FiscalView({
       if (filterType !== 'all') {
         const hasSurplus = (audit.items || []).some(i => {
           const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-          return phys > (i.fiscalQty ?? 0);
+          const fisc = i.fiscalQty ?? 0;
+          const comodato = i.comodatoQty ?? 0;
+          const recolha = i.recolhaQty ?? 0;
+          return (phys - fisc + comodato - recolha) > 0;
         }) || (audit.assets || []).some(a => {
           const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
           const fisc = a.fiscalQty ?? 0;
@@ -2315,7 +2374,10 @@ export default function FiscalView({
 
         const hasDeficit = (audit.items || []).some(i => {
           const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-          return phys < (i.fiscalQty ?? 0);
+          const fisc = i.fiscalQty ?? 0;
+          const comodato = i.comodatoQty ?? 0;
+          const recolha = i.recolhaQty ?? 0;
+          return (phys - fisc + comodato - recolha) < 0;
         }) || (audit.assets || []).some(a => {
           const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
           const fisc = a.fiscalQty ?? 0;
@@ -2336,7 +2398,13 @@ export default function FiscalView({
     filteredAudits.forEach(audit => {
       const driverName = getDriverName(audit.driverId);
       
-      const hasProductSurplus = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) > (i.fiscalQty ?? 0));
+      const hasProductSurplus = (audit.items || []).some(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        return (phys - fisc + comodato - recolha) > 0;
+      });
       const hasAssetSurplus = (audit.assets || []).some(a => {
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
         const fisc = a.fiscalQty ?? 0;
@@ -2346,7 +2414,13 @@ export default function FiscalView({
       });
       const hasSurplus = hasProductSurplus || hasAssetSurplus;
 
-      const hasProductDeficit = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) < (i.fiscalQty ?? 0));
+      const hasProductDeficit = (audit.items || []).some(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        return (phys - fisc + comodato - recolha) < 0;
+      });
       const hasAssetDeficit = (audit.assets || []).some(a => {
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
         const fisc = a.fiscalQty ?? 0;
@@ -2372,7 +2446,10 @@ export default function FiscalView({
         (audit.items || []).forEach(item => {
           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fisc = item.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const fiscExpected = fisc - comodato + recolha;
+          const diff = phys - fiscExpected;
 
           if (diff > 0 && unresolvedSurplus && (filterType === 'all' || filterType === 'sobra')) {
             records.push({
@@ -2383,7 +2460,7 @@ export default function FiscalView({
               type: 'PA',
               itemDescription: item.productDescription,
               deviationType: 'SOBRA',
-              fiscalQty: fisc,
+              fiscalQty: fiscExpected,
               physicalQty: phys,
               divergence: diff,
               status: 'Sobra não tratada'
@@ -3277,7 +3354,9 @@ export default function FiscalView({
       audit.items?.forEach(item => {
         const p = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
         const f = item.fiscalQty ?? 0;
-        const diff = p - f;
+        const comodato = item.comodatoQty ?? 0;
+        const recolha = item.recolhaQty ?? 0;
+        const diff = (p + comodato - recolha) - f;
         if (diff < 0) {
           missingQty += Math.abs(diff);
           missingVal += Math.abs(diff) * getSkuClosedPrice(item.productCode, 45.0);
@@ -3293,11 +3372,13 @@ export default function FiscalView({
         const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
         const p = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
         const f = asset.fiscalQty ?? 0;
-        const diff = p - f;
+        const comodato = asset.comodatoQty ?? 0;
+        const recolha = asset.recolhaQty ?? 0;
+        const diff = (p + comodato - recolha) - f;
         if (diff < 0) {
-          missingQty += Math.abs(diff);
+          if (!isChapatex) missingQty += Math.abs(diff);
         } else if (diff > 0) {
-          surplusQty += diff;
+          if (!isChapatex) surplusQty += diff;
         }
       });
       
@@ -3334,7 +3415,9 @@ export default function FiscalView({
           checkPageBreak(8);
           const physicalVal = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fiscalVal = item.fiscalQty ?? 0;
-          const diff = physicalVal - fiscalVal;
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const diff = (physicalVal + comodato - recolha) - fiscalVal;
           const diffText = diff > 0 ? `+${diff}` : `${diff}`;
           
           doc.setFontSize(7.5);
@@ -3388,7 +3471,9 @@ export default function FiscalView({
           const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
           const physicalVal = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
           const fiscalVal = asset.fiscalQty ?? 0;
-          const diff = physicalVal - fiscalVal;
+          const comodato = asset.comodatoQty ?? 0;
+          const recolha = asset.recolhaQty ?? 0;
+          const diff = (physicalVal + comodato - recolha) - fiscalVal;
           let diffText = diff > 0 ? `+${diff}` : `${diff}`;
           
           if (isChapatex) {
@@ -3819,6 +3904,28 @@ export default function FiscalView({
     setActiveSession({ ...activeSession, assets: updatedAssets });
   };
 
+  const handleUpdateItemComodatoQty = (productCode: string, val: number) => {
+    if (!activeSession) return;
+    const updatedItems = activeSession.items.map(item => {
+      if (item.productCode === productCode) {
+        return { ...item, comodatoQty: val };
+      }
+      return item;
+    });
+    setActiveSession({ ...activeSession, items: updatedItems });
+  };
+
+  const handleUpdateItemRecolhaQty = (productCode: string, val: number) => {
+    if (!activeSession) return;
+    const updatedItems = activeSession.items.map(item => {
+      if (item.productCode === productCode) {
+        return { ...item, recolhaQty: val };
+      }
+      return item;
+    });
+    setActiveSession({ ...activeSession, items: updatedItems });
+  };
+
   // Action: Request physical recount (Reconferência)
   const handleRequestReconferencia = () => {
     if (!activeSession) return;
@@ -3897,8 +4004,11 @@ export default function FiscalView({
         const itemsWithUpdatedFiscal = activeSession.items.map(item => {
           const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fiscal = item.fiscalQty ?? 0;
-          if (physical !== fiscal) hasDiscrepancy = true;
-          return { ...item, fiscalQty: fiscal }; // Ensure it has fiscal quantity defined
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const diff = physical - fiscal + comodato - recolha;
+          if (diff !== 0) hasDiscrepancy = true;
+          return { ...item, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure it has fiscal quantity defined
         });
 
         // Verify assets
@@ -7062,18 +7172,37 @@ export default function FiscalView({
                     if (!audit) return false;
                     const hasProductDiff = (audit.items || []).some(item => {
                       const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-                      return phys !== (item.fiscalQty ?? 0);
+                      const fisc = item.fiscalQty ?? 0;
+                      const comodato = item.comodatoQty ?? 0;
+                      const recolha = item.recolhaQty ?? 0;
+                      return (phys + comodato - recolha) !== fisc;
                     });
                     const hasAssetDiff = (audit.assets || []).some(asset => {
+                      const idLower = (asset.assetId || '').toLowerCase();
+                      const nameUpper = (asset.assetName || '').toUpperCase();
+                      const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                      if (isChapatex) return false;
+
                       const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
                       const fisc = asset.fiscalQty ?? 0;
                       const comodato = asset.comodatoQty ?? 0;
                       const recolha = asset.recolhaQty ?? 0;
-                      return phys !== (fisc - comodato + recolha);
+                      return (phys + comodato - recolha) !== fisc;
                     });
 
-                    const hasProductSurplus = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) > (i.fiscalQty ?? 0));
+                    const hasProductSurplus = (audit.items || []).some(i => {
+                      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                      const fisc = i.fiscalQty ?? 0;
+                      const comodato = i.comodatoQty ?? 0;
+                      const recolha = i.recolhaQty ?? 0;
+                      return (phys + comodato - recolha) > fisc;
+                    });
                     const hasAssetSurplus = (audit.assets || []).some(a => {
+                      const idLower = (a.assetId || '').toLowerCase();
+                      const nameUpper = (a.assetName || '').toUpperCase();
+                      const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                      if (isChapatex) return false;
+
                       const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                       const fisc = a.fiscalQty ?? 0;
                       const comodato = a.comodatoQty ?? 0;
@@ -7082,8 +7211,19 @@ export default function FiscalView({
                     });
                     const hasSurplus = hasProductSurplus || hasAssetSurplus;
 
-                    const hasProductDeficit = (audit.items || []).some(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) < (i.fiscalQty ?? 0));
+                    const hasProductDeficit = (audit.items || []).some(i => {
+                      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                      const fisc = i.fiscalQty ?? 0;
+                      const comodato = i.comodatoQty ?? 0;
+                      const recolha = i.recolhaQty ?? 0;
+                      return (phys + comodato - recolha) < fisc;
+                    });
                     const hasAssetDeficit = (audit.assets || []).some(a => {
+                      const idLower = (a.assetId || '').toLowerCase();
+                      const nameUpper = (a.assetName || '').toUpperCase();
+                      const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                      if (isChapatex) return false;
+
                       const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                       const fisc = a.fiscalQty ?? 0;
                       const comodato = a.comodatoQty ?? 0;
@@ -7143,8 +7283,16 @@ export default function FiscalView({
                     if (filterType !== 'all') {
                       const hasSurplus = (audit.items || []).some(i => {
                         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        return phys > (i.fiscalQty ?? 0);
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return (phys - fisc + comodato - recolha) > 0;
                       }) || (audit.assets || []).some(a => {
+                        const idLower = (a.assetId || '').toLowerCase();
+                        const nameUpper = (a.assetName || '').toUpperCase();
+                        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                        if (isChapatex) return false;
+
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                         const fisc = a.fiscalQty ?? 0;
                         const comodato = a.comodatoQty ?? 0;
@@ -7154,8 +7302,16 @@ export default function FiscalView({
 
                       const hasDeficit = (audit.items || []).some(i => {
                         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        return phys < (i.fiscalQty ?? 0);
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return (phys - fisc + comodato - recolha) < 0;
                       }) || (audit.assets || []).some(a => {
+                        const idLower = (a.assetId || '').toLowerCase();
+                        const nameUpper = (a.assetName || '').toUpperCase();
+                        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                        if (isChapatex) return false;
+
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                         const fisc = a.fiscalQty ?? 0;
                         const comodato = a.comodatoQty ?? 0;
@@ -7188,13 +7344,25 @@ export default function FiscalView({
 
                     // Get list of surpluses
                     const surpluses = [
-                      ...audit.items.filter(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) > (i.fiscalQty ?? 0)).map(i => ({
-                        code: i.productCode,
-                        description: i.productDescription,
-                        qty: (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) - (i.fiscalQty ?? 0),
-                        unit: 'cx',
-                        type: 'PA'
-                      })),
+                      ...audit.items.filter(i => {
+                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return (phys - fisc + comodato - recolha) > 0;
+                      }).map(i => {
+                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return {
+                          code: i.productCode,
+                          description: i.productDescription,
+                          qty: phys - fisc + comodato - recolha,
+                          unit: 'cx',
+                          type: 'PA'
+                        };
+                      }),
                       ...audit.assets.filter(a => {
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                         const fisc = a.fiscalQty ?? 0;
@@ -7222,13 +7390,25 @@ export default function FiscalView({
 
                     // Get list of deficits
                     const deficits = [
-                      ...audit.items.filter(i => (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty) < (i.fiscalQty ?? 0)).map(i => ({
-                        code: i.productCode,
-                        description: i.productDescription,
-                        qty: (i.fiscalQty ?? 0) - (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty),
-                        unit: 'cx',
-                        type: 'PA'
-                      })),
+                      ...audit.items.filter(i => {
+                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return (phys - fisc + comodato - recolha) < 0;
+                      }).map(i => {
+                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                        const fisc = i.fiscalQty ?? 0;
+                        const comodato = i.comodatoQty ?? 0;
+                        const recolha = i.recolhaQty ?? 0;
+                        return {
+                          code: i.productCode,
+                          description: i.productDescription,
+                          qty: Math.abs(phys - fisc + comodato - recolha),
+                          unit: 'cx',
+                          type: 'PA'
+                        };
+                      }),
                       ...audit.assets.filter(a => {
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                         const fisc = a.fiscalQty ?? 0;
@@ -7637,12 +7817,23 @@ export default function FiscalView({
                                     const valorFalta = audit.items.reduce((acc, i) => {
                                       const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
                                       const fQty = i.fiscalQty ?? 0;
-                                      if (phys < fQty) return acc + ((fQty - phys) * getSkuClosedPrice(i.productCode, i.cost ?? 45.0));
+                                      const comodato = i.comodatoQty ?? 0;
+                                      const recolha = i.recolhaQty ?? 0;
+                                      const netDiff = (phys + comodato - recolha) - fQty;
+                                      if (netDiff < 0) return acc + (Math.abs(netDiff) * getSkuClosedPrice(i.productCode, i.cost ?? 45.0));
                                       return acc;
                                     }, 0) + audit.assets.reduce((acc, a) => {
+                                      const idLower = (a.assetId || '').toLowerCase();
+                                      const nameUpper = (a.assetName || '').toUpperCase();
+                                      const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                                      if (isChapatex) return acc;
+
                                       const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                                       const fQty = a.fiscalQty ?? 0;
-                                      if (phys < fQty) return acc + ((fQty - phys) * (a.cost ?? 18.0));
+                                      const comodato = a.comodatoQty ?? 0;
+                                      const recolha = a.recolhaQty ?? 0;
+                                      const netDiff = (phys + comodato - recolha) - fQty;
+                                      if (netDiff < 0) return acc + (Math.abs(netDiff) * (a.cost ?? 18.0));
                                       return acc;
                                     }, 0);
 
@@ -8977,7 +9168,9 @@ export default function FiscalView({
                         const localItem = activeSession.items.find(i => i.productCode === item.productCode);
                         return {
                           ...item,
-                          fiscalQty: localItem && localItem.fiscalQty !== undefined ? localItem.fiscalQty : item.fiscalQty
+                          fiscalQty: localItem && localItem.fiscalQty !== undefined ? localItem.fiscalQty : item.fiscalQty,
+                          comodatoQty: localItem && localItem.comodatoQty !== undefined ? localItem.comodatoQty : item.comodatoQty,
+                          recolhaQty: localItem && localItem.recolhaQty !== undefined ? localItem.recolhaQty : item.recolhaQty
                         };
                       });
 
@@ -9244,7 +9437,9 @@ export default function FiscalView({
                       }).map((item) => {
                       const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
                       const fiscal = item.fiscalQty ?? 0;
-                      const diff = physical - fiscal;
+                      const comodato = item.comodatoQty ?? 0;
+                      const recolha = item.recolhaQty ?? 0;
+                      const diff = (physical + comodato - recolha) - fiscal;
 
                       let diffColor = 'text-emerald-800 bg-emerald-50 border-emerald-200';
                       let diffLabel = 'OK';
@@ -9262,7 +9457,7 @@ export default function FiscalView({
 
                       return (
                         <div key={item.productCode} className="p-4 rounded-lg border border-slate-150 bg-slate-50/50 grid grid-cols-1 sm:grid-cols-12 sm:items-center gap-4 hover:bg-slate-50 transition">
-                          <div className="space-y-1 sm:col-span-6">
+                          <div className="space-y-1 sm:col-span-4">
                             <div>
                               <span className="font-mono text-xxs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded font-bold mr-1.5">{item.productCode}</span>
                               <span className="font-sans font-semibold text-slate-800 text-xs">{item.productDescription}</span>
@@ -9313,7 +9508,7 @@ export default function FiscalView({
                             )}
                           </div>
 
-                          <div className="grid grid-cols-3 gap-2 sm:col-span-6 items-center text-center">
+                          <div className="grid grid-cols-5 gap-2 sm:col-span-8 items-center text-center">
                             {/* Physical Display */}
                             <div className="flex flex-col items-center">
                               <span className="text-xxs font-bold text-slate-400 block uppercase mb-1">FÍSICO</span>
@@ -9337,10 +9532,36 @@ export default function FiscalView({
                               />
                             </div>
 
+                            {/* Comodato Input */}
+                            <div className="flex flex-col items-center">
+                              <span className="text-xxs font-bold text-amber-600 block uppercase mb-1">COMODATO</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={item.comodatoQty ?? ''}
+                                placeholder="0"
+                                onChange={(e) => handleUpdateItemComodatoQty(item.productCode, Number(e.target.value) || 0)}
+                                className="w-16 text-xs text-center font-bold bg-white border border-amber-300 rounded p-1 focus:outline-none focus:ring-1 focus:ring-amber-500 mx-auto block"
+                              />
+                            </div>
+
+                            {/* Recolha Input */}
+                            <div className="flex flex-col items-center">
+                              <span className="text-xxs font-bold text-blue-600 block uppercase mb-1">RECOLHA</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={item.recolhaQty ?? ''}
+                                placeholder="0"
+                                onChange={(e) => handleUpdateItemRecolhaQty(item.productCode, Number(e.target.value) || 0)}
+                                className="w-16 text-xs text-center font-bold bg-white border border-blue-300 rounded p-1 focus:outline-none focus:ring-1 focus:ring-amber-500 mx-auto block"
+                              />
+                            </div>
+
                             {/* Discrepancy Display */}
                             <div className="flex flex-col items-center">
                               <span className="text-xxs font-bold text-slate-400 block uppercase mb-1">DIVERG.</span>
-                              <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded border block leading-normal w-full max-w-[100px] text-center ${diffColor}`}>
+                              <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded border block leading-normal w-full max-w-[110px] text-center ${diffColor}`}>
                                 {diffLabel}
                               </span>
                             </div>
@@ -10483,6 +10704,8 @@ export default function FiscalView({
                                 <th className="p-2">Produto</th>
                                 <th className="p-2 text-right">Físico</th>
                                 <th className="p-2 text-right">Fiscal</th>
+                                <th className="p-2 text-right">Comodato</th>
+                                <th className="p-2 text-right">Recolha</th>
                                 <th className="p-2 text-right">Divergência</th>
                               </tr>
                             </thead>
@@ -10490,7 +10713,9 @@ export default function FiscalView({
                               {audit.items.map(item => {
                                 const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
                                 const fiscal = item.fiscalQty ?? 0;
-                                const diff = physical - fiscal;
+                                const comodato = item.comodatoQty ?? 0;
+                                const recolha = item.recolhaQty ?? 0;
+                                const diff = (physical + comodato - recolha) - fiscal;
                                 
                                 return (
                                   <tr key={item.productCode} className="border-b border-slate-100 last:border-0">
@@ -10498,6 +10723,8 @@ export default function FiscalView({
                                     <td className="p-2 font-medium text-slate-800">{products.find(p => p.code === item.productCode)?.description || item.productCode}</td>
                                     <td className="p-2 text-right font-mono">{physical}</td>
                                     <td className="p-2 text-right font-mono">{fiscal}</td>
+                                    <td className="p-2 text-right font-mono">{comodato || '-'}</td>
+                                    <td className="p-2 text-right font-mono">{recolha || '-'}</td>
                                     <td className={`p-2 text-right font-mono font-bold ${diff === 0 ? 'text-slate-400' : diff > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                                       {diff === 0 ? '-' : diff > 0 ? `+${diff}` : diff}
                                     </td>
@@ -10815,6 +11042,8 @@ export default function FiscalView({
                           <th className="p-2.5">Código / Item</th>
                           <th className="p-2.5 text-center">Contagem Física</th>
                           <th className="p-2.5 text-center">Saldo Fiscal</th>
+                          <th className="p-2.5 text-center">Comodato</th>
+                          <th className="p-2.5 text-center">Recolha</th>
                           <th className="p-2.5 text-right">Divergência</th>
                         </tr>
                       </thead>
@@ -10824,7 +11053,9 @@ export default function FiscalView({
                           .map(item => {
                           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
                           const fisc = item.fiscalQty ?? 0;
-                          const diff = phys - fisc;
+                          const comodato = item.comodatoQty ?? 0;
+                          const recolha = item.recolhaQty ?? 0;
+                          const diff = (phys + comodato - recolha) - fisc;
                           return (
                             <tr key={item.productCode} className="hover:bg-slate-50/50">
                               <td className="p-2.5 font-medium">
@@ -10833,6 +11064,8 @@ export default function FiscalView({
                               </td>
                               <td className="p-2.5 text-center font-mono">{phys}</td>
                               <td className="p-2.5 text-center font-mono">{fisc}</td>
+                              <td className="p-2.5 text-center font-mono">{comodato || '-'}</td>
+                              <td className="p-2.5 text-center font-mono">{recolha || '-'}</td>
                               <td className={`p-2.5 text-right font-bold font-mono ${
                                 diff === 0 ? 'text-emerald-600' : diff > 0 ? 'text-amber-600' : 'text-red-600'
                               }`}>

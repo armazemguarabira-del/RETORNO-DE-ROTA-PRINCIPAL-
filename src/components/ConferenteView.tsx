@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, isTreatableAssetId, getAssetCode, getAssetCanonicalName } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
   MapPin, Calendar, HelpCircle, Eye, EyeOff, AlertCircle, Sparkles, CheckSquare, XCircle, FileSpreadsheet, X,
-  ShieldCheck, Calculator, Cloud, CloudOff, Check
+  ShieldCheck, Calculator, Cloud, CloudOff, Check, Truck, Lock, Unlock, Layers
 } from 'lucide-react';
 
 const formatDateToDiaMesAno = (dateStr?: string) => {
@@ -50,6 +50,11 @@ interface ConferenteViewProps {
   onSaveAlerts: (alerts: FiscalAlert[]) => void;
   importedRoutes?: ImportedRoute[];
   onSaveImportedRoutes?: (routes: ImportedRoute[]) => void;
+  carregamentos?: CarregamentoProcess[];
+  onSaveCarregamentos?: (carregamentos: CarregamentoProcess[]) => void;
+  empilhadores?: Empilhador[];
+  onSaveEmpilhadores?: (empilhadores: Empilhador[]) => void;
+  onNavigateTab?: (tab: string) => void;
 }
 
 export default function ConferenteView({
@@ -67,7 +72,12 @@ export default function ConferenteView({
   fiscalAlerts,
   onSaveAlerts,
   importedRoutes = [],
-  onSaveImportedRoutes
+  onSaveImportedRoutes,
+  carregamentos = [],
+  onSaveCarregamentos,
+  empilhadores = [],
+  onSaveEmpilhadores,
+  onNavigateTab
 }: ConferenteViewProps) {
   const getDriverName = (id: string) => id === 'temporario' ? 'Temporário' : (drivers.find(d => d.id === id)?.name || id);
   const getHelperName = (id?: string) => id ? drivers.find(d => d.id === id)?.name || id : 'Sem ajudante';

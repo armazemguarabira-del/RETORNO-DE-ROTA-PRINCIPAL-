@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess } from './types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem } from './types';
 import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from './data';
 import { ImageDB } from './imageDb';
 import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
@@ -13,6 +13,8 @@ import EmpilhadorView from './components/EmpilhadorView';
 import ExportDataView from './components/ExportDataView';
 import PlatformManual from './components/PlatformManual';
 import AIAgentChat from './components/AIAgentChat';
+import ControleSobrasView from './components/ControleSobrasView';
+import Sidebar from './components/Sidebar';
 import { DatabaseScheduleBanner } from './components/DatabaseScheduleBanner';
 import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2, Settings, RefreshCw, Layers } from 'lucide-react';
 
@@ -34,6 +36,40 @@ export default function App() {
   const [carregamentos, setCarregamentos] = useState<CarregamentoProcess[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [customManualHTML, setCustomManualHTML] = useState<string>('');
+  const [controleSobras, setControleSobras] = useState<ControleSobraItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('logiroute_cached_controle_sobras');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('logiroute_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleSidebar = () => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('logiroute_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const handleSaveControleSobras = (newSobras: ControleSobraItem[]) => {
+    setControleSobras(newSobras);
+    try {
+      localStorage.setItem('logiroute_cached_controle_sobras', JSON.stringify(newSobras));
+    } catch {}
+    pushDatabaseToServer({ controleSobras: newSobras });
+  };
 
   // Forecasts and Notifications
   const [returnForecasts, setReturnForecasts] = useState<ReturnForecast[]>([]);
@@ -166,6 +202,7 @@ export default function App() {
     setReturnForecasts([]);
     setFiscalAlerts([]);
     setVales([]);
+    setControleSobras([]);
 
     // Clear IndexedDB photos
     try {
@@ -193,6 +230,7 @@ export default function App() {
       returnForecasts: [],
       fiscalAlerts: [],
       vales: [],
+      controleSobras: []
     };
 
     if (isClientFirebaseActive()) {
@@ -244,6 +282,7 @@ export default function App() {
     carregamentos?: CarregamentoProcess[];
     carregamentoProcesses?: CarregamentoProcess[];
     customManual?: string;
+    controleSobras?: ControleSobraItem[];
   }) => {
     lastWriteTime.current = Date.now();
     
@@ -496,6 +535,10 @@ export default function App() {
       setCarregamentos(db.carregamentoProcesses);
     } else if (db.carregamentos !== undefined && Array.isArray(db.carregamentos)) {
       setCarregamentos(db.carregamentos);
+    }
+
+    if (db.controleSobras !== undefined && Array.isArray(db.controleSobras)) {
+      setControleSobras(db.controleSobras);
     }
 
     if (db.returnForecasts !== undefined && Array.isArray(db.returnForecasts)) {
@@ -1031,21 +1074,38 @@ export default function App() {
 
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-800" id="main_app_wrapper">
-      
-      {/* Shared Navigation Header with Profile Switcher */}
-      <Header
-        currentUser={currentUser}
-        users={users}
-        onUserChange={handleUserChange}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        onLogout={handleLogout}
-        fiscalAlerts={fiscalAlerts}
-        onSaveAlerts={handleSaveAlerts}
-        theme={theme}
-        onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-      />
+    <div className="min-h-screen bg-slate-50 flex flex-row font-sans text-slate-800" id="main_app_wrapper">
+      {/* Sidebar with collapse toggle */}
+      {isAuthenticated && currentUser && (
+        <Sidebar
+          currentUser={currentUser}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          audits={audits}
+          vales={vales}
+          pendingSobrasCount={controleSobras.filter(s => s.status === 'PENDENTE').length}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={handleToggleSidebar}
+        />
+      )}
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Shared Navigation Header with Profile Switcher */}
+        <Header
+          currentUser={currentUser}
+          users={users}
+          onUserChange={handleUserChange}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onLogout={handleLogout}
+          fiscalAlerts={fiscalAlerts}
+          onSaveAlerts={handleSaveAlerts}
+          theme={theme}
+          onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={handleToggleSidebar}
+        />
 
       {/* Database Schedule Countdown Warning Banner */}
       <DatabaseScheduleBanner currentUser={currentUser} />
@@ -1086,6 +1146,18 @@ export default function App() {
       {/* Main Content Workspace Routing based on Profile & Tab */}
       <main className="flex-grow">
         
+        {/* VIEW SOBRAS: CONTROLE DE SOBRAS E VALIDADE 30 DIAS */}
+        {activeTab === 'sobras' && (
+          <ControleSobrasView
+            currentUser={currentUser}
+            audits={audits}
+            onSaveAudits={handleSaveAudits}
+            products={products}
+            controleSobras={controleSobras}
+            onSaveControleSobras={handleSaveControleSobras}
+          />
+        )}
+
         {/* VIEW: DESCARREGAMENTO, CARREGAMENTO & DISTRIBUIÇÃO COM EMPILHADOR */}
         {activeTab === 'carregamento' && (
           <EmpilhadorView
@@ -1127,6 +1199,11 @@ export default function App() {
             onSaveAlerts={handleSaveAlerts}
             importedRoutes={importedRoutes}
             onSaveImportedRoutes={handleSaveImportedRoutes}
+            carregamentos={carregamentos}
+            onSaveCarregamentos={handleSaveCarregamentos}
+            empilhadores={empilhadores}
+            onSaveEmpilhadores={handleSaveEmpilhadores}
+            onNavigateTab={(tab: string) => setActiveTab(tab)}
           />
         )}
 
@@ -1221,6 +1298,8 @@ export default function App() {
                 onSaveVales={handleSaveVales}
                 carregamentos={carregamentos}
                 onSaveCarregamentos={handleSaveCarregamentos}
+                empilhadores={empilhadores}
+                onSaveEmpilhadores={handleSaveEmpilhadores}
                 forceTab="dashboard"
                 auditLogs={auditLogs}
                 customManualHTML={customManualHTML}
@@ -1249,6 +1328,8 @@ export default function App() {
                 onSaveVales={handleSaveVales}
                 carregamentos={carregamentos}
                 onSaveCarregamentos={handleSaveCarregamentos}
+                empilhadores={empilhadores}
+                onSaveEmpilhadores={handleSaveEmpilhadores}
                 forceTab="cadastros"
                 auditLogs={auditLogs}
                 customManualHTML={customManualHTML}
@@ -1404,6 +1485,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

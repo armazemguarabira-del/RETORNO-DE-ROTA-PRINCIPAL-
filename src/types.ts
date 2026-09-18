@@ -63,6 +63,8 @@ export interface AuditItem {
   rePhysicalQty?: number;
   // Original expected spreadsheet quantity
   expectedQty?: number;
+  comodatoQty?: number;
+  recolhaQty?: number;
 }
 
 export interface AuditAssetItem {
@@ -420,4 +422,28 @@ export interface CarregamentoProcess {
   conferenteName?: string;
   updatedAt?: string;
   lastUpdatedBy?: string;
+}
+
+export interface ControleSobraItem {
+  id: string;
+  productCode: string;
+  productDescription: string;
+  quantity: number;
+  routeMap: string;
+  mapDate: string;           // Data do fechamento/ocorrência (YYYY-MM-DD)
+  deadlineDate: string;      // Prazo de envio/baixa (mapDate + 30 dias)
+  status: 'PENDENTE' | 'ENVIADO' | 'DEVOLVIDO';
+  destination?: 'CLIENTE' | 'ESTOQUE';
+  auditId?: string;          // Vinculado a uma conferência existente
+  isManual?: boolean;        // Cadastrado manualmente pela Auxiliar de Logística
+  clientCodeNB?: string;     // Código do Cliente (NB)
+  clientName?: string;       // Nome do Cliente se aplicável
+  driverName?: string;
+  plate?: string;
+  notes?: string;
+  registeredBy?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
