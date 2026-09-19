@@ -14,7 +14,9 @@ import {
   Search, 
   PanelLeftClose, 
   PanelLeftOpen,
-  ChevronRight
+  ChevronRight,
+  Trophy,
+  Sparkles
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -38,6 +40,11 @@ export default function Sidebar({
   collapsed,
   onToggleCollapse
 }: SidebarProps) {
+  // Conferente e Empilhador não utilizam barra lateral para economizar 100% do espaço no celular e tela
+  if (currentUser.role === 'conferente' || currentUser.role === 'empilhador') {
+    return null;
+  }
+
   const [filterSearch, setFilterSearch] = useState('');
 
   // Format initials for avatar
@@ -83,9 +90,19 @@ export default function Sidebar({
       roles: ['gestor', 'financeiro']
     },
     {
+      id: 'liga',
+      tabKey: 'liga',
+      title: 'LIGA OPERACIONAL DPO',
+      icon: Trophy,
+      iconColor: 'text-amber-400',
+      iconBg: 'bg-amber-500/15 border-amber-500/30 group-hover:bg-amber-500/25',
+      activeIconClass: 'bg-slate-950 text-amber-400',
+      roles: ['conferente', 'empilhador', 'gestor', 'auxiliar_logistica', 'financeiro', 'monitoramento']
+    },
+    {
       id: 'carregamento',
       tabKey: 'carregamento',
-      title: currentUser.role === 'empilhador' ? 'DESCARREGAMENTO & EMPILHADOR' : 'DESCARREGAMENTO',
+      title: 'DESCARREGAMENTO',
       icon: Layers,
       iconColor: 'text-amber-400',
       iconBg: 'bg-amber-500/15 border-amber-500/30 group-hover:bg-amber-500/25',
@@ -179,6 +196,18 @@ export default function Sidebar({
       roles: ['auxiliar_logistica', 'monitoramento', 'gestor', 'financeiro']
     },
     {
+      id: 'efd_historico',
+      tabKey: 'efd_histograma',
+      title: 'EFD HISTÓRICO',
+      icon: Sparkles,
+      iconColor: 'text-indigo-400',
+      iconBg: 'bg-indigo-500/15 border-indigo-500/30 group-hover:bg-indigo-500/25',
+      activeIconClass: 'bg-slate-950 text-indigo-400',
+      badge: '100% Meta',
+      badgeColor: 'bg-emerald-500 text-slate-950',
+      roles: ['gestor', 'auxiliar_logistica']
+    },
+    {
       id: 'cadastros',
       tabKey: 'cadastros',
       title: 'CADASTROS',
@@ -186,7 +215,7 @@ export default function Sidebar({
       iconColor: 'text-fuchsia-400',
       iconBg: 'bg-fuchsia-500/15 border-fuchsia-500/30 group-hover:bg-fuchsia-500/25',
       activeIconClass: 'bg-slate-950 text-fuchsia-400',
-      roles: ['auxiliar_logistica', 'gestor', 'financeiro']
+      roles: ['gestor', 'auxiliar_logistica', 'financeiro']
     },
     {
       id: 'backup',

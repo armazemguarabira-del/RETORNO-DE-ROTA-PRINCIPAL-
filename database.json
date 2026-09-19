@@ -1,270 +1,109 @@
 {
   "users": [
     {
+      "id": "usr_armazem_guarabira",
+      "name": "Armazém Guarabira (Gestão)",
+      "role": "gestor",
+      "username": "armazemguarabira",
+      "password": "123"
+    },
+    {
+      "id": "usr_g1009",
+      "name": "Administrador G1009",
+      "role": "gestor",
+      "username": "G1009",
+      "password": "123"
+    },
+    {
+      "id": "7171",
+      "name": "MARCOS GUILHERME",
       "role": "gestor",
       "username": "7171",
-      "password": "123",
-      "name": "MARCOS GUILHERME",
-      "id": "7171"
+      "password": "123"
     },
     {
       "id": "7224",
-      "username": "7224",
       "name": "ELISSON MINERVINO",
-      "password": "123",
-      "role": "gestor"
-    },
-    {
-      "name": "DJEANDERSON SOARES",
-      "username": "G1002",
       "role": "gestor",
-      "password": "!Liz1105",
-      "id": "G1002"
+      "username": "7224",
+      "password": "123"
     },
     {
-      "role": "gestor",
-      "id": "G1009",
-      "name": "Administrador G1009",
-      "password": "123",
-      "username": "G1009"
-    },
-    {
-      "username": "G1163",
-      "role": "auxiliar_logistica",
-      "password": "Ambev10",
       "id": "G1163",
-      "name": "ALÉCYA FERREIRA"
-    },
-    {
-      "id": "armazemguarabira",
-      "name": "Armazém Guarabira",
-      "username": "armazemguarabira",
-      "role": "gestor",
-      "password": "123"
-    },
-    {
-      "id": "armazemguarabira@gmail.com",
-      "role": "gestor",
-      "username": "armazemguarabira@gmail.com",
-      "password": "123",
-      "name": "Armazém Guarabira (Gestão)"
-    },
-    {
-      "name": "Bruno Fiscal",
-      "id": "auxiliar1",
-      "username": "auxiliar1",
+      "name": "ALÉCYA FERREIRA",
       "role": "auxiliar_logistica",
-      "password": "123"
+      "username": "G1163",
+      "password": "Ambev10"
     },
     {
-      "password": "123",
-      "id": "conferente1",
-      "name": "Alice Conferente",
-      "username": "conferente1",
-      "role": "conferente"
-    },
-    {
-      "name": "João Paulo Silva",
-      "username": "empilhador1",
-      "password": "123",
-      "role": "empilhador",
-      "id": "empilhador1"
-    },
-    {
-      "name": "Leandro Barbosa",
-      "password": "123",
-      "id": "empilhador2",
-      "username": "empilhador2",
-      "role": "empilhador"
-    },
-    {
-      "name": "José Marcos",
-      "password": "Ambev10",
-      "username": "g1006",
-      "role": "financeiro",
-      "id": "g1006"
-    },
-    {
+      "id": "g1078",
       "name": "Rafael Rodrigues",
-      "password": "Ambev10",
-      "username": "g1078",
       "role": "monitoramento",
-      "id": "g1078"
+      "username": "g1078",
+      "password": "Ambev10"
     },
     {
+      "id": "g1083",
+      "name": "VICTOR MARINHO",
       "role": "gestor",
       "username": "g1083",
-      "password": "123",
-      "name": "VICTOR MARINHO",
-      "id": "g1083"
+      "password": "123"
     },
     {
-      "role": "conferente",
+      "id": "g1088",
       "name": "GILSON ROSA",
-      "password": "123",
+      "role": "conferente",
       "username": "g1088",
-      "id": "g1088"
-    },
-    {
-      "role": "conferente",
-      "password": "123",
-      "username": "g1145",
-      "id": "g1145",
-      "name": "GLADSON LISBOA"
-    },
-    {
-      "role": "gestor",
-      "password": "123",
-      "username": "g1149",
-      "name": "LUIZ EDUARDO",
-      "id": "g1149"
-    },
-    {
-      "id": "gestor1",
-      "username": "gestor1",
-      "password": "123",
-      "name": "Elisson Minervino",
-      "role": "gestor"
-    },
-    {
-      "password": "123",
-      "username": "monitor1",
-      "role": "monitoramento",
-      "name": "Daniel Monitoramento",
-      "id": "monitor1"
-    },
-    {
-      "name": "Carlos Motorista",
-      "role": "conferente",
-      "password": "123",
-      "username": "motorista1",
-      "id": "motorista1"
-    },
-    {
-      "role": "conferente",
-      "username": "conferente1",
-      "name": "Alice Conferente",
-      "password": "123",
-      "id": "usr_1"
+      "password": "123"
     },
     {
       "id": "usr_1782481995449",
-      "role": "conferente",
-      "password": "123",
       "name": "GLADSON LISBOA",
-      "username": "g1145"
-    },
-    {
-      "name": "GILSON ROSA",
-      "id": "usr_1782482023049",
       "role": "conferente",
-      "password": "123",
-      "username": "g1088"
+      "username": "g1145",
+      "password": "123"
     },
     {
-      "username": "G1163",
-      "password": "Ambev10",
-      "name": "ALÉCYA FERREIRA",
-      "role": "auxiliar_logistica",
-      "id": "usr_1782482081189"
-    },
-    {
-      "role": "gestor",
       "id": "usr_1782482101263",
-      "password": "!Liz1105",
       "name": "DJEANDERSON SOARES",
-      "username": "G1002"
-    },
-    {
-      "name": "VICTOR MARINHO",
-      "username": "g1083",
-      "password": "123",
       "role": "gestor",
-      "id": "usr_1782482138597"
+      "username": "G1002",
+      "password": "!Liz1105"
     },
     {
+      "id": "usr_1782482170529",
+      "name": "LUIZ EDUARDO",
       "role": "gestor",
       "username": "g1149",
-      "password": "123",
-      "name": "LUIZ EDUARDO",
-      "id": "usr_1782482170529"
-    },
-    {
-      "id": "usr_1782482189381",
-      "role": "gestor",
-      "name": "ELISSON MINERVINO",
-      "username": "7224",
       "password": "123"
     },
     {
-      "name": "MARCOS GUILHERME",
-      "role": "gestor",
-      "id": "usr_1782482208921",
-      "username": "7171",
-      "password": "123"
-    },
-    {
-      "username": "g1078",
-      "name": "Rafael Rodrigues",
-      "password": "Ambev10",
-      "role": "monitoramento",
-      "id": "usr_1782748019419"
-    },
-    {
-      "password": "Ambev10",
-      "username": "g1006",
       "id": "usr_1784294627000",
+      "name": "José Marcos",
       "role": "financeiro",
-      "name": "José Marcos"
+      "username": "g1006",
+      "password": "Ambev10"
     },
     {
-      "name": "Bruno Fiscal",
-      "password": "123",
-      "username": "auxiliar1",
-      "id": "usr_2",
-      "role": "auxiliar_logistica"
+      "id": "usr_emp_g1093",
+      "name": "JOSE RONILDO DA SILVA",
+      "role": "empilhador",
+      "username": "G1093",
+      "password": "Ambev10"
     },
     {
-      "password": "123",
-      "username": "gestor1",
-      "name": "Elisson Minervino",
-      "role": "gestor",
-      "id": "usr_3"
+      "id": "usr_emp_g1071",
+      "name": "MARIVALDO ARTUR ALVES",
+      "role": "empilhador",
+      "username": "G1071",
+      "password": "Ambev10"
     },
     {
-      "username": "motorista1",
-      "password": "123",
-      "name": "Carlos Motorista",
-      "id": "usr_4",
-      "role": "conferente"
-    },
-    {
-      "role": "monitoramento",
-      "name": "Daniel Monitoramento",
-      "password": "123",
-      "id": "usr_5",
-      "username": "monitor1"
-    },
-    {
-      "role": "gestor",
-      "username": "armazemguarabira@gmail.com",
-      "password": "123",
-      "name": "Armazém Guarabira (Gestão)",
-      "id": "usr_armazem_guarabira"
-    },
-    {
-      "name": "Armazém Guarabira",
-      "id": "usr_armazem_guarabira_alias",
-      "username": "armazemguarabira",
-      "role": "gestor",
-      "password": "123"
-    },
-    {
-      "username": "G1009",
-      "password": "123",
-      "role": "gestor",
-      "name": "Administrador G1009",
-      "id": "usr_g1009"
+      "id": "usr_emp_g1013",
+      "name": "PAULO PEREIRA DA SILVA",
+      "role": "empilhador",
+      "username": "G1013",
+      "password": "Ambev10"
     }
   ],
   "drivers": [
@@ -5744,7 +5583,6 @@
       "auxiliarId": "usr_1782482081189"
     }
   ],
-  "vales": [],
   "returnForecasts": [],
   "fiscalAlerts": [
     {
@@ -6068,68 +5906,39 @@
       "lastUpdatedBy": "ALÉCYA FERREIRA"
     }
   ],
+  "vales": [],
   "photos": [],
   "customManual": "",
   "empilhadores": [
     {
-      "forkliftCode": "E-01 (Still 2.5T)",
-      "matricula": "5042",
-      "id": "EMP-01",
+      "id": "EMP-G1093",
+      "name": "JOSE RONILDO DA SILVA",
+      "matricula": "G1093",
+      "cpf": "085.789.634-23",
       "shift": "1_TURNO",
-      "totalPalletsLoadedToday": 0,
+      "forkliftCode": "E-01",
       "status": "DISPONIVEL",
-      "name": "JOÃO PAULO SILVA",
-      "phone": "(83) 98822-1042"
-    },
-    {
-      "matricula": "5088",
-      "forkliftCode": "E-02 (Toyota 8FB)",
-      "status": "DISPONIVEL",
-      "shift": "1_TURNO",
-      "id": "EMP-02",
-      "phone": "(83) 98711-5088",
-      "name": "LEANDRO BARBOSA DE LIMA",
       "totalPalletsLoadedToday": 0
     },
     {
-      "totalPalletsLoadedToday": 0,
+      "id": "EMP-G1071",
+      "name": "MARIVALDO ARTUR ALVES",
+      "matricula": "G1071",
+      "cpf": "047.471.304-03",
+      "shift": "1_TURNO",
+      "forkliftCode": "E-02",
       "status": "DISPONIVEL",
-      "forkliftCode": "E-03 (Linde 3.0T)",
+      "totalPalletsLoadedToday": 0
+    },
+    {
+      "id": "EMP-G1013",
+      "name": "PAULO PEREIRA DA SILVA",
+      "matricula": "G1013",
+      "cpf": "029.604.844-52",
       "shift": "2_TURNO",
-      "id": "EMP-03",
-      "phone": "(83) 99133-5120",
-      "matricula": "5120",
-      "name": "MARCIO GOMES PEREIRA"
-    },
-    {
-      "phone": "(83) 99644-5174",
-      "id": "EMP-04",
-      "name": "SEVERINO RAMOS DO NASCIMENTO",
-      "shift": "2_TURNO",
-      "forkliftCode": "E-04 (Still 2.5T)",
+      "forkliftCode": "E-03",
       "status": "DISPONIVEL",
-      "totalPalletsLoadedToday": 0,
-      "matricula": "5174"
-    },
-    {
-      "status": "DISPONIVEL",
-      "totalPalletsLoadedToday": 0,
-      "id": "EMP-05",
-      "forkliftCode": "E-05 (Toyota 8FB)",
-      "shift": "3_TURNO",
-      "matricula": "5210",
-      "phone": "(83) 98155-5210",
-      "name": "ANTONIO CARLOS DE SOUSA"
-    },
-    {
-      "phone": "(83) 98766-5244",
-      "name": "FRANCISCO DE ASSIS MELO",
-      "shift": "3_TURNO",
-      "totalPalletsLoadedToday": 0,
-      "id": "EMP-06",
-      "matricula": "5244",
-      "status": "DISPONIVEL",
-      "forkliftCode": "E-06 (Yale 2.5T)"
+      "totalPalletsLoadedToday": 0
     }
   ],
   "carregamentoProcesses": []

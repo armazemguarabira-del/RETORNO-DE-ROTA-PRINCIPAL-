@@ -76,11 +76,15 @@ export default function LoginView({ users, onLoginSuccess }: LoginViewProps) {
     }
 
     const inputUsername = username.trim().toLowerCase();
-    const matchedUser = users.find(
-      u => u && u.username && u.username.trim().toLowerCase() === inputUsername
-    ) || users.find(
-      u => u && u.id && u.id.trim().toLowerCase() === inputUsername
-    );
+    const inputBase = inputUsername.includes('@') ? inputUsername.split('@')[0] : inputUsername;
+
+    const matchedUser = users.find(u => {
+      if (!u) return false;
+      const uUser = (u.username || '').trim().toLowerCase();
+      const uBase = uUser.includes('@') ? uUser.split('@')[0] : uUser;
+      const uId = (u.id || '').trim().toLowerCase();
+      return uUser === inputUsername || uBase === inputBase || uId === inputUsername || uId === inputBase;
+    });
 
     if (matchedUser) {
       const userPassword = matchedUser.password || '123';

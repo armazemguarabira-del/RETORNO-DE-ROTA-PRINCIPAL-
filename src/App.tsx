@@ -14,6 +14,7 @@ import ExportDataView from './components/ExportDataView';
 import PlatformManual from './components/PlatformManual';
 import AIAgentChat from './components/AIAgentChat';
 import ControleSobrasView from './components/ControleSobrasView';
+import LigaView from './components/LigaView';
 import Sidebar from './components/Sidebar';
 import { DatabaseScheduleBanner } from './components/DatabaseScheduleBanner';
 import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2, Settings, RefreshCw, Layers } from 'lucide-react';
@@ -483,7 +484,36 @@ export default function App() {
     }
 
     if (db.users !== undefined && Array.isArray(db.users)) {
-      const activeUsers = db.users.length > 0 ? db.users : DEFAULT_USERS;
+      const isFictitious = (u: User) => {
+        const id = (u.id || '').toLowerCase();
+        const name = (u.name || '').toLowerCase();
+        const username = (u.username || '').toLowerCase();
+        return id.startsWith('mock_') || id.startsWith('fake_') || id.startsWith('test_') ||
+               name.includes('mock') || name.includes('fictício') || name.includes('ficticio') || name.includes('teste 1') ||
+               id === 'usr_1' || id === 'usr_2' || id === 'c1' || id === 'e1' || id === 'a1' ||
+               username === 'user1' || username === 'user2';
+      };
+      const cleanedRemote = db.users.filter((u: User) => !isFictitious(u));
+      
+      // Deduplicate by username or id so no duplicate accounts can exist
+      const seenUsernames = new Set<string>();
+      const deduplicated: User[] = [];
+      for (const u of cleanedRemote) {
+        const rawUser = (u.username || '').trim().toLowerCase();
+        const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
+        const normUser = baseUser || rawUser || (u.id || '').trim().toLowerCase();
+        if (normUser && !seenUsernames.has(normUser)) {
+          seenUsernames.add(normUser);
+          if (rawUser === 'armazemguarabira@gmail.com') {
+            deduplicated.push({ ...u, username: 'armazemguarabira' });
+          } else {
+            deduplicated.push(u);
+          }
+        }
+      }
+
+      // If remote database is completely empty (e.g. brand new initialization), use DEFAULT_USERS; otherwise respect the DB
+      const activeUsers = deduplicated.length > 0 ? deduplicated : DEFAULT_USERS;
       setUsers(activeUsers);
       setCurrentUser(prevUser => {
         if (prevUser) {
@@ -609,7 +639,7 @@ export default function App() {
 
     // 1. Check persistent user ID if authenticated
     const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-    const defaultUser = users.find(u => u.id === savedUserId) || users.find(u => u.id === 'usr_1') || users[0];
+    const defaultUser = users.find(u => u.id === savedUserId) || users.find(u => u.role === 'gestor') || users[0];
     if (defaultUser) {
       setCurrentUser(defaultUser);
     }
@@ -826,6 +856,17 @@ export default function App() {
     };
   }, []);
 
+  // Global tab navigation event listener
+  useEffect(() => {
+    const handleNav = (e: any) => {
+      if (e?.detail) {
+        setActiveTab(e.detail);
+      }
+    };
+    window.addEventListener('logiroute:navigate-tab', handleNav);
+    return () => window.removeEventListener('logiroute:navigate-tab', handleNav);
+  }, []);
+
   // Disabled auto-generation of delay alerts to keep database alerts pristine
   /*
   useEffect(() => {
@@ -835,8 +876,24 @@ export default function App() {
 
   // Sync state changes back to AppStore (localStorage) and Server
   const handleSaveUsers = (newUsers: User[]) => {
-    setUsers(newUsers);
-    pushDatabaseToServer({ users: newUsers });
+    const seenUsernames = new Set<string>();
+    const deduplicated: User[] = [];
+    for (const u of newUsers) {
+      if (!u) continue;
+      const rawUser = (u.username || '').trim().toLowerCase();
+      const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
+      const normUser = baseUser || rawUser || (u.id || '').trim().toLowerCase();
+      if (normUser && !seenUsernames.has(normUser)) {
+        seenUsernames.add(normUser);
+        if (rawUser === 'armazemguarabira@gmail.com') {
+          deduplicated.push({ ...u, username: 'armazemguarabira' });
+        } else {
+          deduplicated.push(u);
+        }
+      }
+    }
+    setUsers(deduplicated);
+    pushDatabaseToServer({ users: deduplicated });
   };
 
   const handleSaveDrivers = (newDrivers: Driver[]) => {
@@ -1075,8 +1132,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-row font-sans text-slate-800" id="main_app_wrapper">
-      {/* Sidebar with collapse toggle */}
-      {isAuthenticated && currentUser && (
+      {/* Sidebar with collapse toggle - Oculta para Conferente e Empilhador para liberar 100% de tela no celular */}
+      {isAuthenticated && currentUser && currentUser.role !== 'conferente' && currentUser.role !== 'empilhador' && (
         <Sidebar
           currentUser={currentUser}
           activeTab={activeTab}
@@ -1178,6 +1235,7 @@ export default function App() {
             drivers={drivers}
             products={products}
             activeAssets={activeAssets}
+            onNavigateTab={(tab: string) => setActiveTab(tab)}
           />
         )}
 
@@ -1305,6 +1363,7 @@ export default function App() {
                 customManualHTML={customManualHTML}
                 onSaveCustomManual={handleSaveCustomManual}
                 onResetPlatformData={handleResetPlatformData}
+                onNavigateTab={(tab: string) => setActiveTab(tab)}
               />
             )}
 
@@ -1335,9 +1394,56 @@ export default function App() {
                 customManualHTML={customManualHTML}
                 onSaveCustomManual={handleSaveCustomManual}
                 onResetPlatformData={handleResetPlatformData}
+                onNavigateTab={(tab: string) => setActiveTab(tab)}
+              />
+            )}
+
+            {activeTab === 'efd_histograma' && (
+              <GestorDashboard
+                currentUser={currentUser}
+                drivers={drivers}
+                vehicles={vehicles}
+                products={products}
+                activeAssets={activeAssets}
+                audits={audits}
+                users={users}
+                onSaveUsers={handleSaveUsers}
+                onSaveDrivers={handleSaveDrivers}
+                onSaveVehicles={handleSaveVehicles}
+                onSaveProducts={handleSaveProducts}
+                onSaveAudits={handleSaveAudits}
+                importedRoutes={importedRoutes}
+                onSaveImportedRoutes={handleSaveImportedRoutes}
+                vales={vales}
+                onSaveVales={handleSaveVales}
+                carregamentos={carregamentos}
+                onSaveCarregamentos={handleSaveCarregamentos}
+                empilhadores={empilhadores}
+                onSaveEmpilhadores={handleSaveEmpilhadores}
+                forceTab="efd_histograma"
+                auditLogs={auditLogs}
+                customManualHTML={customManualHTML}
+                onSaveCustomManual={handleSaveCustomManual}
+                onResetPlatformData={handleResetPlatformData}
+                onNavigateTab={(tab: string) => setActiveTab(tab)}
               />
             )}
           </>
+        )}
+
+        {/* VIEW: LIGA OPERACIONAL DPO (GAMIFICAÇÃO, HISTÓRICO INDIVIDUAL E PONTOS) */}
+        {activeTab === 'liga' && (
+          <div className="w-full px-4 sm:px-6 lg:px-8 py-6">
+            <LigaView
+              currentUser={currentUser}
+              users={users}
+              audits={audits}
+              importedRoutes={importedRoutes}
+              carregamentos={carregamentos}
+              empilhadores={empilhadores}
+              onNavigateTab={(tab: string) => setActiveTab(tab)}
+            />
+          </div>
         )}
 
         {/* VIEW: CENTRAL DE BACKUP DIÁRIO & EXPORTAÇÃO MULTIPLATAFORMA */}

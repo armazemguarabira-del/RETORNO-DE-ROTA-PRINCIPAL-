@@ -4,7 +4,7 @@ import {
   Shield, User as UserIcon, Truck, CheckCircle, BarChart3, Settings, 
   LogOut, FileSpreadsheet, Bell, Check, Clock, AlertCircle, FileText,
   Sun, Moon, Folder, Smartphone, Download, Wifi, RefreshCw, ShieldCheck, X, Layers,
-  ExternalLink, Database, PackageCheck, PanelLeftClose, PanelLeftOpen
+  ExternalLink, Database, PackageCheck, PanelLeftClose, PanelLeftOpen, Sparkles, Trophy, ClipboardCheck
 } from 'lucide-react';
 import { 
   isClientFirebaseActive, 
@@ -370,18 +370,6 @@ export default function Header({
         <div className="w-full px-2 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center gap-1">
             <div className="flex items-center gap-2 min-w-0">
-              {onToggleSidebar && (
-                <button
-                  type="button"
-                  onClick={onToggleSidebar}
-                  className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-amber-400 hover:text-amber-300 transition-all cursor-pointer shadow-xs shrink-0"
-                  title={sidebarCollapsed ? "Expandir barra lateral" : "Ocultar barra lateral"}
-                  id="header_toggle_sidebar_btn"
-                >
-                  {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-                </button>
-              )}
-
               {/* Logo */}
               <div 
                 onClick={handleLogoClick}
@@ -594,21 +582,93 @@ export default function Header({
                 })()}
               </div>
 
-              {/* Central de Backup Diário & Exportação */}
-              <button
-                id="header_backup_center_btn"
-                onClick={() => setActiveTab('backup')}
-                className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
-                  activeTab === 'backup' || activeTab === 'exportar'
-                    ? 'bg-blue-600 border-blue-400 text-white ring-2 ring-blue-400/50'
-                    : 'bg-blue-600 hover:bg-blue-700 border-blue-500 text-white'
-                }`}
-                title="Central de Backup Diário e Exportação de Dados para Outras Plataformas"
-              >
-                <Database className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-blue-200 shrink-0" />
-                <span className="font-extrabold uppercase text-[11px] sm:text-xs">Backup Diário</span>
-                <Download className="h-3 w-3 text-blue-200 shrink-0 hidden sm:inline" />
-              </button>
+              {/* BOTÕES ESPECÍFICOS DE NAVEGAÇÃO CONFORME PERFIL */}
+              {currentUser.role === 'conferente' ? (
+                <>
+                  {/* CONFERENTE: BOTÃO DE RETORNO ÀS CONFERÊNCIAS QUANDO NA LIGA */}
+                  {activeTab === 'liga' && (
+                    <button
+                      id="header_conferente_return_btn"
+                      type="button"
+                      onClick={() => setActiveTab('conferencias')}
+                      className="flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95 animate-pulse"
+                      title="Voltar para a Tela Principal de Conferências Físicas de Rota"
+                    >
+                      <ClipboardCheck className="h-4 w-4 shrink-0" />
+                      <span>Voltar para Conferências</span>
+                    </button>
+                  )}
+
+                  {/* CONFERENTE: BOTÃO DA GUIA PARA A LIGA DPO */}
+                  <button
+                    id="header_liga_dpo_btn"
+                    type="button"
+                    onClick={() => setActiveTab('liga')}
+                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
+                      activeTab === 'liga'
+                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
+                        : 'bg-amber-500 hover:bg-amber-400 border-amber-400 text-slate-950 font-black shadow-md'
+                    }`}
+                    title="LIGA OPERACIONAL DPO: Consulte seus Resultados, 5S e Blitz de Refugo"
+                  >
+                    <Trophy className="h-4 w-4 fill-slate-950 text-slate-950 shrink-0" />
+                    <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
+                    <span className="text-[9px] bg-slate-950 text-amber-400 font-black px-1.5 py-0.2 rounded-full uppercase">Meu Desempenho</span>
+                  </button>
+                </>
+              ) : currentUser.role === 'empilhador' ? (
+                <>
+                  {/* EMPILHADOR: BOTÃO DE RETORNO AO DESCARREGAMENTO QUANDO NA LIGA */}
+                  {activeTab === 'liga' && (
+                    <button
+                      id="header_empilhador_return_btn"
+                      type="button"
+                      onClick={() => setActiveTab('carregamento')}
+                      className="flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95 animate-pulse"
+                      title="Voltar para a Tela Principal de Descarregamento / Carregamento"
+                    >
+                      <Truck className="h-4 w-4 shrink-0" />
+                      <span>Voltar para Descarregamento</span>
+                    </button>
+                  )}
+
+                  {/* EMPILHADOR: BOTÃO DA GUIA PARA A LIGA DPO */}
+                  <button
+                    id="header_liga_dpo_btn"
+                    type="button"
+                    onClick={() => setActiveTab('liga')}
+                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
+                      activeTab === 'liga'
+                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
+                        : 'bg-amber-500 hover:bg-amber-400 border-amber-400 text-slate-950 font-black shadow-md'
+                    }`}
+                    title="LIGA OPERACIONAL DPO: Consulte seu Ranking, Metas e Evidências"
+                  >
+                    <Trophy className="h-4 w-4 fill-slate-950 text-slate-950 shrink-0" />
+                    <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
+                    <span className="text-[9px] bg-slate-950 text-amber-400 font-black px-1.5 py-0.2 rounded-full uppercase">Ranking</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* DEMAIS CARGOS (GESTOR, FINANCEIRO, AUXILIAR, ETC): ACESSO COMPLETO */}
+                  <button
+                    id="header_liga_dpo_btn"
+                    type="button"
+                    onClick={() => setActiveTab('liga')}
+                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
+                      activeTab === 'liga'
+                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
+                        : 'bg-amber-950/60 hover:bg-amber-900 border-amber-700/70 text-amber-200 hover:text-white'
+                    }`}
+                    title="LIGA OPERACIONAL DPO: Acompanhamento de Metas, Pontos e Desempenho Diário"
+                  >
+                    <Trophy className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-400 shrink-0" />
+                    <span className="font-extrabold uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
+                    <span className="hidden xl:inline text-[9px] bg-amber-400 text-slate-950 font-black px-1.5 py-0.2 rounded-full uppercase">6 Pts</span>
+                  </button>
+                </>
+              )}
 
               {/* Baixar APK Mobile Button */}
               <button

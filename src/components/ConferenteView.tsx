@@ -6,7 +6,7 @@ import {
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
   MapPin, Calendar, HelpCircle, Eye, EyeOff, AlertCircle, Sparkles, CheckSquare, XCircle, FileSpreadsheet, X,
-  ShieldCheck, Calculator, Cloud, CloudOff, Check, Truck, Lock, Unlock, Layers
+  ShieldCheck, Calculator, Cloud, CloudOff, Check, Truck, Lock, Unlock, Layers, Trophy
 } from 'lucide-react';
 
 const formatDateToDiaMesAno = (dateStr?: string) => {
@@ -33,6 +33,12 @@ const normalizeMapCode = (mapCode: any): string => {
   }
   return str;
 };
+
+const DEFAULT_EMP_LIST = [
+  { id: 'EMP-G1093', name: 'JOSE RONILDO DA SILVA' },
+  { id: 'EMP-G1071', name: 'MARIVALDO ARTUR ALVES' },
+  { id: 'EMP-G1013', name: 'PAULO PEREIRA DA SILVA' }
+];
 
 interface ConferenteViewProps {
   currentUser: User;
@@ -239,6 +245,199 @@ export default function ConferenteView({
   const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastSessionIdRef = useRef<string | null>(null);
+
+  // Guia de Descarregamento Obrigatória State (DPO Ambev)
+  const [showGuiaDescarregamentoModal, setShowGuiaDescarregamentoModal] = useState(false);
+  const [pendingUnloadData, setPendingUnloadData] = useState<{
+    routeMap: string;
+    plate: string;
+    driverName?: string;
+    helperName?: string;
+    targetAudit?: AuditSession | null;
+  } | null>(null);
+
+  const [guiaStartTime, setGuiaStartTime] = useState('');
+  const [guiaEndTime, setGuiaEndTime] = useState('');
+  const [guiaDock, setGuiaDock] = useState('DOCA 01');
+  const [guiaEmpilhadorName, setGuiaEmpilhadorName] = useState('José Ronildo');
+  const [guiaHelperName, setGuiaHelperName] = useState('');
+  const [guiaPallets, setGuiaPallets] = useState<number>(10);
+  const [guiaIsPernoite, setGuiaIsPernoite] = useState(false);
+  const [guiaObs, setGuiaObs] = useState('');
+
+  const checkRouteIsUnloaded = (mapCode: string, plateStr?: string): boolean => {
+    const normMap = normalizeMapCode(mapCode || '').toUpperCase();
+    const upperMap = (mapCode || '').trim().toUpperCase();
+    const upperPlate = (plateStr || '').trim().toUpperCase();
+
+    // Check in importedRoutes
+    const matchingRoute = importedRoutes.find(r => {
+      const rNorm = normalizeMapCode(r.routeMap || '').toUpperCase();
+      const rUpper = (r.routeMap || '').trim().toUpperCase();
+      const rPlate = (r.plate || '').trim().toUpperCase();
+      return (rNorm === normMap || rUpper === upperMap) || (upperPlate && rPlate === upperPlate);
+    });
+
+    if (matchingRoute) {
+      if (matchingRoute.descarregamentoStatus === 'DESCARREGADO') return true;
+      if (matchingRoute.unloadingEndTime && matchingRoute.unloadingEndTime.trim().length > 0) return true;
+    }
+
+    // Check in carregamentos
+    const matchingCarregamento = (carregamentos || []).find(c => {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').trim().toUpperCase();
+      const cPlate = (c.plate || '').trim().toUpperCase();
+      return (cNorm === normMap || cUpper === upperMap) || (upperPlate && cPlate === upperPlate);
+    });
+
+    if (matchingCarregamento) {
+      if (matchingCarregamento.status === 'CONCLUIDO') return true;
+      if (matchingCarregamento.unloadingEndTime && matchingCarregamento.unloadingEndTime.trim().length > 0) return true;
+    }
+
+    return false;
+  };
+
+  const handleOpenGuiaModal = (params: {
+    routeMap: string;
+    plate: string;
+    driverName?: string;
+    helperName?: string;
+    targetAudit?: AuditSession | null;
+  }) => {
+    setPendingUnloadData(params);
+    const now = new Date();
+    const endH = String(now.getHours()).padStart(2, '0');
+    const endM = String(now.getMinutes()).padStart(2, '0');
+    const past = new Date(now.getTime() - 25 * 60 * 1000);
+    const startH = String(past.getHours()).padStart(2, '0');
+    const startM = String(past.getMinutes()).padStart(2, '0');
+    setGuiaStartTime(`${startH}:${startM}`);
+    setGuiaEndTime(`${endH}:${endM}`);
+    setGuiaHelperName(params.helperName || '');
+    setShowGuiaDescarregamentoModal(true);
+  };
+
+  const handleConfirmSaveGuia = () => {
+    if (!pendingUnloadData) return;
+    if (!guiaStartTime || !guiaEndTime) {
+      alert("Por favor, preencha o Horário de Início e o Horário de Término do Descarregamento!");
+      return;
+    }
+
+    const todayDateStr = new Date().toISOString().split('T')[0];
+    const startTimeIso = `${todayDateStr}T${guiaStartTime}:00.000Z`;
+    const endTimeIso = `${todayDateStr}T${guiaEndTime}:00.000Z`;
+
+    // 1. Update importedRoutes
+    if (importedRoutes.length > 0 && onSaveImportedRoutes) {
+      const updatedRoutes = importedRoutes.map(r => {
+        const isMatch = (r.routeMap && r.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
+                        (r.plate && pendingUnloadData.plate && r.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase());
+        if (isMatch) {
+          return {
+            ...r,
+            descarregamentoStatus: 'DESCARREGADO' as const,
+            unloadingStartTime: startTimeIso,
+            unloadingEndTime: endTimeIso,
+            dock: guiaDock,
+            empilhadorName: guiaEmpilhadorName,
+            helperName: guiaHelperName || r.helperName,
+            totalPallets: guiaPallets || r.totalPallets || 10,
+            isPernoite: guiaIsPernoite
+          };
+        }
+        return r;
+      });
+      onSaveImportedRoutes(updatedRoutes);
+    }
+
+    // 2. Update carregamentos
+    let updatedCarregamentos = carregamentos || [];
+    const existingCarregamento = updatedCarregamentos.find(c => 
+      (c.routeMap && c.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
+      (c.plate && pendingUnloadData.plate && c.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase())
+    );
+
+    if (existingCarregamento) {
+      updatedCarregamentos = updatedCarregamentos.map(c => {
+        if (c.id === existingCarregamento.id) {
+          return {
+            ...c,
+            status: 'CONCLUIDO' as const,
+            unloadingStartTime: startTimeIso,
+            unloadingEndTime: endTimeIso,
+            dock: guiaDock,
+            empilhadorName: guiaEmpilhadorName,
+            isPernoite: guiaIsPernoite
+          };
+        }
+        return c;
+      });
+    } else {
+      updatedCarregamentos = [
+        ...updatedCarregamentos,
+        {
+          id: `desc_${Date.now()}`,
+          processNumber: `DESC-${pendingUnloadData.routeMap}`,
+          routeMap: pendingUnloadData.routeMap,
+          plate: pendingUnloadData.plate,
+          driverName: pendingUnloadData.driverName || 'Não informado',
+          dock: guiaDock,
+          shift: '1_TURNO' as const,
+          priority: 'MEDIA' as const,
+          status: 'CONCLUIDO' as const,
+          totalPallets: guiaPallets || 10,
+          loadedPallets: guiaPallets || 10,
+          createdAt: new Date().toISOString(),
+          unloadingStartTime: startTimeIso,
+          unloadingEndTime: endTimeIso,
+          empilhadorName: guiaEmpilhadorName,
+          isPernoite: guiaIsPernoite
+        }
+      ];
+    }
+    if (onSaveCarregamentos) onSaveCarregamentos(updatedCarregamentos);
+
+    // 3. Update audits if exist
+    if (audits.length > 0 && onSaveAudits) {
+      const updatedAudits = audits.map(a => {
+        const isMatch = (a.routeMap && a.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
+                        (a.plate && pendingUnloadData.plate && a.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase());
+        if (isMatch) {
+          return {
+            ...a,
+            descarregamentoStatus: 'DESCARREGADO' as const,
+            unloadingStartTime: startTimeIso,
+            unloadingEndTime: endTimeIso,
+            unloadingDock: guiaDock
+          };
+        }
+        return a;
+      });
+      onSaveAudits(updatedAudits);
+    }
+
+    const targetAuditToOpen = pendingUnloadData.targetAudit;
+    const targetMap = pendingUnloadData.routeMap;
+    const targetPlate = pendingUnloadData.plate;
+
+    setShowGuiaDescarregamentoModal(false);
+    setPendingUnloadData(null);
+
+    // If an existing audit exists, open it right now
+    if (targetAuditToOpen) {
+      handleOpenSession(targetAuditToOpen);
+    } else {
+      // Prepopulate the form with route details ready to start conference
+      setRouteMap(targetMap);
+      setPlate(targetPlate);
+      if (pendingUnloadData.helperName) {
+        setTempHelperName(pendingUnloadData.helperName);
+      }
+    }
+  };
 
   const findRegisteredDriver = (val: string): Driver | null => {
     if (!val) return null;
@@ -910,6 +1109,21 @@ export default function ConferenteView({
       }
     } else if (selectedRouteMaps.length > 0) {
       finalRouteMap = selectedRouteMaps.join(' + ');
+    }
+
+    // ENFORCE UNLOADING REQUIREMENT (DPO AMBEV)
+    const isUnloaded = checkRouteIsUnloaded(finalRouteMap, finalPlate);
+    if (!isUnloaded) {
+      const helperObj = drivers.find(d => d.id === finalHelperId);
+      const driverObj = drivers.find(d => d.id === finalDriverId);
+      handleOpenGuiaModal({
+        routeMap: finalRouteMap,
+        plate: finalPlate,
+        driverName: driverObj?.name || tempDriverName,
+        helperName: helperObj?.name || tempHelperName,
+        targetAudit: null
+      });
+      return;
     }
 
     // Check if any map in finalRouteMap or unifiedMaps already has an active or reconferência session
@@ -2003,6 +2217,7 @@ export default function ConferenteView({
       plate: string;
       driverId?: string;
       driverName?: string;
+      helperName?: string;
       status: string;
       isBlitz?: boolean;
       reopeningRequested?: boolean;
@@ -2063,6 +2278,7 @@ export default function ConferenteView({
 
         const effectiveDriverId = route.driverId || matchingAudit?.driverId || '';
         const effectiveDriverName = (route as any).driverName || (effectiveDriverId ? getDriverName(effectiveDriverId) : undefined);
+        const effectiveHelperName = (route as any).helperName || (matchingAudit as any)?.helperName;
 
         list.push({
           id: route.id,
@@ -2070,6 +2286,7 @@ export default function ConferenteView({
           plate: route.plate,
           driverId: effectiveDriverId,
           driverName: effectiveDriverName,
+          helperName: effectiveHelperName,
           status: effectiveStatus,
           isBlitz: !!route.isBlitz,
           reopeningRequested: isReopeningReq,
@@ -2115,6 +2332,7 @@ export default function ConferenteView({
 
         const effectiveDriverId = audit.driverId || matchingRoute?.driverId || '';
         const effectiveDriverName = getDriverName(audit.driverId) || (matchingRoute as any)?.driverName;
+        const effectiveHelperName = (matchingRoute as any)?.helperName || (audit as any)?.helperName;
 
         list.push({
           id: 'audit_open_' + audit.id,
@@ -2122,6 +2340,7 @@ export default function ConferenteView({
           plate: audit.plate,
           driverId: effectiveDriverId,
           driverName: effectiveDriverName,
+          helperName: effectiveHelperName,
           status: effectiveStatus,
           isBlitz: isRouteBlitz,
           reopeningRequested: isReopeningReq,
@@ -2262,20 +2481,37 @@ export default function ConferenteView({
     <div className="w-full px-2 sm:px-6 lg:px-8 pt-3 pb-28 sm:pb-12 animate-fade-in overflow-x-hidden" id="conferente_view">
       
       {/* Banner / Instructions with Pau Brasil distribution look */}
-      <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 rounded-2xl p-6 mb-8 text-white shadow-xl border border-blue-900 relative overflow-hidden">
+      <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 rounded-2xl p-5 sm:p-6 mb-8 text-white shadow-xl border border-blue-900 relative overflow-hidden">
         <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
           <ClipboardCheck className="h-40 w-40 text-blue-500" />
         </div>
-        <div className="relative z-10">
-          <span className="bg-[#38bdf8] text-slate-950 font-mono text-xxs font-bold uppercase tracking-widest px-2.5 py-1 rounded-full">
-            PAU BRASIL • Distribuição Ambev Tech
-          </span>
-          <h1 className="text-3xl font-sans font-bold tracking-tight text-white mt-3 flex items-center gap-2">
-            Aferição Física de Retornos de Rota
-          </h1>
-          <p className="text-slate-300 mt-2 max-w-3xl text-sm leading-relaxed">
-            Área de recepção do conferente físico. Realize as contagens de PA (Cegas) e de AG. Em caso de reconferência por divergência fiscal, <strong>a evidência fotográfica é obrigatória</strong> para a geração segura de vales do motorista.
-          </p>
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <span className="bg-[#38bdf8] text-slate-950 font-mono text-xxs font-bold uppercase tracking-widest px-2.5 py-1 rounded-full">
+              PAU BRASIL • Distribuição Ambev Tech
+            </span>
+            <h1 className="text-2xl sm:text-3xl font-sans font-bold tracking-tight text-white mt-2 flex items-center gap-2">
+              Aferição Física de Retornos de Rota
+            </h1>
+            <p className="text-slate-300 mt-2 max-w-3xl text-xs sm:text-sm leading-relaxed">
+              Área de recepção do conferente físico. Realize as contagens de PA (Cegas) e de AG. Em caso de reconferência por divergência fiscal, <strong>a evidência fotográfica é obrigatória</strong> para a geração segura de vales do motorista.
+            </p>
+          </div>
+
+          {/* Botão da Liga Operacional DPO para o Conferente */}
+          <div className="shrink-0 flex items-center">
+            <button
+              id="conferente_banner_liga_btn"
+              type="button"
+              onClick={() => onNavigateTab && onNavigateTab('liga')}
+              className="w-full md:w-auto bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs sm:text-sm px-4 py-3 rounded-xl shadow-lg border-2 border-amber-300 flex items-center justify-center space-x-2 transition cursor-pointer"
+              title="Acompanhar Meu Desempenho, 5S e Blitz de Refugo na Liga DPO"
+            >
+              <Trophy className="h-4 w-4 sm:h-5 sm:w-5 fill-slate-950 text-slate-950 shrink-0" />
+              <span>Ver Minha Liga DPO</span>
+              <span className="bg-slate-950 text-amber-400 text-[10px] font-black px-2 py-0.5 rounded-full ml-1 uppercase">6 Pts</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2740,6 +2976,17 @@ export default function ConferenteView({
                                 handleToggleRouteMap(route.routeMap);
                                 return;
                               }
+                              const isUnloaded = checkRouteIsUnloaded(route.routeMap, route.plate);
+                              if (!isUnloaded) {
+                                handleOpenGuiaModal({
+                                  routeMap: route.routeMap,
+                                  plate: route.plate,
+                                  driverName: route.driverName,
+                                  helperName: route.helperName,
+                                  targetAudit: route.audit || null
+                                });
+                                return;
+                              }
                               if (route.audit) {
                                 handleOpenSession(route.audit);
                                 return;
@@ -2780,6 +3027,34 @@ export default function ConferenteView({
                               )}
                             </div>
                             <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                              {(() => {
+                                const isUnloaded = checkRouteIsUnloaded(route.routeMap, route.plate);
+                                return isUnloaded ? (
+                                  <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                    <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />
+                                    <span>Descarregado</span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenGuiaModal({
+                                        routeMap: route.routeMap,
+                                        plate: route.plate,
+                                        driverName: route.driverName,
+                                        helperName: route.helperName,
+                                        targetAudit: route.audit || null
+                                      });
+                                    }}
+                                    className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 transition flex items-center gap-1 cursor-pointer animate-pulse"
+                                    title="Preencher Guia de Descarregamento obrigatória"
+                                  >
+                                    <Clock className="h-2.5 w-2.5 text-amber-700" />
+                                    <span>Guia Pendente</span>
+                                  </button>
+                                );
+                              })()}
                               <span className={`text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full whitespace-nowrap ${badgeStyle}`}>
                                 {statusText}
                               </span>
@@ -4598,6 +4873,193 @@ export default function ConferenteView({
                 className="px-4 py-2 bg-red-600 hover:bg-red-750 text-white text-xxs font-bold rounded-lg transition shadow-sm hover:shadow uppercase font-sans"
               >
                 Entendi, Finalizar Conferência com Blitz
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: GUIA DE DESCARREGAMENTO OBRIGATÓRIA (DPO AMBEV) */}
+      {showGuiaDescarregamentoModal && pendingUnloadData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-fade-in" id="guia_descarregamento_modal">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-3 text-amber-600">
+                <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200">
+                  <Clock className="h-6 w-6 text-amber-600 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-sans font-black text-slate-900 text-base uppercase tracking-tight">
+                    Guia de Descarregamento Obrigatória
+                  </h3>
+                  <p className="text-[11px] text-amber-700 font-bold uppercase tracking-wider font-mono">
+                    DPO Ambev • Registro de Início e Término da Carga
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGuiaDescarregamentoModal(false);
+                  setPendingUnloadData(null);
+                }}
+                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-amber-50/70 rounded-xl border border-amber-200/80 text-amber-950 text-xs leading-relaxed space-y-1">
+              <div className="flex items-center gap-1.5 font-extrabold text-amber-900 text-xs">
+                <ShieldCheck className="h-4 w-4 text-amber-600 shrink-0" />
+                <span>Bloqueio Operacional DPO: Conferência Física Restrita</span>
+              </div>
+              <p className="text-[11px] text-amber-800">
+                Conforme diretriz operacional, o ajudante ou operador deve registrar formalmente o <strong>Horário de Início</strong> e <strong>Término do Descarregamento</strong> antes de iniciar a contagem dos produtos.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-400 font-bold uppercase block">Mapa da Rota</span>
+                <span className="font-black text-slate-900 font-mono text-sm">{pendingUnloadData.routeMap}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 font-bold uppercase block">Placa do Veículo</span>
+                <span className="font-black text-slate-900 font-mono text-sm">{pendingUnloadData.plate}</span>
+              </div>
+              {pendingUnloadData.driverName && (
+                <div className="col-span-2">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Motorista</span>
+                  <span className="font-bold text-slate-800 text-xs">{pendingUnloadData.driverName}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4 text-xs font-sans">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Hora de Início da Descarga <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    value={guiaStartTime}
+                    onChange={(e) => setGuiaStartTime(e.target.value)}
+                    required
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Hora de Término da Descarga <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    value={guiaEndTime}
+                    onChange={(e) => setGuiaEndTime(e.target.value)}
+                    required
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Doca de Descarregamento
+                  </label>
+                  <select
+                    value={guiaDock}
+                    onChange={(e) => setGuiaDock(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="DOCA 01">DOCA 01</option>
+                    <option value="DOCA 02">DOCA 02</option>
+                    <option value="DOCA 03">DOCA 03</option>
+                    <option value="DOCA 04">DOCA 04</option>
+                    <option value="DOCA 05">DOCA 05</option>
+                    <option value="DOCA 06">DOCA 06</option>
+                    <option value="DOCA 07">DOCA 07</option>
+                    <option value="DOCA 08">DOCA 08</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Empilhador Responsável
+                  </label>
+                  <select
+                    value={guiaEmpilhadorName}
+                    onChange={(e) => setGuiaEmpilhadorName(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                  >
+                    {(empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map(emp => (
+                      <option key={emp.id} value={emp.name}>{emp.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Ajudante Responsável
+                  </label>
+                  <input
+                    type="text"
+                    value={guiaHelperName}
+                    onChange={(e) => setGuiaHelperName(e.target.value)}
+                    placeholder="Nome do ajudante"
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                    Paletes Descarregados
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={guiaPallets}
+                    onChange={(e) => setGuiaPallets(Number(e.target.value))}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="guia_pernoite_check"
+                  checked={guiaIsPernoite}
+                  onChange={(e) => setGuiaIsPernoite(e.target.checked)}
+                  className="h-4 w-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500"
+                />
+                <label htmlFor="guia_pernoite_check" className="text-xs font-bold text-slate-700 cursor-pointer">
+                  Veículo liberado para Pernoite (não conta negativamente para EFD 22h)
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGuiaDescarregamentoModal(false);
+                  setPendingUnloadData(null);
+                }}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSaveGuia}
+                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 text-xs font-black rounded-xl transition shadow-md flex items-center space-x-2 cursor-pointer"
+              >
+                <Check className="h-4 w-4 stroke-[3]" />
+                <span>Salvar Guia e Liberar Conferência</span>
               </button>
             </div>
           </div>

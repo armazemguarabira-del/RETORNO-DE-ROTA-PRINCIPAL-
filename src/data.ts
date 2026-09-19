@@ -3084,88 +3084,54 @@ export const DEFAULT_ACTIVE_ASSETS: ActiveAsset[] = [
 ];
 
 export const DEFAULT_USERS: User[] = [
-  { id: 'usr_armazem_guarabira', name: 'Armazém Guarabira (Gestão)', role: 'gestor', username: 'armazemguarabira@gmail.com', password: '123' },
-  { id: 'usr_armazem_guarabira_alias', name: 'Armazém Guarabira', role: 'gestor', username: 'armazemguarabira', password: '123' },
+  { id: 'usr_armazem_guarabira', name: 'Armazém Guarabira (Gestão)', role: 'gestor', username: 'armazemguarabira', password: '123' },
   { id: 'usr_g1009', name: 'Administrador G1009', role: 'gestor', username: 'G1009', password: '123' },
-  { id: 'usr_1782482189381', name: 'ELISSON MINERVINO', role: 'gestor', username: '7224', password: '123' },
-  { id: 'usr_1782482208921', name: 'MARCOS GUILHERME', role: 'gestor', username: '7171', password: '123' },
+  { id: '7224', name: 'ELISSON MINERVINO', role: 'gestor', username: '7224', password: '123' },
+  { id: '7171', name: 'MARCOS GUILHERME', role: 'gestor', username: '7171', password: '123' },
   { id: 'usr_1782481995449', name: 'GLADSON LISBOA', role: 'conferente', username: 'g1145', password: '123' },
-  { id: 'usr_1782482023049', name: 'GILSON ROSA', role: 'conferente', username: 'g1088', password: '123' },
-  { id: 'usr_1782482081189', name: 'ALÉCYA FERREIRA', role: 'auxiliar_logistica', username: 'G1163', password: 'Ambev10' },
+  { id: 'g1088', name: 'GILSON ROSA', role: 'conferente', username: 'g1088', password: '123' },
+  { id: 'G1163', name: 'ALÉCYA FERREIRA', role: 'auxiliar_logistica', username: 'G1163', password: 'Ambev10' },
   { id: 'usr_1782482101263', name: 'DJEANDERSON SOARES', role: 'gestor', username: 'G1002', password: '!Liz1105' },
-  { id: 'usr_1782482138597', name: 'VICTOR MARINHO', role: 'gestor', username: 'g1083', password: '123' },
+  { id: 'g1083', name: 'VICTOR MARINHO', role: 'gestor', username: 'g1083', password: '123' },
   { id: 'usr_1782482170529', name: 'LUIZ EDUARDO', role: 'gestor', username: 'g1149', password: '123' },
-  { id: 'usr_1782748019419', name: 'Rafael Rodrigues', role: 'monitoramento', username: 'g1078', password: 'Ambev10' },
+  { id: 'g1078', name: 'Rafael Rodrigues', role: 'monitoramento', username: 'g1078', password: 'Ambev10' },
   { id: 'usr_1784294627000', name: 'José Marcos', role: 'financeiro', username: 'g1006', password: 'Ambev10' },
-  { id: 'usr_1', name: 'Alice Conferente', role: 'conferente', username: 'conferente1', password: '123' },
-  { id: 'usr_2', name: 'Bruno Fiscal', role: 'auxiliar_logistica', username: 'auxiliar1', password: '123' },
-  { id: 'usr_3', name: 'Elisson Minervino', role: 'gestor', username: 'gestor1', password: '123' },
-  { id: 'usr_4', name: 'Carlos Motorista', role: 'conferente', username: 'motorista1', password: '123' },
-  { id: 'usr_5', name: 'Daniel Monitoramento', role: 'monitoramento', username: 'monitor1', password: '123' },
-  { id: 'usr_emp1', name: 'João Paulo Silva', role: 'empilhador', username: 'empilhador1', password: '123' },
-  { id: 'usr_emp2', name: 'Leandro Barbosa', role: 'empilhador', username: 'empilhador2', password: '123' }
+  // Operadores de Empilhadeira Oficiais Ambev
+  { id: 'usr_emp_g1093', name: 'JOSE RONILDO DA SILVA', role: 'empilhador', username: 'G1093', password: 'Ambev10' },
+  { id: 'usr_emp_g1071', name: 'MARIVALDO ARTUR ALVES', role: 'empilhador', username: 'G1071', password: 'Ambev10' },
+  { id: 'usr_emp_g1013', name: 'PAULO PEREIRA DA SILVA', role: 'empilhador', username: 'G1013', password: 'Ambev10' }
 ];
 
 export const DEFAULT_EMPILHADORES: Empilhador[] = [
   {
-    id: 'EMP-01',
-    name: 'JOÃO PAULO SILVA',
-    matricula: '5042',
+    id: 'EMP-G1093',
+    name: 'JOSE RONILDO DA SILVA',
+    matricula: 'G1093',
+    cpf: '085.789.634-23',
     shift: '1_TURNO',
-    forkliftCode: 'E-01 (Still 2.5T)',
+    forkliftCode: 'E-01',
     status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 98822-1042'
+    totalPalletsLoadedToday: 0
   },
   {
-    id: 'EMP-02',
-    name: 'LEANDRO BARBOSA DE LIMA',
-    matricula: '5088',
+    id: 'EMP-G1071',
+    name: 'MARIVALDO ARTUR ALVES',
+    matricula: 'G1071',
+    cpf: '047.471.304-03',
     shift: '1_TURNO',
-    forkliftCode: 'E-02 (Toyota 8FB)',
+    forkliftCode: 'E-02',
     status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 98711-5088'
+    totalPalletsLoadedToday: 0
   },
   {
-    id: 'EMP-03',
-    name: 'MARCIO GOMES PEREIRA',
-    matricula: '5120',
+    id: 'EMP-G1013',
+    name: 'PAULO PEREIRA DA SILVA',
+    matricula: 'G1013',
+    cpf: '029.604.844-52',
     shift: '2_TURNO',
-    forkliftCode: 'E-03 (Linde 3.0T)',
+    forkliftCode: 'E-03',
     status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 99133-5120'
-  },
-  {
-    id: 'EMP-04',
-    name: 'SEVERINO RAMOS DO NASCIMENTO',
-    matricula: '5174',
-    shift: '2_TURNO',
-    forkliftCode: 'E-04 (Still 2.5T)',
-    status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 99644-5174'
-  },
-  {
-    id: 'EMP-05',
-    name: 'ANTONIO CARLOS DE SOUSA',
-    matricula: '5210',
-    shift: '3_TURNO',
-    forkliftCode: 'E-05 (Toyota 8FB)',
-    status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 98155-5210'
-  },
-  {
-    id: 'EMP-06',
-    name: 'FRANCISCO DE ASSIS MELO',
-    matricula: '5244',
-    shift: '3_TURNO',
-    forkliftCode: 'E-06 (Yale 2.5T)',
-    status: 'DISPONIVEL',
-    totalPalletsLoadedToday: 0,
-    phone: '(83) 98766-5244'
+    totalPalletsLoadedToday: 0
   }
 ];
 

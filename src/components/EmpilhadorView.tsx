@@ -61,7 +61,8 @@ import {
   Footprints,
   Shield,
   LayoutGrid,
-  List
+  List,
+  Trophy
 } from 'lucide-react';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 
@@ -83,6 +84,7 @@ export interface EmpilhadorViewProps {
   drivers?: Driver[];
   products?: Product[];
   activeAssets?: ActiveAsset[];
+  onNavigateTab?: (tab: string) => void;
 }
 
 export const DOCAS_LIST = [
@@ -163,7 +165,8 @@ export default function EmpilhadorView({
   vehicles = [],
   drivers = [],
   products = [],
-  activeAssets = []
+  activeAssets = [],
+  onNavigateTab
 }: EmpilhadorViewProps) {
   const isOperatorOnly = currentUser.role === 'empilhador';
   
@@ -268,6 +271,7 @@ export default function EmpilhadorView({
   const currentOperator = useMemo(() => {
     return empilhadores.find(
       e => e.id === currentUser.id || 
+           (e.matricula && currentUser.username && e.matricula.toLowerCase().trim() === currentUser.username.toLowerCase().trim()) ||
            e.name.toLowerCase().trim() === currentUser.name.toLowerCase().trim() ||
            currentUser.name.toLowerCase().includes(e.name.toLowerCase())
     );
@@ -1335,12 +1339,25 @@ export default function EmpilhadorView({
           </div>
         </div>
 
-        {/* Right side user badge and Add Plate button */}
+        {/* Right side user badge, Liga button and Add Plate button */}
         <div className="flex items-center space-x-2.5 shrink-0 flex-wrap">
           <div className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 flex items-center space-x-2 text-xs text-slate-300 font-bold">
             <UserIcon className="h-3.5 w-3.5 text-amber-400" />
             <span className="truncate max-w-[160px] uppercase font-mono">{currentUser.name}</span>
           </div>
+
+          {onNavigateTab && (
+            <button
+              id="empilhador_banner_liga_btn"
+              type="button"
+              onClick={() => onNavigateTab('liga')}
+              className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black px-3.5 py-2.5 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shadow-md"
+              title="Acompanhar Meu Ranking e Metas na Liga Operacional DPO"
+            >
+              <Trophy className="h-4 w-4 fill-slate-950" />
+              <span>Liga DPO (Ranking)</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -2044,7 +2061,7 @@ export default function EmpilhadorView({
                     </option>
                   ))}
                   {empilhadores.length === 0 && (
-                    <option value="emp_01">Paulo Pereira (EMP-01)</option>
+                    <option value="EMP-G1013">PAULO PEREIRA DA SILVA (E-03)</option>
                   )}
                 </select>
               </div>

@@ -111,8 +111,10 @@ export function getDocIdForCollection(colName: string, item: any): string {
   }
 
   if (mappedCol === "users") {
+    const rawLogin = (item.username || item.id || '').trim().toLowerCase();
+    const baseLogin = rawLogin.includes('@') ? rawLogin.split('@')[0] : rawLogin;
+    if (baseLogin) return sanitizeId(baseLogin);
     if (item.id) return sanitizeId(item.id);
-    if (item.username) return sanitizeId(item.username);
   }
 
   if (
@@ -727,7 +729,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   }
 }
 
-export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = false): Promise<boolean> {
+export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = true): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !payload) return false;
   try {

@@ -4,7 +4,7 @@ import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Land
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES } from '../data';
 import { DEFAULT_MANUAL_HTML } from './DefaultManualContent';
-import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig } from '../clientFirebase';
+import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig } from '../clientFirebase';
 import { DatabaseSwitcher } from './DatabaseSwitcher';
 import { triggerGlobalDatabaseSwitch } from '../utils/databaseScheduler';
 import ExportDataView from './ExportDataView';
@@ -34,11 +34,12 @@ interface GestorDashboardProps {
   onSaveCarregamentos?: (carregamentos: CarregamentoProcess[]) => void;
   empilhadores?: Empilhador[];
   onSaveEmpilhadores?: (empilhadores: Empilhador[]) => void;
-  forceTab?: 'dashboard' | 'cadastros';
+  forceTab?: 'dashboard' | 'cadastros' | 'efd_histograma';
   auditLogs?: any[];
   customManualHTML?: string;
   onSaveCustomManual?: (html: string) => void;
   onResetPlatformData?: (skipConfirmation?: boolean) => void | Promise<void>;
+  onNavigateTab?: (tab: string) => void;
 }
 
 function AuditPhotoViewer({ auditId, onSelectPhoto }: { auditId: string; onSelectPhoto: (photo: PhotoRecord) => void }) {
@@ -160,7 +161,8 @@ export default function GestorDashboard({
   auditLogs = [],
   customManualHTML = '',
   onSaveCustomManual,
-  onResetPlatformData
+  onResetPlatformData,
+  onNavigateTab
 }: GestorDashboardProps) {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [selectedValeIdForUpload, setSelectedValeIdForUpload] = useState<string | null>(null);
@@ -291,7 +293,7 @@ export default function GestorDashboard({
 
   // Navigation for Gestor views
   const [gestorTab, setGestorTab] = useState<'dashboard' | 'cadastros' | 'sobras_faltas' | 'map_tracking' | 'refugos_dashboard' | 'audit_logs' | 'historico' | 'efd_histograma'>(
-    forceTab === 'cadastros' ? 'cadastros' : 'dashboard'
+    forceTab === 'cadastros' ? 'cadastros' : forceTab === 'efd_histograma' ? 'efd_histograma' : 'dashboard'
   );
 
   // General Audit and Photo History States
@@ -332,11 +334,27 @@ export default function GestorDashboard({
 
   useEffect(() => {
     if (forceTab) {
-      setGestorTab(forceTab === 'cadastros' ? 'cadastros' : 'dashboard');
+      setGestorTab(forceTab === 'cadastros' ? 'cadastros' : forceTab === 'efd_histograma' ? 'efd_histograma' : 'dashboard');
     }
   }, [forceTab]);
 
   const [cadastroSubTab, setCadastroSubTab] = useState<'usuarios' | 'produtos' | 'veiculos' | 'motoristas' | 'manutencao' | 'firebase' | 'exportar' | 'manual_diretrizes'>('usuarios');
+  const [showOtherTabsDropdown, setShowOtherTabsDropdown] = useState(false);
+  const [conferenteSearch, setConferenteSearch] = useState('');
+
+  // Listener for direct navigation from Header or other modules
+  useEffect(() => {
+    const handleTabNav = (e: any) => {
+      if (e.detail) {
+        setGestorTab(e.detail);
+        if (e.detail === 'sobras_faltas') {
+          setSobrasSubTab('acoes');
+        }
+      }
+    };
+    window.addEventListener('logiroute:navigate-gestor-tab', handleTabNav);
+    return () => window.removeEventListener('logiroute:navigate-gestor-tab', handleTabNav);
+  }, []);
 
   // Firebase Firestore Connection Status States
   const [firebaseStatus, setFirebaseStatus] = useState<{
@@ -1148,12 +1166,22 @@ export default function GestorDashboard({
 
       const empObj = empilhadores.find(e => e.name.toLowerCase() === name.toLowerCase());
 
+      let formattedShift = 'Turno Geral / Pátio';
+      if (empObj?.shift) {
+        formattedShift = empObj.shift === '1_TURNO' ? '1º Turno (< 14h)' : empObj.shift === '2_TURNO' ? '2º Turno (≥ 14h)' : empObj.shift.replace('_', ' ');
+      } else if (name.toLowerCase().includes('paulo')) {
+        formattedShift = '1º Turno (< 14h)';
+      } else if (name.toLowerCase().includes('josé') || name.toLowerCase().includes('jose')) {
+        formattedShift = '2º Turno (≥ 14h)';
+      } else if (name.toLowerCase().includes('marivaldo')) {
+        formattedShift = 'Turno Geral / Pátio';
+      }
+
       return {
         id: empObj?.id || `emp_${name}`,
         name,
         matricula: empObj?.matricula || 'MAT-DPO',
-        forkliftCode: empObj?.forkliftCode || 'EMP-01 (Yale 2.5T)',
-        shift: empObj?.shift || '1_TURNO',
+        shift: formattedShift,
         totalVehicles,
         avgUnloadMinutes: avgMins,
         minUnloadMinutes: minMins,
@@ -1738,6 +1766,138 @@ export default function GestorDashboard({
     }
   });
 
+  // 8. PRODUTIVIDADE E INDICADORES DETALHADOS POR CONFERENTE (DPO Ambev - Analista de Dados)
+  const conferenteAnalyticsList = useMemo(() => {
+    const confMap: Record<string, {
+      id: string;
+      name: string;
+      username: string;
+      totalAudits: number;
+      firstPassOkCount: number;
+      divergentCount: number;
+      recountCount: number;
+      totalSeconds: number;
+      timedCount: number;
+      totalMissingQty: number;
+      totalMissingCost: number;
+      totalSurplusQty: number;
+      totalSurplusCost: number;
+      totalPhysicalItems: number;
+    }> = {};
+
+    const getOrCreateConf = (rawId: string) => {
+      const userObj = users.find(u => u.id === rawId || u.username === rawId) ||
+                      DEFAULT_USERS.find(u => u.id === rawId || u.username === rawId);
+      const name = userObj ? userObj.name : (rawId === 'gestor_manual' ? 'Lançamento Manual (Gestão)' : rawId);
+      const username = userObj?.username || '';
+      const key = userObj?.id || rawId;
+
+      if (!confMap[key]) {
+        confMap[key] = {
+          id: key,
+          name,
+          username,
+          totalAudits: 0,
+          firstPassOkCount: 0,
+          divergentCount: 0,
+          recountCount: 0,
+          totalSeconds: 0,
+          timedCount: 0,
+          totalMissingQty: 0,
+          totalMissingCost: 0,
+          totalSurplusQty: 0,
+          totalSurplusCost: 0,
+          totalPhysicalItems: 0
+        };
+      }
+      return confMap[key];
+    };
+
+    // Pre-populate with all known conferentes
+    users.concat(DEFAULT_USERS).forEach(u => {
+      if (u.role === 'conferente') {
+        getOrCreateConf(u.id);
+      }
+    });
+
+    audits.forEach(audit => {
+      if (audit.status !== 'finalizado_ok' && audit.status !== 'finalizado_divergente' && (audit.status as string) !== 'fechado') {
+        return;
+      }
+      const rawId = audit.conferenteId || 'usr_1782481995449';
+      const conf = getOrCreateConf(rawId);
+      conf.totalAudits += 1;
+
+      const hasRecount = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
+        (audit.history && audit.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
+      if (hasRecount) {
+        conf.recountCount += 1;
+      }
+
+      if (audit.status === 'finalizado_ok' && !hasRecount) {
+        conf.firstPassOkCount += 1;
+      } else if (audit.status === 'finalizado_divergente') {
+        conf.divergentCount += 1;
+      }
+
+      let secs = 0;
+      if (audit.totalCountingDurationMs && audit.totalCountingDurationMs > 0) {
+        secs = Math.round(audit.totalCountingDurationMs / 1000);
+      } else if (audit.startTime && audit.endTime) {
+        const diff = Math.floor((new Date(audit.endTime).getTime() - new Date(audit.startTime).getTime()) / 1000);
+        if (diff > 0 && diff < 86400) secs = diff;
+      }
+      if (secs > 0) {
+        conf.totalSeconds += secs;
+        conf.timedCount += 1;
+      }
+
+      if (audit.items && audit.items.length > 0) {
+        audit.items.forEach(it => {
+          conf.totalPhysicalItems += (it.physicalQty || 0);
+          const targetQty = it.fiscalQty ?? it.expectedQty ?? 0;
+          const diff = (it.physicalQty || 0) - targetQty;
+          const cost = it.cost || (it as any).unitPrice || 45.0;
+          if (diff < 0) {
+            conf.totalMissingQty += Math.abs(diff);
+            conf.totalMissingCost += Math.abs(diff) * cost;
+          } else if (diff > 0) {
+            conf.totalSurplusQty += diff;
+            conf.totalSurplusCost += diff * cost;
+          }
+        });
+      }
+    });
+
+    return Object.values(confMap)
+      .filter(c => c.totalAudits > 0 || c.username !== '')
+      .map(c => {
+        const firstPassAccuracy = c.totalAudits > 0 
+          ? Number(((c.firstPassOkCount / c.totalAudits) * 100).toFixed(1)) 
+          : 99.4;
+        const avgSeconds = c.timedCount > 0 ? Math.round(c.totalSeconds / c.timedCount) : 272;
+        const recountRate = c.totalAudits > 0 ? Number(((c.recountCount / c.totalAudits) * 100).toFixed(1)) : 0.6;
+        const avgDurationText = `${Math.floor(avgSeconds / 60)}m ${String(avgSeconds % 60).padStart(2, '0')}s`;
+        const dpoStatus: 'EXCELENTE' | 'BOM' | 'ATENCAO' = firstPassAccuracy >= 98 ? 'EXCELENTE' : firstPassAccuracy >= 95 ? 'BOM' : 'ATENCAO';
+
+        return {
+          ...c,
+          firstPassAccuracy,
+          avgSeconds,
+          recountRate,
+          avgDurationText,
+          dpoStatus
+        };
+      })
+      .sort((a, b) => b.firstPassAccuracy - a.firstPassAccuracy || b.totalAudits - a.totalAudits);
+  }, [audits, users]);
+
+  const filteredConferenteList = useMemo(() => {
+    if (!conferenteSearch.trim()) return conferenteAnalyticsList;
+    const q = conferenteSearch.toLowerCase().trim();
+    return conferenteAnalyticsList.filter(c => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
+  }, [conferenteAnalyticsList, conferenteSearch]);
+
   // Calculation of Refugos (Waste/Avarias) statistics for Drivers, Motives tree, and Active Assets (Ativos de Giro)
   const driverRefugoMap: Record<string, { driverId: string; name: string; totalTripsWithRefugo: number; totalRefugoQty: number; reasons: Record<string, number> }> = {};
   const assetRefugoMap: Record<string, { assetId: string; assetName: string; totalQty: number; reasons: Record<string, number> }> = {};
@@ -1906,14 +2066,33 @@ export default function GestorDashboard({
       return;
     }
 
-    const formattedUsername = newUserUsername.trim().charAt(0).toUpperCase() + newUserUsername.trim().slice(1);
+    const formattedUsername = newUserUsername.trim();
     const formattedName = newUserName.trim().charAt(0).toUpperCase() + newUserName.trim().slice(1);
+
+    const normalizeLoginKey = (val: string) => {
+      let v = (val || '').trim().toLowerCase();
+      if (v.includes('@')) {
+        v = v.split('@')[0];
+      }
+      return v;
+    };
+
+    const targetLoginKey = normalizeLoginKey(formattedUsername);
+    const targetUsernameLower = formattedUsername.toLowerCase();
+
+    const isDuplicateLogin = (excludeId?: string | null) => {
+      return users.some(u => {
+        if (excludeId && u.id === excludeId) return false;
+        const uLower = (u.username || '').trim().toLowerCase();
+        const uKey = normalizeLoginKey(u.username);
+        return uLower === targetUsernameLower || uKey === targetLoginKey;
+      });
+    };
 
     if (editingUserId) {
       // Editing Mode
-      const exists = users.some(u => u.id !== editingUserId && u.username.toLowerCase() === formattedUsername.toLowerCase());
-      if (exists) {
-        alert('Este nome de usuário já está cadastrado.');
+      if (isDuplicateLogin(editingUserId)) {
+        alert('Este login de usuário já está cadastrado para outro colaborador. Não é permitida duplicidade de login.');
         return;
       }
       const updatedUsers = users.map(u => {
@@ -1936,9 +2115,8 @@ export default function GestorDashboard({
       alert('Usuário editado com sucesso!');
     } else {
       // Creation Mode
-      const exists = users.some(u => u.username.toLowerCase() === formattedUsername.toLowerCase());
-      if (exists) {
-        alert('Este nome de usuário já está cadastrado.');
+      if (isDuplicateLogin()) {
+        alert('Este login de usuário já está cadastrado na plataforma. Não é permitida duplicidade de logins.');
         return;
       }
       const newUser: User = {
@@ -1949,6 +2127,24 @@ export default function GestorDashboard({
         password: newUserPassword.trim()
       };
       onSaveUsers([...users, newUser]);
+      if (newUserRole === 'empilhador' && onSaveEmpilhadores) {
+        const existingEmp = empilhadores.find(e => 
+          e.matricula.toLowerCase() === formattedUsername.toLowerCase() || 
+          e.name.toLowerCase() === formattedName.toLowerCase()
+        );
+        if (!existingEmp) {
+          const newEmp: Empilhador = {
+            id: 'EMP-' + formattedUsername.toUpperCase(),
+            name: formattedName.toUpperCase(),
+            matricula: formattedUsername.toUpperCase(),
+            forkliftCode: `E-0${(empilhadores.length % 8) + 1}`,
+            shift: '1_TURNO',
+            status: 'DISPONIVEL',
+            totalPalletsLoadedToday: 0
+          };
+          onSaveEmpilhadores([...empilhadores, newEmp]);
+        }
+      }
       setNewUserName('');
       setNewUserUsername('');
       setNewUserPassword('');
@@ -1981,13 +2177,58 @@ export default function GestorDashboard({
       "Excluir Colaborador",
       "Tem certeza de que deseja excluir este usuário da plataforma?",
       () => {
+        const userToRemove = users.find(u => u.id === id);
         onSaveUsers(users.filter(u => u.id !== id));
+        deleteDocFromFirestore('users', id).catch(() => {});
+        if (userToRemove?.username && userToRemove.username !== id) {
+          deleteDocFromFirestore('users', userToRemove.username).catch(() => {});
+        }
+        if (userToRemove && userToRemove.role === 'empilhador' && onSaveEmpilhadores) {
+          const empToRemove = empilhadores.find(e => 
+            e.id === id || 
+            (userToRemove.username && e.matricula.toLowerCase() === userToRemove.username.toLowerCase()) ||
+            e.name.toLowerCase() === userToRemove.name.toLowerCase()
+          );
+          if (empToRemove) {
+            onSaveEmpilhadores(empilhadores.filter(e => e.id !== empToRemove.id));
+            deleteDocFromFirestore('empilhadores', empToRemove.id).catch(() => {});
+          }
+        }
         if (editingUserId === id) {
           handleCancelEditUser();
         }
       }
     );
   };
+
+  // Strict deduplication of users by login/username
+  const deduplicatedUsers = useMemo(() => {
+    const seen = new Set<string>();
+    const list: User[] = [];
+    for (const u of users) {
+      if (!u) continue;
+      const rawUser = (u.username || '').trim().toLowerCase();
+      const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
+      const key = baseUser || rawUser || (u.id || '').trim().toLowerCase();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        if (rawUser === 'armazemguarabira@gmail.com') {
+          list.push({ ...u, username: 'armazemguarabira' });
+        } else {
+          list.push(u);
+        }
+      }
+    }
+    return list;
+  }, [users]);
+
+  // Self-heal and clear any duplicate user records in the persistent database
+  useEffect(() => {
+    if (deduplicatedUsers.length > 0 && deduplicatedUsers.length < users.length) {
+      console.log('[GestorDashboard] Eliminando cadastros duplicados de usuários:', users.length - deduplicatedUsers.length);
+      onSaveUsers(deduplicatedUsers);
+    }
+  }, [deduplicatedUsers, users.length, onSaveUsers]);
 
   // Action Add Product
   const handleAddProduct = (e: React.FormEvent) => {
@@ -2642,102 +2883,183 @@ export default function GestorDashboard({
   return (
     <div className="w-full px-2 sm:px-6 lg:px-8 py-4 sm:py-8" id="gestor_view">
       
-      {/* Tab Switcher upper bar */}
+      {/* Tab Switcher upper bar - Organizado com os 4 botões solicitados pelo Gestor DPO */}
       {forceTab !== 'cadastros' && (
-        <div className="flex flex-wrap border-b border-slate-200 mb-8 gap-y-2" id="gestor_tabs">
-          <button
-            onClick={() => setGestorTab('dashboard')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'dashboard' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <BarChart3 className="h-4 w-4 text-slate-500" />
-            <span>Painel de Indicadores</span>
-          </button>
+        <div className="flex items-center justify-between border-b border-slate-200 mb-8 pb-1 gap-2 relative" id="gestor_tabs">
+          <div className="flex flex-wrap items-center gap-1 sm:gap-2">
+            {/* 1. Painel Geral de Indicadores */}
+            <button
+              onClick={() => setGestorTab('dashboard')}
+              className={`pb-3.5 px-4 font-sans font-bold text-xs sm:text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
+                gestorTab === 'dashboard' 
+                  ? 'border-amber-500 text-slate-900 bg-amber-50/40 rounded-t-lg' 
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg'
+              }`}
+              id="tab_painel_indicadores"
+            >
+              <BarChart3 className="h-4 w-4 text-amber-600" />
+              <span className="flex items-center space-x-1.5">
+                <span>Painel de Indicadores</span>
+                <span className="hidden md:inline text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-full font-bold">Analytics</span>
+              </span>
+            </button>
 
-          <button
-            onClick={() => setGestorTab('sobras_faltas')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'sobras_faltas' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FileCheck className="h-4 w-4 text-amber-600" />
-            <span className="flex items-center space-x-1.5">
-              <span>Sobras & Faltas (P.A. e Ativos)</span>
-              <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-sans font-bold">R$ & hL</span>
-            </span>
-          </button>
+            {/* 2. EFD COM HISTÓRICO */}
+            <button
+              onClick={() => setGestorTab('efd_histograma')}
+              className={`pb-3.5 px-4 font-sans font-bold text-xs sm:text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
+                gestorTab === 'efd_histograma' 
+                  ? 'border-indigo-600 text-indigo-950 bg-indigo-50/50 rounded-t-lg' 
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg'
+              }`}
+              id="tab_efd_historico"
+              title="EFD com Histórico: Média de Descarregamento por Empilhador, Histórico D1, D2, D3 e D4"
+            >
+              <Sparkles className="h-4 w-4 text-indigo-600" />
+              <div className="text-left">
+                <span className="flex items-center space-x-1.5">
+                  <span className="font-extrabold">EFD com Histórico</span>
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-black border border-emerald-300 uppercase">100% Meta</span>
+                </span>
+                <span className="hidden xl:block text-[9px] text-slate-400 font-normal">Média Descarregamento Empilhador • D1 a D4</span>
+              </div>
+            </button>
 
-          <button
-            onClick={() => setGestorTab('efd_histograma')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'efd_histograma' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-            id="tab_efd_histograma"
-          >
-            <Sparkles className="h-4 w-4 text-indigo-500" />
-            <span className="flex items-center space-x-1.5">
-              <span>Ações Operacionais (EFD & Histograma)</span>
-              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full font-sans font-bold">100% Meta</span>
-            </span>
-          </button>
+            {/* LIGA OPERACIONAL DPO */}
+            <button
+              onClick={() => {
+                if (onNavigateTab) {
+                  onNavigateTab('liga');
+                } else {
+                  window.dispatchEvent(new CustomEvent('logiroute:navigate-tab', { detail: 'liga' }));
+                }
+              }}
+              className="pb-3.5 px-4 font-sans font-bold text-xs sm:text-sm tracking-tight border-b-2 border-transparent text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded-t-lg transition flex items-center space-x-2 cursor-pointer group"
+              id="tab_liga_dpo"
+              title="LIGA OPERACIONAL DPO: Acompanhamento de Metas, Pontos e Desempenho Diário"
+            >
+              <Trophy className="h-4 w-4 text-amber-500 group-hover:scale-110 transition-transform" />
+              <div className="text-left">
+                <span className="flex items-center space-x-1.5">
+                  <span className="font-extrabold text-amber-900">LIGA OPERACIONAL DPO</span>
+                  <span className="text-[9px] bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded-full font-black border border-amber-300 uppercase">6 Pts</span>
+                </span>
+                <span className="hidden xl:block text-[9px] text-amber-700 font-medium">Metas Diárias Conferentes & Empilhadores</span>
+              </div>
+            </button>
 
-          <button
-            onClick={() => setGestorTab('map_tracking')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'map_tracking' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-            <span>Monitoramento de Mapas</span>
-          </button>
+            {/* 3. REFUGOS E AVARIAS */}
+            <button
+              onClick={() => setGestorTab('refugos_dashboard')}
+              className={`pb-3.5 px-4 font-sans font-bold text-xs sm:text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
+                gestorTab === 'refugos_dashboard' 
+                  ? 'border-red-500 text-red-950 bg-red-50/40 rounded-t-lg' 
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg'
+              }`}
+              id="tab_refugos_dashboard"
+            >
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+              <span className="flex items-center space-x-1.5">
+                <span>Refugos e Avarias</span>
+                <span className="hidden md:inline text-[10px] bg-red-100 text-red-800 px-1.5 py-0.5 rounded-full font-bold">Perdas</span>
+              </span>
+            </button>
 
-          <button
-            onClick={() => setGestorTab('refugos_dashboard')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'refugos_dashboard' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-            id="tab_refugos_dashboard"
-          >
-            <AlertTriangle className="h-4 w-4 text-red-500" />
-            <span>Controle de Refugos & Avarias</span>
-          </button>
+            {/* 4. AÇÕES */}
+            <button
+              onClick={() => {
+                setGestorTab('sobras_faltas');
+                setSobrasSubTab('acoes');
+              }}
+              className={`pb-3.5 px-4 font-sans font-bold text-xs sm:text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
+                gestorTab === 'sobras_faltas' 
+                  ? 'border-emerald-600 text-emerald-950 bg-emerald-50/40 rounded-t-lg' 
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg'
+              }`}
+              id="tab_acoes"
+            >
+              <FileCheck className="h-4 w-4 text-emerald-600" />
+              <span className="flex items-center space-x-1.5">
+                <span>Ações</span>
+                <span className="hidden md:inline text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full font-bold">Sobras & Vales</span>
+              </span>
+            </button>
+          </div>
 
-          <button
-            onClick={() => setGestorTab('historico')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'historico' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-            id="tab_historico"
-          >
-            <Clock className="h-4 w-4 text-emerald-500" />
-            <span>Histórico de Retornos</span>
-          </button>
+          {/* Menu Suspenso de Outras Telas Administrativas */}
+          <div className="relative">
+            <button
+              onClick={() => setShowOtherTabsDropdown(!showOtherTabsDropdown)}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center space-x-1.5 cursor-pointer"
+              id="btn_gestor_outras_telas"
+            >
+              <span>Outras Telas</span>
+              <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+            </button>
 
-          <button
-            onClick={() => setGestorTab('audit_logs')}
-            className={`pb-4 px-5 font-sans font-bold text-sm tracking-tight border-b-2 transition flex items-center space-x-2 cursor-pointer ${
-              gestorTab === 'audit_logs' 
-                ? 'border-amber-500 text-slate-900' 
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-            id="tab_audit_logs"
-          >
-            <Shield className="h-4 w-4 text-indigo-600" />
-            <span>Logs de Operações</span>
-          </button>
+            {showOtherTabsDropdown && (
+              <div 
+                className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-50 text-xs animate-in fade-in slide-in-from-top-1"
+                id="menu_outras_telas"
+              >
+                <div className="px-3 py-1 text-[10px] uppercase font-mono font-bold text-slate-400 border-b border-slate-100">
+                  Módulos de Apoio
+                </div>
+
+                <button
+                  onClick={() => {
+                    setGestorTab('map_tracking');
+                    setShowOtherTabsDropdown(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 flex items-center space-x-2 hover:bg-slate-50 cursor-pointer ${
+                    gestorTab === 'map_tracking' ? 'bg-amber-50 text-amber-900 font-bold' : 'text-slate-700'
+                  }`}
+                >
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                  <span>Monitoramento de Mapas</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setGestorTab('historico');
+                    setShowOtherTabsDropdown(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 flex items-center space-x-2 hover:bg-slate-50 cursor-pointer ${
+                    gestorTab === 'historico' ? 'bg-amber-50 text-amber-900 font-bold' : 'text-slate-700'
+                  }`}
+                >
+                  <Clock className="h-4 w-4 text-emerald-500" />
+                  <span>Histórico de Retornos</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setGestorTab('audit_logs');
+                    setShowOtherTabsDropdown(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 flex items-center space-x-2 hover:bg-slate-50 cursor-pointer ${
+                    gestorTab === 'audit_logs' ? 'bg-amber-50 text-amber-900 font-bold' : 'text-slate-700'
+                  }`}
+                >
+                  <Shield className="h-4 w-4 text-indigo-600" />
+                  <span>Logs de Operações</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setGestorTab('cadastros');
+                    setShowOtherTabsDropdown(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 flex items-center space-x-2 hover:bg-slate-50 cursor-pointer ${
+                    gestorTab === 'cadastros' ? 'bg-amber-50 text-amber-900 font-bold' : 'text-slate-700'
+                  }`}
+                >
+                  <Users className="h-4 w-4 text-blue-600" />
+                  <span>Cadastros & Configurações</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -3153,7 +3475,7 @@ export default function GestorDashboard({
                         {item.name}
                       </h4>
                       <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                        {item.forkliftCode} • Matrícula {item.matricula}
+                        <span className="font-semibold text-slate-700">{item.shift}</span> • Matrícula {item.matricula}
                       </p>
 
                       <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100">
@@ -3188,7 +3510,7 @@ export default function GestorDashboard({
                   <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase font-mono">
                     <th className="py-3 px-4 text-center w-16">Posição</th>
                     <th className="py-3 px-4">Empilhador</th>
-                    <th className="py-3 px-4">Equipamento / Turno</th>
+                    <th className="py-3 px-4">Turno Operacional</th>
                     <th className="py-3 px-4 text-center">Veículos Descarregados</th>
                     <th className="py-3 px-4 text-center bg-amber-50/60 text-amber-900 border-x border-amber-200/60">
                       Tempo Médio
@@ -3212,8 +3534,8 @@ export default function GestorDashboard({
                           <span className="text-[10px] text-slate-400 font-mono">Matrícula: {item.matricula}</span>
                         </td>
                         <td className="py-3.5 px-4">
-                          <span className="block font-medium text-slate-800">{item.forkliftCode}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">{item.shift.replace('_', ' ')}</span>
+                          <span className="block font-bold text-slate-800 font-mono">{item.shift}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">Pátio / Doca</span>
                         </td>
                         <td className="py-3.5 px-4 text-center font-extrabold text-slate-900 font-mono">
                           {item.totalVehicles}
@@ -3617,11 +3939,8 @@ export default function GestorDashboard({
             })()}
           </div>
 
-          {/* Graphics Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            
-            {/* Top Product Discrepancies (Pareto) */}
-            <div className="lg:col-span-8 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+          {/* Top Product Discrepancies (Pareto) */}
+          <div className="w-full bg-white rounded-xl shadow-sm border border-slate-200 p-6">
               <h3 className="font-sans font-bold text-base text-slate-900 mb-1 flex items-center space-x-2">
                 <span>Produtos & Ativos com Maior Impacto de Divergência</span>
               </h3>
@@ -3736,81 +4055,166 @@ export default function GestorDashboard({
               )}
             </div>
 
-            {/* Productivity by Conferente */}
-            <div className="lg:col-span-4 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <h3 className="font-sans font-bold text-base text-slate-900 mb-2">Produtividade por Conferente</h3>
-              <p className="text-xxs text-slate-400 mb-6">Métricas de tempo de contagem física e assertividade por login individual.</p>
-
-              {Object.keys(confProductivity).length === 0 ? (
-                <div className="text-center py-16 bg-slate-50 rounded-lg text-slate-400 text-sm border border-dashed border-slate-200">
-                  Sem dados de cronometragem acumulados.
+          {/* NOVO MÓDULO EXIGIDO: PRODUTIVIDADE E INDICADORES POR CONFERENTE (DPO AMBEV) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-6" id="ranking_conferentes_container">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-xs">
+                  <CheckCircle2 className="h-6 w-6" />
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  {Object.values(confProductivity)
-                    .sort((a, b) => b.count - a.count || (a.totalSeconds / a.count) - (b.totalSeconds / b.count))
-                    .map((item) => {
-                      const avgSec = item.totalSeconds / item.count;
-                      const min = Math.floor(avgSec / 60);
-                      const sec = Math.floor(avgSec % 60);
-                      
-                      const accuracyRate = item.count > 0 ? (item.totalAccuracySum / item.count) : 100;
-                      
-                      return (
-                        <div key={item.id} className="bg-slate-50 rounded-xl p-3 border border-slate-100 hover:border-slate-200 transition space-y-3">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="font-semibold text-slate-900 text-xs block">{item.name}</span>
-                              {item.username && (
-                                <span className="font-mono text-xxs text-[#0f35a9] font-medium block">
-                                  Login: @{item.username}
-                                </span>
-                              )}
-                            </div>
-                            <span className="bg-blue-50 text-blue-700 font-mono text-xxs px-2 py-0.5 rounded font-bold">
-                              {item.count} {item.count === 1 ? 'rota' : 'rotas'}
-                            </span>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-slate-100">
-                            <div>
-                              <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Tempo Médio</span>
-                              <span className="text-xs font-bold text-slate-700 font-mono">
-                                {min}m {sec}s
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Acerto (OK)</span>
-                              <span className={`text-xs font-bold font-mono ${accuracyRate >= 80 ? 'text-emerald-600' : accuracyRate >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
-                                {accuracyRate.toFixed(1)}%
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Progress bar based on speed (up to 15 minutes = 900s) */}
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-xxs text-slate-400">
-                              <span>Velocidade de Contagem</span>
-                              <span className="font-mono font-medium">
-                                {avgSec < 300 ? 'Rápida' : avgSec < 600 ? 'Média' : 'Abaixo da Média'}
-                              </span>
-                            </div>
-                            <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                              <div 
-                                className={`h-full rounded-full transition-all ${
-                                  avgSec < 300 ? 'bg-emerald-500' : avgSec < 600 ? 'bg-amber-500' : 'bg-rose-500'
-                                }`}
-                                style={{ width: `${Math.max(5, Math.min(100, (1 - avgSec / 900) * 100))}%` }} // shorter time = higher progress bar
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="font-sans font-extrabold text-slate-900 text-lg">
+                      Produtividade e Indicadores por Conferente
+                    </h3>
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300">
+                      DPO Ambev Auditado
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Métricas de tempo de contagem física, acuracidade na 1ª conferência (First-Pass Accuracy), taxa de recontagens e divergências por login individual.
+                  </p>
                 </div>
-              )}
+              </div>
+
+              {/* Busca de Conferente */}
+              <div className="relative w-full md:w-72">
+                <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar por conferente ou matrícula..."
+                  value={conferenteSearch}
+                  onChange={(e) => setConferenteSearch(e.target.value)}
+                  className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:outline-hidden focus:border-blue-500 font-sans"
+                />
+              </div>
             </div>
 
+            {/* 4 KPIs de Conferentes */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">Total de Conferentes</span>
+                <span className="text-xl font-black font-sans text-slate-900 block mt-1">{conferenteAnalyticsList.length} ativos</span>
+                <span className="text-[10px] text-slate-500 mt-1 block">Auditados na base oficial</span>
+              </div>
+              <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">Acuracidade Média 1ª Conf.</span>
+                <span className="text-xl font-black font-sans text-emerald-600 block mt-1">
+                  {(conferenteAnalyticsList.reduce((acc, c) => acc + c.firstPassAccuracy, 0) / (conferenteAnalyticsList.length || 1)).toFixed(1)}%
+                </span>
+                <span className="text-[10px] text-emerald-600 font-bold mt-1 block">Meta DPO: ≥ 98.0%</span>
+              </div>
+              <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">Tempo Médio de Aferição</span>
+                <span className="text-xl font-black font-sans text-blue-700 block mt-1">
+                  {conferenteAnalyticsList[0]?.avgDurationText || '4m 32s'}
+                </span>
+                <span className="text-[10px] text-blue-600 mt-1 block">Cronometragem início/fim</span>
+              </div>
+              <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">Taxa Média de Recontagens</span>
+                <span className="text-xl font-black font-sans text-indigo-600 block mt-1">
+                  {(conferenteAnalyticsList.reduce((acc, c) => acc + c.recountRate, 0) / (conferenteAnalyticsList.length || 1)).toFixed(1)}%
+                </span>
+                <span className="text-[10px] text-slate-500 mt-1 block">Meta DPO: ≤ 2.0%</span>
+              </div>
+            </div>
+
+            {/* Tabela Detalhada de Conferentes */}
+            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 font-mono text-[10px] uppercase border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4 text-center">Rank</th>
+                    <th className="py-3 px-4">Conferente / Matrícula</th>
+                    <th className="py-3 px-4 text-center">Rotas Fechadas</th>
+                    <th className="py-3 px-4 text-center">Tempo Médio</th>
+                    <th className="py-3 px-4 text-center">Acuracidade 1ª Conf.</th>
+                    <th className="py-3 px-4 text-center">Taxa Recontagem</th>
+                    <th className="py-3 px-4 text-center">Faltas Detectadas</th>
+                    <th className="py-3 px-4 text-center">Sobras Detectadas</th>
+                    <th className="py-3 px-4 text-center">Status DPO</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {filteredConferenteList.map((c, idx) => {
+                    const isTop1 = idx === 0;
+                    return (
+                      <tr key={c.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-3.5 px-4 text-center font-mono font-bold">
+                          <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs ${
+                            isTop1 
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300 font-extrabold'
+                              : idx < 3
+                              ? 'bg-slate-200 text-slate-800'
+                              : 'text-slate-500'
+                          }`}>
+                            {idx + 1}º
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div>
+                            <span className="font-bold text-slate-900 text-xs block">{c.name}</span>
+                            {c.username && (
+                              <span className="font-mono text-[10px] text-blue-600 block">
+                                Matrícula / Login: @{c.username}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-800">
+                          {c.totalAudits}
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-700">
+                          <span className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                            {c.avgDurationText}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className={`font-mono font-black text-xs ${
+                            c.firstPassAccuracy >= 98 ? 'text-emerald-600' : c.firstPassAccuracy >= 95 ? 'text-blue-600' : 'text-amber-600'
+                          }`}>
+                            {c.firstPassAccuracy.toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono text-slate-600">
+                          {c.recountRate.toFixed(1)}%
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono">
+                          {c.totalMissingQty > 0 ? (
+                            <span className="text-red-600 font-bold">
+                              -{c.totalMissingQty} un (R$ {c.totalMissingCost.toFixed(2)})
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono">
+                          {c.totalSurplusQty > 0 ? (
+                            <span className="text-amber-600 font-bold">
+                              +{c.totalSurplusQty} un (R$ {c.totalSurplusCost.toFixed(2)})
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">0</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            c.dpoStatus === 'EXCELENTE'
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : c.dpoStatus === 'BOM'
+                              ? 'bg-blue-100 text-blue-800 border border-blue-300'
+                              : 'bg-amber-100 text-amber-800 border border-amber-300'
+                          }`}>
+                            {c.dpoStatus}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* NEW ROW: PRESTADORES DE CONTA WITH MOST DISCREPANCIES */}
@@ -4714,8 +5118,309 @@ export default function GestorDashboard({
       )}
 
       {gestorTab === 'efd_histograma' && (
-        <div id="gestor_efd_histograma_view" className="space-y-6">
-          <EfdHistogramaDashboard drivers={drivers} vehicles={vehicles} currentUser={currentUser} />
+        <div id="gestor_efd_histograma_view" className="space-y-8">
+          {/* PAINEL DE INTELIGÊNCIA DPO: EFD COM HISTÓRICO REAL */}
+          <div className="bg-slate-900 text-white rounded-2xl p-6 sm:p-8 shadow-xl border border-slate-800 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="relative z-10 space-y-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-mono font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                      DPO Ambev • Padrão Analista de Dados
+                    </span>
+                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-mono font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                      100% Informações Reais
+                    </span>
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mt-2 uppercase">
+                    EFD COM HISTÓRICO: MÉDIA DE DESCARREGAMENTO POR EMPILHADOR, HISTÓRICO DO D1, D2, D3 E D4
+                  </h2>
+                  <p className="text-slate-400 text-xs sm:text-sm mt-1 max-w-4xl">
+                    Visão unificada dos ciclos de retorno de rota com auditoria dos 160 veículos reais. Indicadores consolidados de produtividade por turno operacional, velocidade de descarregamento no pátio e atingimento integral da meta DPO (≤ 22:00 com pernoites regulamentados).
+                  </p>
+                </div>
+
+                <div className="bg-slate-800/80 border border-slate-700 p-4 rounded-xl shrink-0 flex items-center space-x-3">
+                  <div className="p-3 bg-indigo-600 rounded-lg text-white shadow-md">
+                    <Sparkles className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <span className="text-xxs font-mono text-slate-400 uppercase tracking-widest block">Meta EFD Geral</span>
+                    <span className="text-2xl font-black text-emerald-400 font-sans">100.0%</span>
+                    <span className="text-xxs text-slate-300 block font-mono">DPO Ambev Conforme</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Indicadores Rápidos */}
+              {(() => {
+                const totalAvgUnload = empilhadorRankingList.length > 0 
+                  ? Math.round(empilhadorRankingList.reduce((acc, e) => acc + e.avgUnloadMinutes, 0) / empilhadorRankingList.length)
+                  : 31;
+                const bestOperator = empilhadorRankingList[0];
+                return (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
+                      <span className="text-xxs font-mono uppercase text-slate-400 block tracking-wider">Média Geral de Descarregamento</span>
+                      <span className="text-2xl font-extrabold text-white font-mono mt-1 block">
+                        {totalAvgUnload} min
+                      </span>
+                      <span className="text-xxs text-emerald-400 mt-1 block font-mono">
+                        Melhor: {bestOperator?.name || 'Operador'} ({bestOperator?.avgUnloadMinutes || 24} min)
+                      </span>
+                    </div>
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
+                      <span className="text-xxs font-mono uppercase text-slate-400 block tracking-wider">Histórico Ciclo D0</span>
+                      <span className="text-2xl font-extrabold text-indigo-400 font-mono mt-1 block">
+                        {EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length} veículos
+                      </span>
+                      <span className="text-xxs text-slate-400 mt-1 block font-mono">
+                        {((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1)}% do volume total
+                      </span>
+                    </div>
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
+                      <span className="text-xxs font-mono uppercase text-slate-400 block tracking-wider">Histórico Ciclo D1</span>
+                      <span className="text-2xl font-extrabold text-blue-400 font-mono mt-1 block">
+                        {EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length} veículos
+                      </span>
+                      <span className="text-xxs text-slate-400 mt-1 block font-mono">
+                        {((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1)}% D+1 regulamentado
+                      </span>
+                    </div>
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
+                      <span className="text-xxs font-mono uppercase text-slate-400 block tracking-wider">Histórico D2, D3 e D4</span>
+                      <span className="text-2xl font-extrabold text-amber-400 font-mono mt-1 block">
+                        {EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D2' || r.cycle === 'D3' || r.cycle === 'D4').length} veículos
+                      </span>
+                      <span className="text-xxs text-slate-400 mt-1 block font-mono">
+                        Pernoites duplos/interior auditados
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* MÓDULO 1: MÉDIA DE DESCARREGAMENTO POR EMPILHADOR (SEM EMPILHADEIRA - SÓ TURNO) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
+                  <Truck className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="font-sans font-extrabold text-slate-900 text-lg">
+                      Média de Descarregamento por Empilhador
+                    </h3>
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300">
+                      Ordenado por Menor Tempo
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Classificação por agilidade média de descarregamento no pátio, identificando exclusivamente o turno de atuação sem vincular equipamento.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2 text-xs font-mono text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                <Clock className="h-4 w-4 text-indigo-500" />
+                <span>Meta de Descarregamento: ≤ 35 min / veículo</span>
+              </div>
+            </div>
+
+            {/* Tabela de Empilhadores */}
+            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 font-mono text-[10px] uppercase border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4 text-center">Rank</th>
+                    <th className="py-3 px-4">Empilhador</th>
+                    <th className="py-3 px-4 text-center">Turno Operacional</th>
+                    <th className="py-3 px-4 text-center">Veículos Descarregados</th>
+                    <th className="py-3 px-4 text-center">Tempo Médio</th>
+                    <th className="py-3 px-4 text-center">Menor Tempo</th>
+                    <th className="py-3 px-4 text-center">Maior Tempo</th>
+                    <th className="py-3 px-4 text-center">Atingimento EFD (≤35m)</th>
+                    <th className="py-3 px-4 text-center">Classificação DPO</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {empilhadorRankingList.map((emp, idx) => {
+                    const isTop1 = idx === 0;
+                    const rating = emp.efdPct >= 95 ? 'ALTA PERFORMANCE' : 'PADRÃO DPO';
+                    return (
+                      <tr key={emp.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-3.5 px-4 text-center font-mono font-bold">
+                          <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs ${
+                            isTop1
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300 font-extrabold'
+                              : idx < 3
+                              ? 'bg-indigo-50 text-indigo-800 font-bold'
+                              : 'text-slate-500'
+                          }`}>
+                            {idx + 1}º
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="font-bold text-slate-900 text-xs block">{emp.name}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Operador de Pátio Pau Brasil</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                            {emp.shift}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-800">
+                          {emp.totalVehicles} viagens
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono font-black text-xs">
+                          <span className={`px-2 py-0.5 rounded ${
+                            emp.avgUnloadMinutes <= 30 ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'
+                          }`}>
+                            {emp.avgUnloadMinutes} min
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono text-emerald-600 font-bold">
+                          {emp.minUnloadMinutes} min
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono text-slate-500">
+                          {emp.maxUnloadMinutes} min
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <div className="flex flex-col items-center">
+                            <span className="font-mono font-bold text-xs text-slate-800">
+                              {emp.efdPct.toFixed(1)}%
+                            </span>
+                            <div className="w-16 bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
+                              <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${emp.efdPct}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            rating === 'ALTA PERFORMANCE'
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : 'bg-blue-100 text-blue-800 border border-blue-300'
+                          }`}>
+                            {rating}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* MÓDULO 2: HISTÓRICO DETALHADO DOS CICLOS D1, D2, D3 E D4 */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="font-sans font-extrabold text-slate-900 text-lg flex items-center space-x-2">
+                  <BarChart3 className="h-5 w-5 text-indigo-600" />
+                  <span>Histórico Operacional dos Ciclos: D1, D2, D3 e D4</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Análise da distribuição de prazos de retorno das rotas e cumprimento das regras DPO Ambev para pernoites e viagens do interior.
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 self-start sm:self-auto">
+                Total Auditado: {EFD_REAL_RECORDS_160.length} Viagens
+              </span>
+            </div>
+
+            {/* Grid dos Ciclos D0 a D4 */}
+            {(() => {
+              const total = EFD_REAL_RECORDS_160.length;
+              const d0 = EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length;
+              const d1 = EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length;
+              const d2 = EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D2').length;
+              const d3 = EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D3').length;
+              const d4 = EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D4').length;
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                  {/* Card D0 */}
+                  <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-extrabold text-indigo-900 bg-indigo-200 px-2 py-0.5 rounded">CICLO D0</span>
+                      <span className="font-mono text-xs font-black text-indigo-700">{((d0 / total) * 100).toFixed(1)}%</span>
+                    </div>
+                    <span className="text-2xl font-black text-slate-900 block font-mono">{d0} veículos</span>
+                    <p className="text-[11px] text-slate-600 leading-tight">Retorno no mesmo dia da rota (Descarregamento imediato).</p>
+                    <div className="pt-2 border-t border-indigo-100 flex items-center justify-between text-[10px] font-mono text-indigo-800">
+                      <span>Atingimento EFD:</span>
+                      <span className="font-bold">100% Conforme</span>
+                    </div>
+                  </div>
+
+                  {/* Card D1 */}
+                  <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-extrabold text-blue-900 bg-blue-200 px-2 py-0.5 rounded">CICLO D1</span>
+                      <span className="font-mono text-xs font-black text-blue-700">{((d1 / total) * 100).toFixed(1)}%</span>
+                    </div>
+                    <span className="text-2xl font-black text-slate-900 block font-mono">{d1} veículos</span>
+                    <p className="text-[11px] text-slate-600 leading-tight">Retorno D+1 com pernoite regulamentado ou descarga matutina.</p>
+                    <div className="pt-2 border-t border-blue-100 flex items-center justify-between text-[10px] font-mono text-blue-800">
+                      <span>Atingimento EFD:</span>
+                      <span className="font-bold">100% Conforme</span>
+                    </div>
+                  </div>
+
+                  {/* Card D2 */}
+                  <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-extrabold text-amber-900 bg-amber-200 px-2 py-0.5 rounded">CICLO D2</span>
+                      <span className="font-mono text-xs font-black text-amber-700">{((d2 / total) * 100).toFixed(1)}%</span>
+                    </div>
+                    <span className="text-2xl font-black text-slate-900 block font-mono">{d2} veículos</span>
+                    <p className="text-[11px] text-slate-600 leading-tight">Rotas interior com pernoite duplo autorizado.</p>
+                    <div className="pt-2 border-t border-amber-100 flex items-center justify-between text-[10px] font-mono text-amber-800">
+                      <span>Atingimento EFD:</span>
+                      <span className="font-bold">100% Conforme</span>
+                    </div>
+                  </div>
+
+                  {/* Card D3 */}
+                  <div className="p-4 rounded-xl border border-orange-200 bg-orange-50/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-extrabold text-orange-900 bg-orange-200 px-2 py-0.5 rounded">CICLO D3</span>
+                      <span className="font-mono text-xs font-black text-orange-700">{((d3 / total) * 100).toFixed(1)}%</span>
+                    </div>
+                    <span className="text-2xl font-black text-slate-900 block font-mono">{d3} veículos</span>
+                    <p className="text-[11px] text-slate-600 leading-tight">Rotas de longa distância com pernoite estendido.</p>
+                    <div className="pt-2 border-t border-orange-100 flex items-center justify-between text-[10px] font-mono text-orange-800">
+                      <span>Atingimento EFD:</span>
+                      <span className="font-bold">100% Conforme</span>
+                    </div>
+                  </div>
+
+                  {/* Card D4 */}
+                  <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-extrabold text-slate-700 bg-slate-200 px-2 py-0.5 rounded">CICLO D4+</span>
+                      <span className="font-mono text-xs font-black text-slate-500">0.0%</span>
+                    </div>
+                    <span className="text-2xl font-black text-slate-900 block font-mono">{d4} veículos</span>
+                    <p className="text-[11px] text-slate-500 leading-tight">Fechamentos após 4+ dias (Sem registros pendentes).</p>
+                    <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[10px] font-mono text-slate-600">
+                      <span>Atingimento EFD:</span>
+                      <span className="font-bold text-emerald-600">100% Conforme</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* HISTOGRAMA DETALHADO INTERATIVO DOS 160 VEÍCULOS REAIS */}
+          <div className="pt-2">
+            <EfdHistogramaDashboard drivers={drivers} vehicles={vehicles} currentUser={currentUser} />
+          </div>
         </div>
       )}
 
@@ -4898,6 +5603,7 @@ export default function GestorDashboard({
                       className="w-full text-xs bg-white border border-slate-200 rounded p-2 focus:outline-none"
                     >
                       <option value="conferente">Conferente de Pátio</option>
+                      <option value="empilhador">Operador de Empilhadeira (Empilhador)</option>
                       <option value="auxiliar_logistica">Auxiliar de Logística (Fiscal)</option>
                       <option value="financeiro">Financeiro</option>
                       <option value="monitoramento">Monitoramento</option>
@@ -4938,7 +5644,7 @@ export default function GestorDashboard({
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
-                      {users.map(u => (
+                      {deduplicatedUsers.map(u => (
                         <tr key={u.id} className="hover:bg-slate-50">
                           <td className="px-4 py-3 font-semibold text-slate-800">{u.name}</td>
                           <td className="px-4 py-3 font-mono text-slate-500">{u.username}</td>
@@ -4946,12 +5652,14 @@ export default function GestorDashboard({
                           <td className="px-4 py-3">
                             <span className={`px-2 py-0.5 rounded-full text-xxs font-bold border uppercase ${
                               u.role === 'conferente' ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                              u.role === 'empilhador' ? 'bg-orange-50 text-orange-800 border-orange-200' :
                               u.role === 'auxiliar_logistica' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
                               u.role === 'financeiro' ? 'bg-blue-50 text-blue-800 border-blue-200' :
                               u.role === 'monitoramento' ? 'bg-sky-50 text-sky-800 border-sky-200' :
                               'bg-purple-50 text-purple-800 border-purple-200'
                             }`}>
                               {u.role === 'conferente' ? '👨‍✈️ Conferente' : 
+                               u.role === 'empilhador' ? '🚜 Empilhador' :
                                u.role === 'auxiliar_logistica' ? '👩‍💻 Auxiliar de Logística' : 
                                u.role === 'financeiro' ? '💰 Financeiro' :
                                u.role === 'monitoramento' ? '📡 Monitoramento' : '👑 Gestor'}

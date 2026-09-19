@@ -233,6 +233,7 @@ export interface ImportedRoute {
   plate: string;
   driverId: string;
   driverName?: string;
+  helperName?: string;
   routeDate: string; // The date of the route requested during import
   status: 'pendente' | 'conferindo' | 'fechado' | 'em_analise' | 'reconferir';
   importedAt: string;
@@ -362,6 +363,7 @@ export interface Empilhador {
   id: string;
   name: string;
   matricula: string;
+  cpf?: string;
   shift: '1_TURNO' | '2_TURNO' | '3_TURNO';
   forkliftCode: string; // ex: 'E-01', 'E-02', 'E-03'
   status: 'DISPONIVEL' | 'OPERANDO' | 'INTERVALO' | 'MANUTENCAO' | 'OFFLINE';
@@ -447,3 +449,60 @@ export interface ControleSobraItem {
   createdAt: string;
   updatedAt?: string;
 }
+
+// -------------------------------------------------------------
+// LIGA OPERACIONAL DPO (GAMIFICAÇÃO & PERFORMANCE LOGÍSTICA AMBEV)
+// -------------------------------------------------------------
+
+export interface FiveSEntry {
+  id: string;
+  userId: string;
+  userName: string;
+  userRole: 'conferente' | 'empilhador';
+  date: string; // YYYY-MM-DD
+  photoUrl: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface SafetyReport {
+  id: string;
+  userId: string;
+  userName: string;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm
+  photoUrl: string;
+  description: string;
+  category: 'SEGURANCA' | 'QUALIDADE' | 'ANOMALIA';
+  status: 'REGISTRADO' | 'ANALISADO';
+  createdAt: string;
+}
+
+export interface BlitzRefugoItem {
+  code: string;
+  name: string;
+  qty: number;
+  reason?: string;
+}
+
+export interface BlitzRefugoEntry {
+  id: string;
+  date: string; // YYYY-MM-DD
+  userId: string;
+  userName: string;
+  plate: string;
+  routeMap: string;
+  items: BlitzRefugoItem[];
+  completedAt: string;
+}
+
+export interface ZeroBreakDeclaration {
+  id: string;
+  date: string; // YYYY-MM-DD
+  userId: string;
+  userName: string;
+  hasBreak: boolean; // false = 0 quebras (pontua)
+  justification?: string;
+  declaredAt: string;
+}
+
