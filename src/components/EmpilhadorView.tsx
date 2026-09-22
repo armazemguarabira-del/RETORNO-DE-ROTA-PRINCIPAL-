@@ -1212,60 +1212,6 @@ export default function EmpilhadorView({
     );
   };
 
-  // CLEAR ENTIRE PENDING UNLOADING QUEUE
-  const handleClearQueue = () => {
-    const pendingVehicles = connectedVehicles.filter(v => v.descarregamentoStatus === 'AGUARDANDO_DESCARGA' || v.descarregamentoStatus === 'EM_DESCARGA');
-    if (pendingVehicles.length === 0) {
-      alert('Nenhum mapa pendente na fila de descarregamento.');
-      return;
-    }
-
-    requestConfirm(
-      "⚠️ Limpar Fila de Descarregamento?",
-      `Tem certeza que deseja remover TODOS os ${pendingVehicles.length} mapas pendentes da fila de descarregamento?`,
-      () => {
-        const mapsNormToDelete = new Set(pendingVehicles.map(v => normalizeMapCode(v.routeMap).toUpperCase()));
-        const mapsUpperToDelete = new Set(pendingVehicles.map(v => (v.routeMap || '').toUpperCase().trim()));
-        const platesToDelete = new Set(pendingVehicles.map(v => (v.plate || '').toUpperCase().trim()).filter(Boolean));
-
-        const updatedRoutes = (importedRoutes || []).filter(r => {
-          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-          const rUpper = (r.routeMap || '').toUpperCase().trim();
-          const rPlate = (r.plate || '').toUpperCase().trim();
-          return !mapsNormToDelete.has(rNorm) && !mapsUpperToDelete.has(rUpper) && !platesToDelete.has(rPlate);
-        });
-        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
-
-        const updatedAudits = (audits || []).filter(a => {
-          const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-          const aUpper = (a.routeMap || '').toUpperCase().trim();
-          const aPlate = (a.plate || '').toUpperCase().trim();
-          return !mapsNormToDelete.has(aNorm) && !mapsUpperToDelete.has(aUpper) && !platesToDelete.has(aPlate);
-        });
-        if (onSaveAudits) onSaveAudits(updatedAudits);
-
-        const updatedCarreg = (carregamentos || []).filter(c => {
-          const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
-          const cUpper = (c.routeMap || '').toUpperCase().trim();
-          const cPlate = (c.plate || '').toUpperCase().trim();
-          return !mapsNormToDelete.has(cNorm) && !mapsUpperToDelete.has(cUpper) && !platesToDelete.has(cPlate);
-        });
-        if (onSaveCarregamentos) onSaveCarregamentos(updatedCarreg);
-
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({
-            importedRoutes: updatedRoutes,
-            audits: updatedAudits,
-            carregamentos: updatedCarreg,
-            carregamentoProcesses: updatedCarreg
-          }).catch(err => console.error('Error clearing queue:', err));
-        }
-
-        alert(`${pendingVehicles.length} mapas foram removidos da fila de descarregamento.`);
-      }
-    );
-  };
-
   // Operator Handlers
   const handleSaveOperator = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1318,66 +1264,42 @@ export default function EmpilhadorView({
   return (
     <div className="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 font-sans space-y-4" id="empilhador_workspace">
       
-      {/* 1. TOP HEADER BANNER (Dark with Amber accent, matching screenshot) */}
-      <div className="bg-slate-900 border border-slate-800 p-4 md:p-5 rounded-2xl shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center space-x-3.5">
-          <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+      {/* 1. TOP HEADER BANNER (Centralizado e Organizado) */}
+      <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl flex flex-col items-center text-center justify-center space-y-3.5" id="empilhador_header_banner">
+        <div className="flex flex-col items-center justify-center space-y-2 max-w-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-md">
             <Truck className="h-6 w-6" />
           </div>
-          <div>
-            <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-              <h1 className="text-base md:text-lg font-black text-white uppercase tracking-tight">
+          <div className="space-y-1">
+            <div className="flex items-center justify-center space-x-2 flex-wrap gap-y-1">
+              <h1 className="text-base sm:text-lg md:text-xl font-black text-white uppercase tracking-tight">
                 OPERAÇÃO DE EMPILHADEIRA & DESCARREGAMENTO
               </h1>
               <span className="text-[10px] font-mono uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40 px-2 py-0.5 rounded font-black tracking-wider">
                 EMPILHADOR
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-400 max-w-xl mx-auto">
               Giro 360°, Calço de segurança, Abertura de baias e Descarregamento de paletes na Red Zone
             </p>
           </div>
         </div>
 
-        {/* Right side user badge, Liga button and Add Plate button */}
-        <div className="flex items-center space-x-2.5 shrink-0 flex-wrap">
-          <div className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 flex items-center space-x-2 text-xs text-slate-300 font-bold">
-            <UserIcon className="h-3.5 w-3.5 text-amber-400" />
-            <span className="truncate max-w-[160px] uppercase font-mono">{currentUser.name}</span>
+        {/* Action Controls: Centralizados e Simétricos (Usuário Ativo e Adicionar Placa) */}
+        <div className="flex flex-wrap items-center justify-center gap-2.5 w-full pt-1">
+          <div className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 flex items-center justify-center space-x-2 text-xs text-slate-300 font-bold shadow-inner">
+            <UserIcon className="h-4 w-4 text-amber-400 shrink-0" />
+            <span className="truncate max-w-[240px] uppercase font-mono">{currentUser.name}</span>
           </div>
-
-          {onNavigateTab && (
-            <button
-              id="empilhador_banner_liga_btn"
-              type="button"
-              onClick={() => onNavigateTab('liga')}
-              className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black px-3.5 py-2.5 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shadow-md"
-              title="Acompanhar Meu Ranking e Metas na Liga Operacional DPO"
-            >
-              <Trophy className="h-4 w-4 fill-slate-950" />
-              <span>Liga DPO (Ranking)</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={handleClearQueue}
-            className="bg-red-950/60 hover:bg-red-900/80 text-red-300 border border-red-800/60 font-black px-3.5 py-2.5 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shadow-md hover:shadow-lg active:scale-98"
-            title="Limpar todos os mapas pendentes da Fila de Descarregamento"
-            id="btn_limpar_fila_descarregamento"
-          >
-            <Trash2 className="h-4 w-4 text-red-400" />
-            <span>Limpar Fila</span>
-          </button>
 
           <button
             type="button"
             onClick={() => setShowAddPlateModal(true)}
-            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-4 py-2.5 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shadow-md hover:shadow-lg active:scale-98"
+            className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black px-4 py-2 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 cursor-pointer shadow-md hover:shadow-lg"
             id="btn_adicionar_placa"
           >
-            <Plus className="h-4 w-4" />
-            <span>+ ADICIONAR PLACA</span>
+            <Plus className="h-4 w-4 shrink-0" />
+            <span>ADICIONAR PLACA</span>
           </button>
         </div>
       </div>
@@ -1430,45 +1352,47 @@ export default function EmpilhadorView({
 
       {/* 3. PRIMARY FILTER TABS & SEARCH BAR */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-3 pt-1">
-        {/* Status Category Tabs */}
-        <div className="flex items-center space-x-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+        {/* Status Category Tabs: Symmetrical 3-column layout fitting on screen without horizontal scroll */}
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-2 w-full md:w-auto">
           <button
             type="button"
             onClick={() => setFilterCategory('PENDENTES')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-2 cursor-pointer shrink-0 ${
+            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
               filterCategory === 'PENDENTES'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
                 : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
             }`}
           >
-            <Clock className="h-3.5 w-3.5" />
-            <span>PENDENTES ({descarregamentoMetrics.pendingCount})</span>
+            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">PENDENTES ({descarregamentoMetrics.pendingCount})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setFilterCategory('DESCARREGADOS')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-2 cursor-pointer shrink-0 ${
+            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
               filterCategory === 'DESCARREGADOS'
                 ? 'bg-emerald-600 text-white shadow-md font-black'
                 : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
             }`}
           >
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            <span>DESCARREGADOS HOJE ({descarregamentoMetrics.descarregadosTotal})</span>
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">
+              <span className="hidden sm:inline">DESCARREGADOS </span>HOJE ({descarregamentoMetrics.descarregadosTotal})
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => setFilterCategory('PERNOITES')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-2 cursor-pointer shrink-0 ${
+            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
               filterCategory === 'PERNOITES'
                 ? 'bg-purple-600 text-white shadow-md font-black'
                 : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
             }`}
           >
-            <Moon className="h-3.5 w-3.5" />
-            <span>PERNOITES ({descarregamentoMetrics.pernoiteCount})</span>
+            <Moon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">PERNOITES ({descarregamentoMetrics.pernoiteCount})</span>
           </button>
         </div>
 
@@ -1573,32 +1497,36 @@ export default function EmpilhadorView({
         </div>
       </div>
 
-      {/* SUB-TABS SELECTOR */}
-      <div className="flex items-center space-x-2 border-b border-slate-800 pb-2 overflow-x-auto">
+      {/* SUB-TABS SELECTOR: Symmetrical 2-column layout fitted to screen without sideways scrolling */}
+      <div className="grid grid-cols-2 gap-2 border-b border-slate-800 pb-2.5 w-full">
         <button
           type="button"
           onClick={() => setActiveSubTab('descarregamento')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shrink-0 ${
+          className={`w-full py-2.5 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 cursor-pointer text-center ${
             activeSubTab === 'descarregamento'
               ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/80 bg-slate-900/60 border border-slate-800'
           }`}
         >
-          <Truck className="h-3.5 w-3.5" />
-          <span>Fila de Descarregamento ({descarregamentoMetrics.pendingCount})</span>
+          <Truck className="h-4 w-4 shrink-0" />
+          <span className="truncate">
+            <span className="hidden sm:inline">Fila de </span>Descarregamento ({descarregamentoMetrics.pendingCount})
+          </span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveSubTab('indicadores_eficiencia')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-1.5 cursor-pointer shrink-0 ${
+          className={`w-full py-2.5 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 cursor-pointer text-center ${
             activeSubTab === 'indicadores_eficiencia'
               ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/80 bg-slate-900/60 border border-slate-800'
           }`}
         >
-          <BarChart2 className="h-3.5 w-3.5" />
-          <span>Eficiência & Ciclos ({descarregamentoMetrics.overallEfficiency}%)</span>
+          <BarChart2 className="h-4 w-4 shrink-0" />
+          <span className="truncate">
+            Eficiência<span className="hidden sm:inline"> & Ciclos</span> ({descarregamentoMetrics.overallEfficiency}%)
+          </span>
         </button>
       </div>
 

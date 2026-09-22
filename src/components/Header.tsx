@@ -387,12 +387,12 @@ export default function Header({
             </div>
 
             {/* User Profile & Actions */}
-            <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
-              {/* Firebase Connection Status Badge */}
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              {/* Firebase Connection Status Badge (Desktop/Tablet) */}
               <button
                 type="button"
                 onClick={() => setShowConnectionModal(true)}
-                className={`flex items-center space-x-1 sm:space-x-1.5 px-1.5 sm:px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border transition-all duration-300 shadow-xs cursor-pointer hover:scale-105 active:scale-95 shrink-0 ${
+                className={`hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border transition-all duration-300 shadow-xs cursor-pointer hover:scale-105 active:scale-95 shrink-0 ${
                 isQuotaExceeded
                   ? 'bg-amber-500/15 text-amber-500 border-amber-500/30 animate-pulse'
                   : firebaseStatus === 'connected' 
@@ -421,37 +421,27 @@ export default function Header({
                           : 'bg-rose-500'
                   }`}></span>
                 </span>
-                <span className="uppercase tracking-wider text-[9px] hidden sm:inline whitespace-nowrap">
-                  {isQuotaExceeded ? 'Cota Excedida / Servidor Local' : `DB: ${activeDbProjectId}`}
-                </span>
-                <span className="uppercase tracking-wider text-[9px] inline sm:hidden whitespace-nowrap">
-                  {isQuotaExceeded ? 'Local' : (activeDbProjectId.split('-')[0] || 'Firebase')}
+                <span className="uppercase tracking-wider text-[9px] whitespace-nowrap">
+                  {isQuotaExceeded ? 'Cota Excedida / Local' : `DB: ${activeDbProjectId}`}
                 </span>
               </button>
 
-              {/* Active User Badge / Context (Desktop) */}
-              <div className="hidden sm:flex items-center space-x-2 bg-slate-800/60 border border-slate-700/60 px-3 py-1.5 rounded-full text-xxs font-medium text-slate-300 shrink-0">
-                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                <span className="font-mono uppercase text-[9px] text-amber-500 font-bold">
-                  [{currentUser.role === 'auxiliar_logistica' ? 'AUX LOGÍSTICA' : currentUser.role.toUpperCase()}]
+              {/* 1. O USUÁRIO (Sempre visível no cabeçalho - Desktop e Mobile) */}
+              <div 
+                className="flex items-center space-x-1.5 bg-slate-800/90 border border-slate-700/80 px-2 sm:px-2.5 py-1 rounded-full text-xs font-medium text-slate-200 shrink min-w-0" 
+                title={`${currentUser.name} (${currentUser.role})`}
+                id="header_user_badge"
+              >
+                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <span className="font-mono uppercase text-[9px] text-amber-400 font-black shrink-0">
+                  [{currentUser.role === 'auxiliar_logistica' ? 'AUX' : currentUser.role === 'conferente' ? 'CONF' : currentUser.role === 'empilhador' ? 'EMP' : currentUser.role === 'gestor' ? 'GEST' : currentUser.role === 'financeiro' ? 'FIN' : 'MONIT'}]
                 </span>
-                <span className="font-sans font-bold text-slate-200 max-w-[140px] sm:max-w-[220px] truncate" title={currentUser.name}>
-                  {currentUser.name}
-                </span>
-              </div>
-
-              {/* Active User Badge / Context (Mobile) */}
-              <div className="hidden min-[360px]:flex sm:hidden items-center space-x-1 bg-slate-800/80 border border-slate-700/80 px-1.5 py-1 rounded-full text-[10px] text-slate-300 shrink-0" title={currentUser.name}>
-                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                <span className="font-mono uppercase text-[8px] text-amber-400 font-bold">
-                  [{currentUser.role === 'auxiliar_logistica' ? 'AUX' : currentUser.role === 'conferente' ? 'CONF' : currentUser.role === 'gestor' ? 'GEST' : currentUser.role === 'empilhador' ? 'EMP' : 'MONIT'}]
-                </span>
-                <span className="font-bold text-slate-100 max-w-[55px] truncate">
+                <span className="font-bold text-slate-100 text-[11px] sm:text-xs truncate max-w-[65px] min-[360px]:max-w-[85px] sm:max-w-[150px]">
                   {currentUser.name.split(' ')[0]}
                 </span>
               </div>
 
-              {/* Notification Bell with Dropdown Popover */}
+              {/* 2. O SININHO DE NOTIFICAÇÃO (Com badge de não lidas e dropdown) */}
               <div className="relative shrink-0" id="notification_bell_container" ref={bellContainerRef}>
                 <button
                   id="notification_bell_btn"
@@ -582,133 +572,86 @@ export default function Header({
                 })()}
               </div>
 
-              {/* BOTÕES ESPECÍFICOS DE NAVEGAÇÃO CONFORME PERFIL */}
-              {currentUser.role === 'conferente' ? (
-                <>
-                  {/* CONFERENTE: BOTÃO DE RETORNO ÀS CONFERÊNCIAS QUANDO NA LIGA */}
-                  {activeTab === 'liga' && (
-                    <button
-                      id="header_conferente_return_btn"
-                      type="button"
-                      onClick={() => setActiveTab('conferencias')}
-                      className="flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95 animate-pulse"
-                      title="Voltar para a Tela Principal de Conferências Físicas de Rota"
-                    >
-                      <ClipboardCheck className="h-4 w-4 shrink-0" />
-                      <span>Voltar para Conferências</span>
-                    </button>
-                  )}
+              {/* 3. O ÍCONE DA LIGA (LIGA OPERACIONAL DPO - Sempre visível no Mobile e Desktop) */}
+              <button
+                id="header_liga_dpo_btn"
+                type="button"
+                onClick={() => {
+                  if (activeTab === 'liga') {
+                    if (currentUser.role === 'conferente') setActiveTab('conferencias');
+                    else if (currentUser.role === 'empilhador') setActiveTab('carregamento');
+                    else setActiveTab('dashboard');
+                  } else {
+                    setActiveTab('liga');
+                  }
+                }}
+                className={`flex border p-1.5 sm:p-2 px-2 sm:px-3 rounded-lg transition-all items-center space-x-1 sm:space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
+                  activeTab === 'liga'
+                    ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-md font-black'
+                    : 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/50 text-amber-300 hover:text-amber-100 font-extrabold'
+                }`}
+                title={activeTab === 'liga' ? "Voltar da Liga DPO para tela operacional" : "LIGA OPERACIONAL DPO"}
+              >
+                <Trophy className="h-4 w-4 fill-current text-amber-400 shrink-0" />
+                <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA</span>
+              </button>
 
-                  {/* CONFERENTE: BOTÃO DA GUIA PARA A LIGA DPO */}
-                  <button
-                    id="header_liga_dpo_btn"
-                    type="button"
-                    onClick={() => setActiveTab('liga')}
-                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
-                      activeTab === 'liga'
-                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
-                        : 'bg-amber-500 hover:bg-amber-400 border-amber-400 text-slate-950 font-black shadow-md'
-                    }`}
-                    title="LIGA OPERACIONAL DPO: Consulte seus Resultados, 5S e Blitz de Refugo"
-                  >
-                    <Trophy className="h-4 w-4 fill-slate-950 text-slate-950 shrink-0" />
-                    <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
-                    <span className="text-[9px] bg-slate-950 text-amber-400 font-black px-1.5 py-0.2 rounded-full uppercase">Meu Desempenho</span>
-                  </button>
-                </>
-              ) : currentUser.role === 'empilhador' ? (
-                <>
-                  {/* EMPILHADOR: BOTÃO DE RETORNO AO DESCARREGAMENTO QUANDO NA LIGA */}
-                  {activeTab === 'liga' && (
-                    <button
-                      id="header_empilhador_return_btn"
-                      type="button"
-                      onClick={() => setActiveTab('carregamento')}
-                      className="flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95 animate-pulse"
-                      title="Voltar para a Tela Principal de Descarregamento / Carregamento"
-                    >
-                      <Truck className="h-4 w-4 shrink-0" />
-                      <span>Voltar para Descarregamento</span>
-                    </button>
-                  )}
-
-                  {/* EMPILHADOR: BOTÃO DA GUIA PARA A LIGA DPO */}
-                  <button
-                    id="header_liga_dpo_btn"
-                    type="button"
-                    onClick={() => setActiveTab('liga')}
-                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3.5 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
-                      activeTab === 'liga'
-                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
-                        : 'bg-amber-500 hover:bg-amber-400 border-amber-400 text-slate-950 font-black shadow-md'
-                    }`}
-                    title="LIGA OPERACIONAL DPO: Consulte seu Ranking, Metas e Evidências"
-                  >
-                    <Trophy className="h-4 w-4 fill-slate-950 text-slate-950 shrink-0" />
-                    <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
-                    <span className="text-[9px] bg-slate-950 text-amber-400 font-black px-1.5 py-0.2 rounded-full uppercase">Ranking</span>
-                  </button>
-                </>
-              ) : (
-                <>
-                  {/* DEMAIS CARGOS (GESTOR, FINANCEIRO, AUXILIAR, ETC): ACESSO COMPLETO */}
-                  <button
-                    id="header_liga_dpo_btn"
-                    type="button"
-                    onClick={() => setActiveTab('liga')}
-                    className={`flex border p-1.5 sm:p-2 px-2.5 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
-                      activeTab === 'liga'
-                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-amber-950/40 font-black'
-                        : 'bg-amber-950/60 hover:bg-amber-900 border-amber-700/70 text-amber-200 hover:text-white'
-                    }`}
-                    title="LIGA OPERACIONAL DPO: Acompanhamento de Metas, Pontos e Desempenho Diário"
-                  >
-                    <Trophy className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-400 shrink-0" />
-                    <span className="font-extrabold uppercase text-[11px] sm:text-xs tracking-tight">LIGA DPO</span>
-                    <span className="hidden xl:inline text-[9px] bg-amber-400 text-slate-950 font-black px-1.5 py-0.2 rounded-full uppercase">6 Pts</span>
-                  </button>
-                </>
+              {/* Botão auxiliar quando em Liga para Conferente / Empilhador voltar à tela principal */}
+              {activeTab === 'liga' && (currentUser.role === 'conferente' || currentUser.role === 'empilhador') && (
+                <button
+                  id="header_operational_return_btn"
+                  type="button"
+                  onClick={() => setActiveTab(currentUser.role === 'empilhador' ? 'carregamento' : 'conferencias')}
+                  className="hidden min-[520px]:flex border p-1.5 sm:p-2 px-2 rounded-lg transition-all items-center space-x-1 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95"
+                  title={currentUser.role === 'empilhador' ? "Voltar para Descarregamento" : "Voltar para Conferências"}
+                >
+                  {currentUser.role === 'empilhador' ? <Truck className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
+                  <span className="text-[10px]">Voltar</span>
+                </button>
               )}
 
-              {/* Baixar APK Mobile Button */}
+              {/* Baixar APK Mobile Button (Apenas telas grandes) */}
               <button
                 id="download_apk_btn"
                 onClick={handleHeaderApkClick}
-                className="hidden min-[480px]:flex bg-emerald-655 hover:bg-emerald-700 border border-emerald-550 text-white p-1.5 sm:p-2 px-2 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0"
+                className="hidden lg:flex bg-emerald-655 hover:bg-emerald-700 border border-emerald-550 text-white p-1.5 sm:p-2 px-2 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0"
                 title="Baixar Aplicativo Mobile (APK)"
               >
                 <Smartphone className="h-4 w-4 shrink-0" />
-                <span className="hidden lg:inline">Baixar APK Mobile</span>
+                <span>Baixar APK</span>
               </button>
 
-              {/* Botão Limpar Cache e Recarregar */}
+              {/* Botão Limpar Cache e Recarregar (Telas Médias/Grandes) */}
               <button
                 id="clear_platform_cache_btn"
                 onClick={handleClearCacheAndReload}
                 disabled={isClearingCache}
-                className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-sm shrink-0"
+                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all items-center justify-center cursor-pointer shadow-sm shrink-0"
                 title="Limpar Cache da Plataforma e Recarregar Dados Atualizados"
               >
                 <RefreshCw className={`h-4 w-4 text-sky-400 ${isClearingCache ? 'animate-spin' : ''}`} />
               </button>
 
-              {/* Theme Toggle */}
+              {/* Theme Toggle (Telas Médias/Grandes) */}
               <button
                 id="theme_toggle_btn"
                 onClick={onToggleTheme}
-                className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-sm shrink-0"
+                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all items-center justify-center cursor-pointer shadow-sm shrink-0"
                 title={theme === 'dark' ? "Ativar Modo Claro" : "Ativar Modo Escuro"}
               >
                 {theme === 'dark' ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-300" />}
               </button>
 
+              {/* 4. O BOTÃO DE LOG IN E LOG OUT (Sempre visível no Cabeçalho - Mobile e Desktop) */}
               <button
-                id="logout_btn"
+                id="header_logout_btn"
+                type="button"
                 onClick={onLogout}
-                className="bg-slate-800 hover:bg-red-900 border border-slate-700 hover:border-red-800 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-sm shrink-0"
-                title="Sair do Sistema"
+                className="flex border p-1.5 sm:p-2 px-2 sm:px-2.5 rounded-lg transition-all items-center space-x-1 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-rose-950/70 hover:bg-rose-900 border-rose-800/80 hover:border-rose-500 text-rose-200 hover:text-white active:scale-95 group font-sans"
+                title="Sair da conta e voltar para a Tela de Login"
               >
-                <LogOut className="h-4 w-4" />
+                <LogOut className="h-4 w-4 text-rose-400 group-hover:text-white shrink-0 transition-colors" />
+                <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">Sair</span>
               </button>
             </div>
           </div>

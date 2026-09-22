@@ -7,7 +7,7 @@
   --font-display: "Space Grotesk", sans-serif;
 }
 
-/* Prevent horizontal viewport swaying on mobile browsers */
+/* Prevent horizontal viewport swaying on mobile browsers and hide lateral scrollbars */
 html, body {
   max-width: 100vw;
   overflow-x: hidden !important;
@@ -16,12 +16,35 @@ html, body {
   margin: 0;
   padding: 0;
   position: relative;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Ocultar barras de rolagem em todos os elementos para liberar espaço na tela, permitindo rolagem por arraste/toque */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 #root, #main_app_wrapper, main {
   max-width: 100vw;
   overflow-x: hidden !important;
   width: 100%;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
 
 /* Ensure data tables scroll smoothly inside their containers on touch screens */

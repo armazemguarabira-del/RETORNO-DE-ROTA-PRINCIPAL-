@@ -16,7 +16,8 @@ import {
   PanelLeftOpen,
   ChevronRight,
   Trophy,
-  Sparkles
+  Sparkles,
+  LogOut
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -28,6 +29,7 @@ interface SidebarProps {
   pendingSobrasCount?: number;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onLogout?: () => void;
 }
 
 export default function Sidebar({
@@ -38,7 +40,8 @@ export default function Sidebar({
   vales = [],
   pendingSobrasCount = 0,
   collapsed,
-  onToggleCollapse
+  onToggleCollapse,
+  onLogout
 }: SidebarProps) {
   // Conferente e Empilhador não utilizam barra lateral para economizar 100% do espaço no celular e tela
   if (currentUser.role === 'conferente' || currentUser.role === 'empilhador') {

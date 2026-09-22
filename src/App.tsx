@@ -1143,6 +1143,7 @@ export default function App() {
           pendingSobrasCount={controleSobras.filter(s => s.status === 'PENDENTE').length}
           collapsed={sidebarCollapsed}
           onToggleCollapse={handleToggleSidebar}
+          onLogout={handleLogout}
         />
       )}
 
