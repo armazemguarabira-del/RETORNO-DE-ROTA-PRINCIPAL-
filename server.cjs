@@ -44,7 +44,12 @@ var currentDb = {
   photos: [],
   customManual: "",
   empilhadores: [],
-  carregamentoProcesses: []
+  carregamentoProcesses: [],
+  controleSobras: [],
+  fiveSEntries: [],
+  safetyReports: [],
+  blitzEntries: [],
+  zeroBreakDeclarations: []
 };
 function loadDatabaseFromFile() {
   try {
