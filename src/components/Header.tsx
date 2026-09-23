@@ -4,7 +4,7 @@ import {
   Shield, User as UserIcon, Truck, CheckCircle, BarChart3, Settings, 
   LogOut, FileSpreadsheet, Bell, Check, Clock, AlertCircle, FileText,
   Sun, Moon, Folder, Smartphone, Download, Wifi, RefreshCw, ShieldCheck, X, Layers,
-  ExternalLink, Database, PackageCheck, PanelLeftClose, PanelLeftOpen, Sparkles, Trophy, ClipboardCheck
+  ExternalLink, Database, PackageCheck, PanelLeftClose, PanelLeftOpen, Sparkles, Trophy, ClipboardCheck, ArrowLeft
 } from 'lucide-react';
 import { 
   isClientFirebaseActive, 
@@ -319,12 +319,16 @@ export default function Header({
   const handleLogoClick = () => {
     if (currentUser.role === 'conferente') {
       setActiveTab('conferencias');
+    } else if (currentUser.role === 'empilhador') {
+      setActiveTab('carregamento');
     } else if (currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') {
       setActiveTab('reconciliacao');
     } else if (currentUser.role === 'gestor') {
       setActiveTab('dashboard');
     } else if (currentUser.role === 'monitoramento') {
       setActiveTab('monitoramento_view');
+    } else {
+      setActiveTab('reconciliacao');
     }
   };
 
@@ -364,35 +368,35 @@ export default function Header({
     }
   }, [showNotifications, fiscalAlerts, onSaveAlerts, currentUser.role]);
   return (
-    <header className="bg-slate-900 text-white shadow-md border-b border-slate-800" id="main_header">
+    <header className="bg-slate-900 text-white shadow-md border-b border-slate-800 w-full max-w-full overflow-hidden" id="main_header">
       {/* Top tier bar: Logo and actions */}
-      <div className="border-b border-slate-800/60 bg-slate-950/20">
-        <div className="w-full px-2 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center gap-1">
-            <div className="flex items-center gap-2 min-w-0">
+      <div className="border-b border-slate-800/60 bg-slate-950/20 w-full">
+        <div className="w-full max-w-full px-2 sm:px-4 lg:px-6">
+          <div className="flex justify-between h-14 sm:h-16 items-center gap-1 sm:gap-2 w-full max-w-full min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink min-w-0">
               {/* Logo */}
               <div 
                 onClick={handleLogoClick}
-                className="flex items-center space-x-1.5 sm:space-x-3 cursor-pointer hover:opacity-90 transition-all shrink min-w-0"
+                className="flex items-center space-x-1.5 sm:space-x-2.5 cursor-pointer hover:opacity-90 transition-all shrink min-w-0"
                 id="header_logo_btn"
               >
-                <div className="bg-amber-500/10 p-1.5 sm:p-2 rounded-lg flex items-center justify-center border border-amber-500/20 w-8 h-8 sm:w-10 sm:h-10 shadow-inner shrink-0">
-                  <Truck className="h-4 w-4 sm:h-5 sm:w-5 text-amber-500 shrink-0" />
+                <div className="bg-amber-500/10 p-1 sm:p-1.5 rounded-lg flex items-center justify-center border border-amber-500/20 w-7 h-7 sm:w-9 sm:h-9 shadow-inner shrink-0">
+                  <Truck className="h-3.5 w-3.5 sm:h-4.5 sm:w-4.5 text-amber-500 shrink-0" />
                 </div>
-                <div className="min-w-0 max-w-[105px] min-[380px]:max-w-[140px] sm:max-w-none">
+                <div className="min-w-0 max-w-[95px] min-[380px]:max-w-[130px] sm:max-w-none">
                   <span className="font-sans font-black text-xs sm:text-base tracking-tight block text-white uppercase whitespace-nowrap truncate">Pau Brasil</span>
-                  <span className="font-mono text-[8px] sm:text-xxs tracking-widest text-amber-500 uppercase block leading-none whitespace-nowrap truncate">Retorno de Rota</span>
+                  <span className="font-mono text-[7px] sm:text-xxs tracking-widest text-amber-500 uppercase block leading-none whitespace-nowrap truncate">Retorno de Rota</span>
                 </div>
               </div>
             </div>
 
             {/* User Profile & Actions */}
-            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-              {/* Firebase Connection Status Badge (Desktop/Tablet) */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 min-w-0 pr-0.5 sm:pr-0">
+              {/* Firebase Connection Status Badge (Apenas em telas bem amplas para não espremer ações) */}
               <button
                 type="button"
                 onClick={() => setShowConnectionModal(true)}
-                className={`hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border transition-all duration-300 shadow-xs cursor-pointer hover:scale-105 active:scale-95 shrink-0 ${
+                className={`hidden xl:flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border transition-colors shadow-xs cursor-pointer hover:bg-slate-800/60 shrink-0 max-w-[160px] ${
                 isQuotaExceeded
                   ? 'bg-amber-500/15 text-amber-500 border-amber-500/30 animate-pulse'
                   : firebaseStatus === 'connected' 
@@ -421,22 +425,22 @@ export default function Header({
                           : 'bg-rose-500'
                   }`}></span>
                 </span>
-                <span className="uppercase tracking-wider text-[9px] whitespace-nowrap">
-                  {isQuotaExceeded ? 'Cota Excedida / Local' : `DB: ${activeDbProjectId}`}
+                <span className="uppercase tracking-wider text-[9px] whitespace-nowrap truncate">
+                  {isQuotaExceeded ? 'Cota Excedida' : `DB: ${activeDbProjectId}`}
                 </span>
               </button>
 
               {/* 1. O USUÁRIO (Sempre visível no cabeçalho - Desktop e Mobile) */}
               <div 
-                className="flex items-center space-x-1.5 bg-slate-800/90 border border-slate-700/80 px-2 sm:px-2.5 py-1 rounded-full text-xs font-medium text-slate-200 shrink min-w-0" 
+                className="flex items-center space-x-1 sm:space-x-1.5 bg-slate-800/90 border border-slate-700/80 px-1.5 sm:px-2 py-1 rounded-full text-xs font-medium text-slate-200 shrink min-w-0" 
                 title={`${currentUser.name} (${currentUser.role})`}
                 id="header_user_badge"
               >
-                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <div className="h-2 w-2 rounded-full bg-emerald-400 shrink-0" />
                 <span className="font-mono uppercase text-[9px] text-amber-400 font-black shrink-0">
                   [{currentUser.role === 'auxiliar_logistica' ? 'AUX' : currentUser.role === 'conferente' ? 'CONF' : currentUser.role === 'empilhador' ? 'EMP' : currentUser.role === 'gestor' ? 'GEST' : currentUser.role === 'financeiro' ? 'FIN' : 'MONIT'}]
                 </span>
-                <span className="font-bold text-slate-100 text-[11px] sm:text-xs truncate max-w-[65px] min-[360px]:max-w-[85px] sm:max-w-[150px]">
+                <span className="font-bold text-slate-100 text-[11px] sm:text-xs truncate max-w-[55px] min-[360px]:max-w-[75px] sm:max-w-[130px]">
                   {currentUser.name.split(' ')[0]}
                 </span>
               </div>
@@ -580,44 +584,52 @@ export default function Header({
                   if (activeTab === 'liga') {
                     if (currentUser.role === 'conferente') setActiveTab('conferencias');
                     else if (currentUser.role === 'empilhador') setActiveTab('carregamento');
+                    else if (currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') setActiveTab('reconciliacao');
+                    else if (currentUser.role === 'monitoramento') setActiveTab('monitoramento_view');
                     else setActiveTab('dashboard');
                   } else {
                     setActiveTab('liga');
                   }
                 }}
-                className={`flex border p-1.5 sm:p-2 px-2 sm:px-3 rounded-lg transition-all items-center space-x-1 sm:space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0 hover:scale-105 active:scale-95 ${
+                className={`flex border py-1 sm:py-1.5 px-2 sm:px-2.5 rounded-lg transition-colors items-center space-x-1 sm:space-x-1.5 cursor-pointer shadow-xs text-xs font-bold shrink-0 ${
                   activeTab === 'liga'
-                    ? 'bg-amber-500 border-amber-400 text-slate-950 ring-2 ring-amber-400/50 shadow-md font-black'
+                    ? 'bg-amber-500 border-amber-400 text-slate-950 font-black ring-1 ring-amber-400/50'
                     : 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/50 text-amber-300 hover:text-amber-100 font-extrabold'
                 }`}
                 title={activeTab === 'liga' ? "Voltar da Liga DPO para tela operacional" : "LIGA OPERACIONAL DPO"}
               >
-                <Trophy className="h-4 w-4 fill-current text-amber-400 shrink-0" />
-                <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">LIGA</span>
+                <Trophy className="h-3.5 w-3.5 sm:h-4 sm:w-4 fill-current text-amber-400 shrink-0" />
+                <span className="font-black uppercase text-[10px] sm:text-xs tracking-tight">LIGA</span>
               </button>
 
-              {/* Botão auxiliar quando em Liga para Conferente / Empilhador voltar à tela principal */}
-              {activeTab === 'liga' && (currentUser.role === 'conferente' || currentUser.role === 'empilhador') && (
+              {/* Botão auxiliar quando em Liga para qualquer colaborador voltar à sua tela principal */}
+              {activeTab === 'liga' && (
                 <button
                   id="header_operational_return_btn"
                   type="button"
-                  onClick={() => setActiveTab(currentUser.role === 'empilhador' ? 'carregamento' : 'conferencias')}
-                  className="hidden min-[520px]:flex border p-1.5 sm:p-2 px-2 rounded-lg transition-all items-center space-x-1 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400 active:scale-95"
-                  title={currentUser.role === 'empilhador' ? "Voltar para Descarregamento" : "Voltar para Conferências"}
+                  onClick={() => {
+                    if (currentUser.role === 'empilhador') setActiveTab('carregamento');
+                    else if (currentUser.role === 'conferente') setActiveTab('conferencias');
+                    else if (currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') setActiveTab('reconciliacao');
+                    else if (currentUser.role === 'monitoramento') setActiveTab('monitoramento_view');
+                    else setActiveTab('dashboard');
+                  }}
+                  className="flex border py-1 sm:py-1.5 px-2 rounded-lg transition-colors items-center space-x-1 cursor-pointer shadow-xs text-xs font-black shrink-0 bg-blue-600 hover:bg-blue-500 text-white border-blue-400"
+                  title="Voltar para a tela principal"
                 >
-                  {currentUser.role === 'empilhador' ? <Truck className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
-                  <span className="text-[10px]">Voltar</span>
+                  <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+                  <span className="text-[10px] uppercase">Voltar</span>
                 </button>
               )}
 
-              {/* Baixar APK Mobile Button (Apenas telas grandes) */}
+              {/* Baixar APK Mobile Button (Apenas telas extra-grandes para não espremer barra de ações) */}
               <button
                 id="download_apk_btn"
                 onClick={handleHeaderApkClick}
-                className="hidden lg:flex bg-emerald-655 hover:bg-emerald-700 border border-emerald-550 text-white p-1.5 sm:p-2 px-2 sm:px-3 rounded-lg transition-all items-center space-x-1.5 cursor-pointer shadow-sm text-xs font-bold shrink-0"
+                className="hidden xl:flex bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-white py-1 sm:py-1.5 px-2.5 rounded-lg transition-colors items-center space-x-1.5 cursor-pointer shadow-xs text-xs font-bold shrink-0"
                 title="Baixar Aplicativo Mobile (APK)"
               >
-                <Smartphone className="h-4 w-4 shrink-0" />
+                <Smartphone className="h-3.5 w-3.5 shrink-0" />
                 <span>Baixar APK</span>
               </button>
 
@@ -626,20 +638,20 @@ export default function Header({
                 id="clear_platform_cache_btn"
                 onClick={handleClearCacheAndReload}
                 disabled={isClearingCache}
-                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all items-center justify-center cursor-pointer shadow-sm shrink-0"
+                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-colors items-center justify-center cursor-pointer shadow-xs shrink-0"
                 title="Limpar Cache da Plataforma e Recarregar Dados Atualizados"
               >
-                <RefreshCw className={`h-4 w-4 text-sky-400 ${isClearingCache ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 sm:h-4 sm:w-4 text-sky-400 ${isClearingCache ? 'animate-spin' : ''}`} />
               </button>
 
               {/* Theme Toggle (Telas Médias/Grandes) */}
               <button
                 id="theme_toggle_btn"
                 onClick={onToggleTheme}
-                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-all items-center justify-center cursor-pointer shadow-sm shrink-0"
+                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-colors items-center justify-center cursor-pointer shadow-xs shrink-0"
                 title={theme === 'dark' ? "Ativar Modo Claro" : "Ativar Modo Escuro"}
               >
-                {theme === 'dark' ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-300" />}
+                {theme === 'dark' ? <Sun className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-400" /> : <Moon className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-slate-300" />}
               </button>
 
               {/* 4. O BOTÃO DE LOG IN E LOG OUT (Sempre visível no Cabeçalho - Mobile e Desktop) */}
@@ -647,11 +659,11 @@ export default function Header({
                 id="header_logout_btn"
                 type="button"
                 onClick={onLogout}
-                className="flex border p-1.5 sm:p-2 px-2 sm:px-2.5 rounded-lg transition-all items-center space-x-1 cursor-pointer shadow-sm text-xs font-black shrink-0 bg-rose-950/70 hover:bg-rose-900 border-rose-800/80 hover:border-rose-500 text-rose-200 hover:text-white active:scale-95 group font-sans"
+                className="flex border py-1 sm:py-1.5 px-2 sm:px-2.5 rounded-lg transition-colors items-center space-x-1 cursor-pointer shadow-xs text-xs font-black shrink-0 bg-rose-950/70 hover:bg-rose-900 border-rose-800/80 hover:border-rose-500 text-rose-200 hover:text-white group font-sans"
                 title="Sair da conta e voltar para a Tela de Login"
               >
-                <LogOut className="h-4 w-4 text-rose-400 group-hover:text-white shrink-0 transition-colors" />
-                <span className="font-black uppercase text-[11px] sm:text-xs tracking-tight">Sair</span>
+                <LogOut className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-rose-400 group-hover:text-white shrink-0 transition-colors" />
+                <span className="font-black uppercase text-[10px] sm:text-xs tracking-tight">Sair</span>
               </button>
             </div>
           </div>
@@ -662,10 +674,10 @@ export default function Header({
 
       {/* APK Mobile Download Modal Overlay */}
       {showApkModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white text-slate-900 rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl overflow-hidden flex flex-col">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white text-slate-900 rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] my-auto">
             {/* Header */}
-            <div className="bg-slate-900 text-white p-5 flex items-center justify-between border-b border-slate-800">
+            <div className="bg-slate-900 text-white p-3.5 sm:p-4 flex items-center justify-between border-b border-slate-800 shrink-0">
               <div className="flex items-center space-x-2.5">
                 <div className="bg-amber-500 text-slate-950 p-1.5 rounded-lg shadow-sm">
                   <Smartphone className="h-5 w-5" />
@@ -694,7 +706,7 @@ export default function Header({
             </div>
 
             {/* Content */}
-            <div className="p-6 space-y-5 font-sans">
+            <div className="p-4 sm:p-6 space-y-4 font-sans overflow-y-auto flex-1 overscroll-contain">
               
               {isIframe ? (
                 // Inside AI Studio Preview Warning
@@ -884,18 +896,18 @@ export default function Header({
 
       {/* Modal de Garantia de Conexão em Tempo Real (Firebase Multi-Dispositivo) */}
       {showConnectionModal && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5 text-slate-800">
-            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-200 overflow-hidden">
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden text-slate-800">
+            <div className="flex items-start justify-between border-b border-slate-100 p-3.5 sm:p-5 shrink-0 bg-white">
               <div className="flex items-center space-x-3">
-                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-600">
+                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-600 shrink-0">
                   <Wifi className="h-6 w-6 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-1.5">
                     Garantia de Conexão em Tempo Real
                   </h3>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-[10px] sm:text-xs text-slate-500">
                     Sincronização Nuvem Multi-Dispositivos (Firebase Cloud Firestore)
                   </p>
                 </div>
@@ -908,7 +920,7 @@ export default function Header({
               </button>
             </div>
 
-            <div className="space-y-3 text-xs leading-relaxed">
+            <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3 flex-1 overscroll-contain text-xs leading-relaxed">
               <div className="p-3.5 bg-emerald-50/80 border border-emerald-200/80 rounded-xl space-y-1.5">
                 <div className="flex items-center justify-between font-semibold text-emerald-900">
                   <span className="flex items-center gap-1.5">

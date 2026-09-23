@@ -1567,32 +1567,17 @@ export default function FiscalView({
     }
   }, [audits, activeSession?.id, loadedSessionTime, currentUser.name]);
   
-  // Date and state for Route Import
-  const [routeImportDate, setRouteImportDate] = useState(() => {
-    if (importedRoutes && importedRoutes.length > 0) {
-      const dates = Array.from(new Set(importedRoutes.map(r => r.routeDate).filter(Boolean))).sort().reverse();
-      const today = new Date().toISOString().split('T')[0];
-      if (dates.includes(today)) return today;
-      if (dates.length > 0) return dates[0];
-    }
-    return new Date().toISOString().split('T')[0];
-  });
+  // Helper to get local date in YYYY-MM-DD format
+  const getTodayLocalDateStr = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
 
-  // Automatically adjust routeImportDate when importedRoutes loads or changes if active date has 0 maps
-  React.useEffect(() => {
-    if (importedRoutes && importedRoutes.length > 0) {
-      const activeCount = importedRoutes.filter(r => r.routeDate === routeImportDate).length;
-      if (activeCount === 0) {
-        const dates = Array.from(new Set(importedRoutes.map(r => r.routeDate).filter(Boolean))).sort().reverse();
-        const today = new Date().toISOString().split('T')[0];
-        if (dates.includes(today)) {
-          setRouteImportDate(today);
-        } else if (dates.length > 0) {
-          setRouteImportDate(dates[0]);
-        }
-      }
-    }
-  }, [importedRoutes, routeImportDate]);
+  // Date and state for Route Import - ALWAYS starts on today's local date, fully controllable by the user
+  const [routeImportDate, setRouteImportDate] = useState<string>(() => getTodayLocalDateStr());
 
   // Auto-assign and balance circular blitz routes (exactly 2 per day, swapping out pernoite vehicles)
   React.useEffect(() => {
@@ -2258,17 +2243,39 @@ export default function FiscalView({
     }
   };
 
+  const formatDateBR = (dateStr?: string) => {
+    if (!dateStr) return '-';
+    try {
+      const parts = dateStr.split('T')[0].split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return new Date(dateStr).toLocaleDateString('pt-BR');
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
   interface ExportRecord {
     map: string;
     plate: string;
     driverName: string;
     arrivalDate: string;
     type: 'PA' | 'AG';
+    itemCode?: string;
     itemDescription: string;
     deviationType: 'SOBRA' | 'FALTA';
     fiscalQty: number;
     physicalQty: number;
     divergence: number;
+    prazoStatus?: string;
+    isWithin30Days?: boolean;
+    daysElapsed?: number;
+    surplusFlowStatus?: string;
+    clientCodeNB?: string;
+    deliveryDate?: string;
+    destination?: string;
+    valeEmitido?: string;
     status: string;
   }
 
@@ -2398,6 +2405,29 @@ export default function FiscalView({
     filteredAudits.forEach(audit => {
       const driverName = getDriverName(audit.driverId);
       
+      const arrivalDateObj = new Date((audit.arrivalDate || new Date().toISOString().split('T')[0]) + 'T00:00:00');
+      const daysElapsed = Math.floor((new Date().getTime() - arrivalDateObj.getTime()) / (1000 * 60 * 60 * 24));
+      const isWithin30Days = daysElapsed <= 30;
+      const prazoStatus = audit.surplusFlowStatus === 'ENVIADO' 
+        ? 'ENVIADO' 
+        : isWithin30Days 
+          ? `ENVIO NO PRAZO (${daysElapsed}d)` 
+          : `FORA DO PRAZO (${daysElapsed}d)`;
+
+      const associatedVale = (vales || []).find(v => v.auditId === audit.id);
+      const valeEmitido = associatedVale 
+        ? `SIM (${associatedVale.colaboradorRole === 'CONFERENTE' ? 'Conferente' : 'Motorista'}: R$ ${associatedVale.valor.toFixed(2)})`
+        : audit.deficitActionStatus === 'baixado_direto' ? 'Baixado Direto' : 'Pendente de Regularização';
+
+      const clientNB = audit.clientCodeNB || '-';
+      const alinhadaData = audit.deliveryDate ? formatDateBR(audit.deliveryDate) : '-';
+      const destinoOp = audit.surplusActionStatus === 'baixado_direto' ? 'Estoque' : 'Cliente';
+      const flowStatus = audit.surplusFlowStatus === 'ENVIADO' 
+        ? 'ENVIADO' 
+        : (audit.gestorAlignedDeliveryDate 
+          ? 'DATA ALINHADA' 
+          : (audit.surplusFlowStatus === 'ENCAMINHADO' ? 'AGUARDANDO GESTOR' : 'PENDENTE'));
+
       const hasProductSurplus = (audit.items || []).some(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
         const fisc = i.fiscalQty ?? 0;
@@ -2458,11 +2488,20 @@ export default function FiscalView({
               driverName,
               arrivalDate: audit.arrivalDate,
               type: 'PA',
+              itemCode: item.productCode || '',
               itemDescription: item.productDescription,
               deviationType: 'SOBRA',
               fiscalQty: fiscExpected,
               physicalQty: phys,
               divergence: diff,
+              prazoStatus,
+              isWithin30Days,
+              daysElapsed,
+              surplusFlowStatus: flowStatus,
+              clientCodeNB: clientNB,
+              deliveryDate: alinhadaData,
+              destination: destinoOp,
+              valeEmitido,
               status: 'Sobra não tratada'
             });
           } else if (diff < 0 && unresolvedDeficit && (filterType === 'all' || filterType === 'falta')) {
@@ -2472,11 +2511,20 @@ export default function FiscalView({
               driverName,
               arrivalDate: audit.arrivalDate,
               type: 'PA',
+              itemCode: item.productCode || '',
               itemDescription: item.productDescription,
               deviationType: 'FALTA',
               fiscalQty: fisc,
               physicalQty: phys,
               divergence: diff,
+              prazoStatus,
+              isWithin30Days,
+              daysElapsed,
+              surplusFlowStatus: flowStatus,
+              clientCodeNB: clientNB,
+              deliveryDate: alinhadaData,
+              destination: destinoOp,
+              valeEmitido,
               status: 'Falta não tratada'
             });
           }
@@ -2499,11 +2547,20 @@ export default function FiscalView({
               driverName,
               arrivalDate: audit.arrivalDate,
               type: 'AG',
+              itemCode: asset.assetId || '',
               itemDescription: asset.assetName,
               deviationType: 'SOBRA',
               fiscalQty: fiscExpected,
               physicalQty: phys,
               divergence: diff,
+              prazoStatus,
+              isWithin30Days,
+              daysElapsed,
+              surplusFlowStatus: flowStatus,
+              clientCodeNB: clientNB,
+              deliveryDate: alinhadaData,
+              destination: destinoOp,
+              valeEmitido,
               status: 'Sobra não tratada'
             });
           } else if (diff < 0 && unresolvedDeficit && (filterType === 'all' || filterType === 'falta')) {
@@ -2513,11 +2570,20 @@ export default function FiscalView({
               driverName,
               arrivalDate: audit.arrivalDate,
               type: 'AG',
+              itemCode: asset.assetId || '',
               itemDescription: asset.assetName,
               deviationType: 'FALTA',
               fiscalQty: fiscExpected,
               physicalQty: phys,
               divergence: diff,
+              prazoStatus,
+              isWithin30Days,
+              daysElapsed,
+              surplusFlowStatus: flowStatus,
+              clientCodeNB: clientNB,
+              deliveryDate: alinhadaData,
+              destination: destinoOp,
+              valeEmitido,
               status: 'Falta não tratada'
             });
           }
@@ -2529,26 +2595,13 @@ export default function FiscalView({
   };
 
   interface GroupedSummary {
+    itemCode: string;
     itemDescription: string;
     type: 'PA' | 'AG';
     fiscalQtySum: number;
     physicalQtySum: number;
     divergenceSum: number;
   }
-
-  const escapeXml = (unsafe: string) => {
-    if (!unsafe) return '';
-    return unsafe.replace(/[<>&'"]/g, (c) => {
-      switch (c) {
-        case '<': return '&lt;';
-        case '>': return '&gt;';
-        case '&': return '&amp;';
-        case '\'': return '&apos;';
-        case '"': return '&quot;';
-        default: return c;
-      }
-    });
-  };
 
   const exportToExcel = () => {
     const records = getUnresolvedDiscrepancyRecords();
@@ -2559,10 +2612,14 @@ export default function FiscalView({
 
     // Prepare grouped summary data (tabela dinâmica de itens)
     const groupedMap: { [key: string]: GroupedSummary } = {};
+    let totalSobrasQtd = 0;
+    let totalFaltasQtd = 0;
+
     records.forEach(r => {
-      const key = `${r.type}_${r.itemDescription}`;
+      const key = `${r.type}_${r.itemCode || ''}_${r.itemDescription}`;
       if (!groupedMap[key]) {
         groupedMap[key] = {
+          itemCode: r.itemCode || '',
           itemDescription: r.itemDescription,
           type: r.type,
           fiscalQtySum: 0,
@@ -2573,211 +2630,202 @@ export default function FiscalView({
       groupedMap[key].fiscalQtySum += r.fiscalQty;
       groupedMap[key].physicalQtySum += r.physicalQty;
       groupedMap[key].divergenceSum += r.divergence;
+
+      if (r.deviationType === 'SOBRA') {
+        totalSobrasQtd += Math.abs(r.divergence);
+      } else {
+        totalFaltasQtd += Math.abs(r.divergence);
+      }
     });
     const summaryRows = Object.values(groupedMap);
 
-    // Build Excel XML Spreadsheet 2003 with multiple worksheets
-    let xml = `<?xml version="1.0" encoding="utf-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
-  <Author>Pau Brasil</Author>
-  <Created>${new Date().toISOString()}</Created>
- </DocumentProperties>
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#334155"/>
-  </Style>
-  <Style ss:ID="Title">
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="13" ss:Color="#0F172A" ss:Bold="1"/>
-   <Alignment ss:Vertical="Center" ss:Horizontal="Left" ss:WrapText="1"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="Header">
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#FFFFFF" ss:Bold="1"/>
-   <Interior ss:Color="#1E293B" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
-  </Style>
-  <Style ss:ID="Editable">
-   <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-   <Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F59E0B"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F59E0B"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F59E0B"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F59E0B"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#1E293B" ss:Italic="1"/>
-  </Style>
-  <Style ss:ID="Sobra">
-   <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#16A34A" ss:Bold="1"/>
-  </Style>
-  <Style ss:ID="Falta">
-   <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#DC2626" ss:Bold="1"/>
-  </Style>
-  <Style ss:ID="SobraNumero">
-   <Alignment ss:Vertical="Center" ss:Horizontal="Right" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#16A34A" ss:Bold="1"/>
-   <NumberFormat ss:Format="General"/>
-  </Style>
-  <Style ss:ID="FaltaNumero">
-   <Alignment ss:Vertical="Center" ss:Horizontal="Right" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#DC2626" ss:Bold="1"/>
-   <NumberFormat ss:Format="General"/>
-  </Style>
-  <Style ss:ID="NumeroPadrao">
-   <Alignment ss:Vertical="Center" ss:Horizontal="Right" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="10" ss:Color="#334155"/>
-   <NumberFormat ss:Format="General"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="Divergencias Detalhadas">
-  <Table>
-   <Column ss:Width="70"/>
-   <Column ss:Width="70"/>
-   <Column ss:Width="130"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="50"/>
-   <Column ss:Width="200"/>
-   <Column ss:Width="70"/>
-   <Column ss:Width="75"/>
-   <Column ss:Width="75"/>
-   <Column ss:Width="75"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="160"/>
-   <Column ss:Width="160"/>
-   <Row ss:Height="26">
-    <Cell ss:MergeAcross="12" ss:StyleID="Title"><Data ss:Type="String">   DIVERGÊNCIAS DETALHADAS (SOBRAS E FALTAS NÃO TRATADAS)</Data></Cell>
-   </Row>
-   <Row ss:Height="22" ss:StyleID="Header">
-    <Cell><Data ss:Type="String">Mapa</Data></Cell>
-    <Cell><Data ss:Type="String">Placa</Data></Cell>
-    <Cell><Data ss:Type="String">Motorista</Data></Cell>
-    <Cell><Data ss:Type="String">Data Chegada</Data></Cell>
-    <Cell><Data ss:Type="String">Tipo Item</Data></Cell>
-    <Cell><Data ss:Type="String">Item / Descrição</Data></Cell>
-    <Cell><Data ss:Type="String">Tipo de Desvio</Data></Cell>
-    <Cell><Data ss:Type="String">Saldo Fiscal</Data></Cell>
-    <Cell><Data ss:Type="String">Saldo Físico</Data></Cell>
-    <Cell><Data ss:Type="String">Divergência</Data></Cell>
-    <Cell><Data ss:Type="String">Status</Data></Cell>
-    <Cell><Data ss:Type="String">Justificativa (Editável)</Data></Cell>
-    <Cell><Data ss:Type="String">Ação Tomada (Editável)</Data></Cell>
-   </Row>`;
+    const now = new Date();
+    const currentDateStr = now.toLocaleDateString('pt-BR') + ' às ' + now.toLocaleTimeString('pt-BR');
+    const filterDesc = subTabDivergencias === 'all' ? 'Geral (PA e AG)' : subTabDivergencias === 'pa' ? 'Produtos (PA)' : 'Ativos (AG)';
 
-    records.forEach(r => {
-      const formattedDate = r.arrivalDate ? new Date(r.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR') : '';
-      xml += `
-   <Row ss:AutoFitHeight="1">
-    <Cell><Data ss:Type="String">${escapeXml(r.map)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.plate)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.driverName)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(formattedDate)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.type)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.itemDescription)}</Data></Cell>
-    <Cell ss:StyleID="${r.deviationType === 'SOBRA' ? 'Sobra' : 'Falta'}"><Data ss:Type="String">${r.deviationType}</Data></Cell>
-    <Cell ss:StyleID="NumeroPadrao"><Data ss:Type="Number">${r.fiscalQty}</Data></Cell>
-    <Cell ss:StyleID="NumeroPadrao"><Data ss:Type="Number">${r.physicalQty}</Data></Cell>
-    <Cell ss:StyleID="${r.divergence > 0 ? 'SobraNumero' : 'FaltaNumero'}"><Data ss:Type="Number">${r.divergence}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.status)}</Data></Cell>
-    <Cell ss:StyleID="Editable"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="Editable"><Data ss:Type="String"></Data></Cell>
-   </Row>`;
+    // Build rows matching exact platform table model and colors
+    let rowsHtml = '';
+    records.forEach((r, idx) => {
+      const isSobra = r.deviationType === 'SOBRA';
+      const rowBg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+      const formattedDate = r.arrivalDate ? formatDateBR(r.arrivalDate) : '-';
+
+      const devBadgeBg = isSobra ? '#dcfce7' : '#fee2e2';
+      const devBadgeColor = isSobra ? '#15803d' : '#b91c1c';
+      const devBadgeBorder = isSobra ? '#86efac' : '#fca5a5';
+      const devSignal = isSobra ? '+' : '';
+
+      const prazoBg = r.isWithin30Days ? '#d1fae5' : '#fee2e2';
+      const prazoColor = r.isWithin30Days ? '#065f46' : '#991b1b';
+      const prazoBorder = r.isWithin30Days ? '#6ee7b7' : '#f87171';
+
+      rowsHtml += `
+        <tr style="background-color: ${rowBg}; height: 28px;">
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; font-weight: bold; background-color: #f1f5f9;">${r.map}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; font-weight: bold;">${r.plate}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-weight: 500;">${r.driverName}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center;">${formattedDate}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-weight: bold; color: ${r.type === 'PA' ? '#1e40af' : '#7c3aed'};">${r.type}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; font-weight: bold;">${r.itemCode || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-weight: 600;">${r.itemDescription}</td>
+          <td style="border: 1px solid ${devBadgeBorder}; background-color: ${devBadgeBg}; color: ${devBadgeColor}; text-align: center; font-weight: 900; font-size: 10pt;">
+            ${r.deviationType}
+          </td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; color: #475569;">${r.fiscalQty}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; color: #475569;">${r.physicalQty}</td>
+          <td style="border: 1px solid ${devBadgeBorder}; background-color: ${devBadgeBg}; color: ${devBadgeColor}; text-align: center; font-weight: 900; font-family: Consolas, monospace; font-size: 10.5pt;">
+            ${devSignal}${r.divergence}
+          </td>
+          <td style="border: 1px solid ${prazoBorder}; background-color: ${prazoBg}; color: ${prazoColor}; text-align: center; font-weight: bold; font-size: 8.5pt;">
+            ${r.prazoStatus || '-'}
+          </td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-weight: bold; font-size: 8.5pt; color: #1e293b;">
+            ${r.surplusFlowStatus || '-'}
+          </td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace;">${r.clientCodeNB || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center;">${r.deliveryDate || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-size: 9pt;">${r.destination || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-size: 8.5pt; font-weight: 500;">${r.valeEmitido || '-'}</td>
+        </tr>
+      `;
     });
 
-    xml += `
-  </Table>
- </Worksheet>
- <Worksheet ss:Name="Consolidado por Item">
-  <Table>
-   <Column ss:Width="200"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="120"/>
-   <Row ss:Height="26">
-    <Cell ss:MergeAcross="5" ss:StyleID="Title"><Data ss:Type="String">   RESUMO CONSOLIDADO DE DIVERGÊNCIAS (TABELA DINÂMICA DOS ITENS)</Data></Cell>
-   </Row>
-   <Row ss:Height="22" ss:StyleID="Header">
-    <Cell><Data ss:Type="String">Item / Descrição</Data></Cell>
-    <Cell><Data ss:Type="String">Tipo Item</Data></Cell>
-    <Cell><Data ss:Type="String">Soma de Saldo Fiscal</Data></Cell>
-    <Cell><Data ss:Type="String">Soma de Saldo Físico</Data></Cell>
-    <Cell><Data ss:Type="String">Soma de Divergência</Data></Cell>
-    <Cell><Data ss:Type="String">Status do Item</Data></Cell>
-   </Row>`;
+    // Build consolidated summary rows HTML
+    let summaryRowsHtml = '';
+    summaryRows.forEach((sr, idx) => {
+      const isSobra = sr.divergenceSum > 0;
+      const rowBg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+      const badgeBg = isSobra ? '#dcfce7' : '#fee2e2';
+      const badgeColor = isSobra ? '#15803d' : '#b91c1c';
+      const signal = isSobra ? '+' : '';
 
-    summaryRows.forEach(sr => {
-      const statusLabel = sr.divergenceSum > 0 ? 'SOBRA CONSOLIDADA' : 'FALTA CONSOLIDADA';
-      const statusStyle = sr.divergenceSum > 0 ? 'Sobra' : 'Falta';
-      const statusNumStyle = sr.divergenceSum > 0 ? 'SobraNumero' : 'FaltaNumero';
-      xml += `
-   <Row ss:AutoFitHeight="1">
-    <Cell><Data ss:Type="String">${escapeXml(sr.itemDescription)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(sr.type)}</Data></Cell>
-    <Cell ss:StyleID="NumeroPadrao"><Data ss:Type="Number">${sr.fiscalQtySum}</Data></Cell>
-    <Cell ss:StyleID="NumeroPadrao"><Data ss:Type="Number">${sr.physicalQtySum}</Data></Cell>
-    <Cell ss:StyleID="${statusNumStyle}"><Data ss:Type="Number">${sr.divergenceSum}</Data></Cell>
-    <Cell ss:StyleID="${statusStyle}"><Data ss:Type="String">${statusLabel}</Data></Cell>
-   </Row>`;
+      summaryRowsHtml += `
+        <tr style="background-color: ${rowBg}; height: 26px;">
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace; font-weight: bold;">${sr.itemCode || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-weight: 600;">${sr.itemDescription}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-weight: bold; color: ${sr.type === 'PA' ? '#1e40af' : '#7c3aed'};">${sr.type}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace;">${sr.fiscalQtySum}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace;">${sr.physicalQtySum}</td>
+          <td style="border: 1px solid #cbd5e1; background-color: ${badgeBg}; color: ${badgeColor}; text-align: center; font-weight: 900; font-family: Consolas, monospace; font-size: 10.5pt;">
+            ${signal}${sr.divergenceSum}
+          </td>
+          <td style="border: 1px solid #cbd5e1; background-color: ${badgeBg}; color: ${badgeColor}; text-align: center; font-weight: bold; font-size: 9pt;">
+            ${isSobra ? 'SOBRA CONSOLIDADA' : 'FALTA CONSOLIDADA'}
+          </td>
+        </tr>
+      `;
     });
 
-    xml += `
-  </Table>
- </Worksheet>
-</Workbook>`;
+    const excelHtml = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+          <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+          <!--[if gte mso 9]>
+          <xml>
+            <x:ExcelWorkbook>
+              <x:ExcelWorksheets>
+                <x:ExcelWorksheet>
+                  <x:Name>Acompanhamento de Divergências</x:Name>
+                  <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+                </x:ExcelWorksheet>
+              </x:ExcelWorksheets>
+            </x:ExcelWorkbook>
+          </xml>
+          <![endif]-->
+          <style>
+            table { border-collapse: collapse; width: 100%; font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 9.5pt; }
+            th { background-color: #f59e0b; color: #0f172a; font-weight: bold; border: 1px solid #d97706; padding: 8px 6px; text-align: center; text-transform: uppercase; font-size: 9pt; }
+            td { padding: 6px 8px; vertical-align: middle; }
+          </style>
+        </head>
+        <body>
+          <table>
+            <!-- Title Header identical to Platform -->
+            <tr>
+              <th colspan="17" style="background-color: #0f172a; color: #f59e0b; font-size: 13pt; font-weight: 900; text-align: center; height: 38px; border: 1px solid #0f172a;">
+                PAU BRASIL DISTRIBUIDORA AMBEV • PAINEL DE ACOMPANHAMENTO DE SOBRAS E FALTAS
+              </th>
+            </tr>
+            <tr>
+              <td colspan="17" style="background-color: #1e293b; color: #e2e8f0; font-size: 8.5pt; text-align: center; height: 24px; border: 1px solid #1e293b;">
+                Exportação Gerada em: <b>${currentDateStr}</b> | Usuário: <b>${currentUser.name}</b> | Visão: <b>${filterDesc}</b> | Modo: <b>${sobrasViewMode === 'operacional' ? 'Painel Operacional' : 'Visão Master'}</b> | Total de Ocorrências: <b>${records.length}</b>
+              </td>
+            </tr>
+            <tr style="height: 10px;"><td colspan="17" style="border: none;"></td></tr>
 
-    const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+            <!-- Table Columns matching Platform View Exactly -->
+            <tr>
+              <th style="width: 85px;">MAPA</th>
+              <th style="width: 90px;">PLACA</th>
+              <th style="width: 190px; text-align: left;">MOTORISTA</th>
+              <th style="width: 95px;">DATA CHEGADA</th>
+              <th style="width: 55px;">TIPO</th>
+              <th style="width: 85px;">CÓDIGO SKU</th>
+              <th style="width: 250px; text-align: left;">PRODUTO / ATIVO</th>
+              <th style="width: 85px;">DESVIO</th>
+              <th style="width: 80px;">SALDO FISCAL</th>
+              <th style="width: 80px;">SALDO FÍSICO</th>
+              <th style="width: 90px;">DIVERGÊNCIA</th>
+              <th style="width: 140px;">PRAZO (30 DIAS)</th>
+              <th style="width: 120px;">FLUXO DPO</th>
+              <th style="width: 95px;">CLIENTE (NB)</th>
+              <th style="width: 95px;">DATA ALINHADA</th>
+              <th style="width: 130px; text-align: left;">DESTINO</th>
+              <th style="width: 160px; text-align: left;">VALE / REGULARIZAÇÃO</th>
+            </tr>
+
+            <!-- Data Rows -->
+            ${rowsHtml}
+
+            <!-- Summary / Footer Row -->
+            <tr style="background-color: #f1f5f9; height: 32px; font-weight: bold; border-top: 2px solid #0f172a;">
+              <td colspan="7" style="border: 1px solid #94a3b8; text-align: right; font-weight: 900; padding-right: 12px; font-size: 10pt;">
+                TOTAIS CONSOLIDADOS:
+              </td>
+              <td style="border: 1px solid #94a3b8; text-align: center; font-size: 8pt; color: #475569;">
+                ${records.length} itens
+              </td>
+              <td colspan="2" style="border: 1px solid #94a3b8; text-align: right; font-weight: bold; font-size: 8.5pt;">
+                Total Sobras: <span style="color: #15803d; font-weight: 900;">+${totalSobrasQtd}</span> | Faltas: <span style="color: #b91c1c; font-weight: 900;">-${totalFaltasQtd}</span>
+              </td>
+              <td style="border: 1px solid #94a3b8; text-align: center; font-weight: 900; font-family: Consolas, monospace; background-color: #fef3c7; color: #b45309; font-size: 11pt;">
+                ${totalSobrasQtd - totalFaltasQtd > 0 ? '+' : ''}${totalSobrasQtd - totalFaltasQtd}
+              </td>
+              <td colspan="6" style="border: 1px solid #94a3b8; text-align: left; font-size: 8.5pt; color: #64748b;">
+                Saldo Líquido da Operação
+              </td>
+            </tr>
+
+            <!-- Separator -->
+            <tr style="height: 25px;"><td colspan="17" style="border: none;"></td></tr>
+
+            <!-- Secondary Dynamic Pivot Table: Consolidado por Item -->
+            <tr>
+              <th colspan="7" style="background-color: #1e293b; color: #f59e0b; font-size: 11pt; font-weight: bold; text-align: center; height: 30px; border: 1px solid #1e293b;">
+                RESUMO CONSOLIDADO POR ITEM (TABELA DINÂMICA DE PRODUTOS E ATIVOS)
+              </th>
+            </tr>
+            <tr>
+              <th style="width: 85px;">CÓDIGO SKU</th>
+              <th style="width: 250px; text-align: left;">DESCRIÇÃO DO ITEM</th>
+              <th style="width: 55px;">TIPO</th>
+              <th style="width: 90px;">SOMA FISCAL</th>
+              <th style="width: 90px;">SOMA FÍSICO</th>
+              <th style="width: 100px;">DIVERGÊNCIA LÍQUIDA</th>
+              <th style="width: 150px;">STATUS CONSOLIDADO</th>
+            </tr>
+            ${summaryRowsHtml}
+          </table>
+        </body>
+      </html>
+    `;
+
+    const blob = new Blob(["\uFEFF" + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     
-    const filterDesc = subTabDivergencias === 'all' ? 'geral' : subTabDivergencias === 'pa' ? 'pa' : 'ag';
-    const dateStr = new Date().toISOString().split('T')[0];
-    const filename = `sobras_e_faltas_pendentes_${filterDesc}_${dateStr}.xls`;
+    const dateFileStr = new Date().toISOString().split('T')[0];
+    const filename = `acompanhamento_sobras_e_faltas_${filterDesc.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${dateFileStr}.xls`;
     
     link.setAttribute("href", url);
     link.setAttribute("download", filename);
@@ -5263,9 +5311,23 @@ export default function FiscalView({
                     type="date"
                     value={routeImportDate}
                     onChange={(e) => setRouteImportDate(e.target.value)}
-                    className="text-xs bg-transparent border-none text-slate-900 focus:outline-none font-semibold font-mono"
+                    className="text-xs bg-transparent border-none text-slate-900 focus:outline-none font-semibold font-mono cursor-pointer"
                   />
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => setRouteImportDate(getTodayLocalDateStr())}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                    routeImportDate === getTodayLocalDateStr()
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                  }`}
+                  title="Voltar para a data de hoje"
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span>Hoje</span>
+                </button>
 
                 <button
                   type="button"

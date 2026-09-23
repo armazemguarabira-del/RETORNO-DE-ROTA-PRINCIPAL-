@@ -3137,3 +3137,68 @@ export const DEFAULT_EMPILHADORES: Empilhador[] = [
 
 export const DEFAULT_CARREGAMENTOS: CarregamentoProcess[] = [];
 
+// Utilitários de normalização e desduplicação de usuários
+export const normalizePersonName = (name: string): string => {
+  return (name || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+};
+
+export const normalizeUserLogin = (username: string): string => {
+  const raw = (username || '').trim().toLowerCase();
+  const base = raw.includes('@') ? raw.split('@')[0] : raw;
+  return base.replace(/[^a-z0-9_-]/g, '');
+};
+
+export interface DeduplicationResult {
+  cleanedUsers: User[];
+  duplicateIds: string[];
+}
+
+export const deduplicateUsersComprehensive = (userList: User[]): DeduplicationResult => {
+  const seenLogins = new Set<string>();
+  const seenNames = new Set<string>();
+  const seenIds = new Set<string>();
+  const cleanedUsers: User[] = [];
+  const duplicateIds: string[] = [];
+
+  for (const u of userList) {
+    if (!u) continue;
+
+    const rawUsername = (u.username || '').trim().toLowerCase();
+    const cleanLogin = normalizeUserLogin(u.username || '');
+    const cleanId = (u.id || '').trim().toLowerCase();
+    const cleanName = normalizePersonName(u.name || '');
+
+    let isDuplicate = false;
+
+    if (cleanId && seenIds.has(cleanId)) {
+      isDuplicate = true;
+    } else if (cleanLogin && seenLogins.has(cleanLogin)) {
+      isDuplicate = true;
+    } else if (cleanName && cleanName.length >= 3 && seenNames.has(cleanName)) {
+      isDuplicate = true;
+    }
+
+    if (isDuplicate) {
+      if (u.id) duplicateIds.push(u.id);
+      continue;
+    }
+
+    if (cleanId) seenIds.add(cleanId);
+    if (cleanLogin) seenLogins.add(cleanLogin);
+    if (cleanName && cleanName.length >= 3) seenNames.add(cleanName);
+
+    const normalizedUser = rawUsername === 'armazemguarabira@gmail.com'
+      ? { ...u, username: 'armazemguarabira' }
+      : u;
+
+    cleanedUsers.push(normalizedUser);
+  }
+
+  return { cleanedUsers, duplicateIds };
+};
+

@@ -380,21 +380,153 @@ export default function ControleSobrasView({
     }
   };
 
-  // Export to Excel (CSV)
+  // Export to Excel with exact table format, colors, headers, and model
   const handleExportExcel = () => {
-    let csv = 'CODIGO;PRODUTO;QUANTIDADE;MAPA;DATA;PRAZO_DE_ENVIO;STATUS_DE_ENVIO;DESTINO;CLIENTE_NB;REGISTRADO_POR;BAIXADO_POR;OBSERVACOES\n';
-    filteredSobras.forEach(item => {
-      csv += `"${item.productCode}";"${item.productDescription}";${item.quantity};"${item.routeMap}";"${formatDateBR(item.mapDate)}";"${formatDateBR(item.deadlineDate)}";"${item.status}";"${item.destination || '-'}";"${item.clientCodeNB || '-'}";"${item.registeredBy || 'Sistema'}";"${item.resolvedBy || '-'}";"${item.notes || ''}"\n`;
+    const totalQtd = filteredSobras.reduce((sum, item) => sum + (item.quantity || 0), 0);
+    const currentDateStr = new Date().toLocaleString('pt-BR');
+
+    let rowsHtml = '';
+    filteredSobras.forEach((item, idx) => {
+      const daysDiff = getDaysDiff(item.deadlineDate);
+      const isExpired = daysDiff < 0;
+      const isCritical = daysDiff >= 0 && daysDiff <= 7;
+      const rowBg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+
+      let prazoBg = '#dcfce7';
+      let prazoColor = '#064e3b';
+      let prazoBorder = '#86efac';
+      let prazoStatusText = `${daysDiff}d restantes`;
+      if (isExpired) {
+        prazoBg = '#fee2e2';
+        prazoColor = '#991b1b';
+        prazoBorder = '#f87171';
+        prazoStatusText = `Vencido há ${Math.abs(daysDiff)}d`;
+      } else if (isCritical) {
+        prazoBg = '#fef3c7';
+        prazoColor = '#92400e';
+        prazoBorder = '#fcd34d';
+        prazoStatusText = `Crítico (${daysDiff}d)`;
+      }
+
+      let statusBg = '#fef3c7';
+      let statusColor = '#b45309';
+      let statusBorder = '#fcd34d';
+      if (item.status === 'ENVIADO') {
+        statusBg = '#d1fae5';
+        statusColor = '#065f46';
+        statusBorder = '#6ee7b7';
+      } else if (item.status === 'DEVOLVIDO') {
+        statusBg = '#dbeafe';
+        statusColor = '#1e40af';
+        statusBorder = '#93c5fd';
+      }
+
+      rowsHtml += `
+        <tr style="background-color: ${rowBg}; height: 26px;">
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-weight: bold; font-family: Consolas, monospace;">${item.productCode}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-weight: 600;">${item.productDescription}${item.isManual ? ' [Manual]' : ''}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-weight: bold; font-family: Consolas, monospace;">${item.quantity}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace;">${item.routeMap}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center;">${formatDateBR(item.mapDate)}</td>
+          <td style="border: 1px solid ${prazoBorder}; background-color: ${prazoBg}; color: ${prazoColor}; text-align: center; font-weight: bold;">
+            ${formatDateBR(item.deadlineDate)} <span style="font-size: 8pt;">(${prazoStatusText})</span>
+          </td>
+          <td style="border: 1px solid ${statusBorder}; background-color: ${statusBg}; color: ${statusColor}; text-align: center; font-weight: bold;">
+            ${item.status}
+          </td>
+          <td style="border: 1px solid #cbd5e1; text-align: center;">${item.destination || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: center; font-family: Consolas, monospace;">${item.clientCodeNB || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left;">${item.registeredBy || 'Sistema'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left;">${item.resolvedBy || '-'}</td>
+          <td style="border: 1px solid #cbd5e1; text-align: left; font-style: italic;">${item.notes || ''}</td>
+        </tr>
+      `;
     });
 
-    const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+    const excelHtml = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+          <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+          <!--[if gte mso 9]>
+          <xml>
+            <x:ExcelWorkbook>
+              <x:ExcelWorksheets>
+                <x:ExcelWorksheet>
+                  <x:Name>Controle de Sobras</x:Name>
+                  <x:WorksheetOptions>
+                    <x:DisplayGridlines/>
+                  </x:WorksheetOptions>
+                </x:ExcelWorksheet>
+              </x:ExcelWorksheets>
+            </x:ExcelWorkbook>
+          </xml>
+          <![endif]-->
+          <style>
+            table { border-collapse: collapse; width: 100%; font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 10pt; }
+            th { background-color: #f59e0b; color: #000000; font-weight: bold; border: 1px solid #d97706; padding: 8px 6px; text-align: center; text-transform: uppercase; font-size: 9.5pt; }
+            td { padding: 6px 8px; vertical-align: middle; }
+          </style>
+        </head>
+        <body>
+          <table>
+            <!-- Title Header -->
+            <tr>
+              <th colspan="12" style="background-color: #0f172a; color: #f59e0b; font-size: 13pt; font-weight: bold; text-align: center; height: 35px; border: 1px solid #0f172a;">
+                PAU BRASIL DISTRIBUIDORA AMBEV - CONTROLE E GESTÃO DE SOBRAS DE P.A.
+              </th>
+            </tr>
+            <tr>
+              <td colspan="12" style="background-color: #1e293b; color: #e2e8f0; font-size: 8.5pt; text-align: center; height: 22px; border: 1px solid #1e293b;">
+                Exportação Gerada em: <b>${currentDateStr}</b> | Usuário: <b>${currentUser.name}</b> | Filtro Status: <b>${statusFilter}</b> | Total de Registros: <b>${filteredSobras.length}</b>
+              </td>
+            </tr>
+            <tr style="height: 10px;"><td colspan="12" style="border: none;"></td></tr>
+
+            <!-- Table Columns matching Platform View -->
+            <tr>
+              <th style="width: 90px;">CÓDIGO</th>
+              <th style="width: 280px; text-align: left;">PRODUTO</th>
+              <th style="width: 85px;">QUANTIDADE</th>
+              <th style="width: 90px;">MAPA</th>
+              <th style="width: 95px;">DATA</th>
+              <th style="width: 170px;">PRAZO DE ENVIO</th>
+              <th style="width: 120px;">STATUS DE ENVIO</th>
+              <th style="width: 100px;">DESTINO</th>
+              <th style="width: 100px;">CLIENTE (NB)</th>
+              <th style="width: 130px; text-align: left;">REGISTRADO POR</th>
+              <th style="width: 130px; text-align: left;">BAIXADO POR</th>
+              <th style="width: 220px; text-align: left;">OBSERVAÇÕES</th>
+            </tr>
+
+            <!-- Data Rows -->
+            ${rowsHtml}
+
+            <!-- Summary / Footer Row -->
+            <tr style="background-color: #f1f5f9; height: 30px; font-weight: bold; border-top: 2px solid #0f172a;">
+              <td colspan="2" style="border: 1px solid #94a3b8; text-align: right; font-weight: bold; padding-right: 12px;">
+                TOTAL GERAL:
+              </td>
+              <td style="border: 1px solid #94a3b8; text-align: center; font-weight: bold; font-family: Consolas, monospace; background-color: #fef3c7; color: #b45309; font-size: 11pt;">
+                ${totalQtd}
+              </td>
+              <td colspan="9" style="border: 1px solid #94a3b8; text-align: left; font-size: 8.5pt; color: #64748b;">
+                ${filteredSobras.length} linhas filtradas
+              </td>
+            </tr>
+          </table>
+        </body>
+      </html>
+    `;
+
+    const blob = new Blob(["\uFEFF" + excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `controle_de_sobras_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `controle_de_sobras_${new Date().toISOString().split('T')[0]}.xls`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Export to PDF
@@ -917,12 +1049,12 @@ export default function ControleSobrasView({
 
       {/* Modal: Nova Sobra Manual */}
       {showManualModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
-            <div className="bg-amber-500 p-4 text-slate-950 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-2 sm:p-4 overflow-hidden animate-fade-in">
+          <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden">
+            <div className="bg-amber-500 p-3.5 sm:p-4 text-slate-950 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <Plus className="h-5 w-5 stroke-[3]" />
-                <h3 className="font-black text-base uppercase font-sans">Cadastrar Sobra Manual de P.A.</h3>
+                <h3 className="font-black text-sm sm:text-base uppercase font-sans">Cadastrar Sobra Manual de P.A.</h3>
               </div>
               <button 
                 onClick={() => setShowManualModal(false)}
@@ -932,121 +1064,124 @@ export default function ControleSobrasView({
               </button>
             </div>
 
-            <form onSubmit={handleAddManualItem} className="p-5 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+            <form onSubmit={handleAddManualItem} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3 sm:space-y-4 flex-1 overscroll-contain">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                      Código do Produto *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: 19164"
+                      value={manualForm.productCode}
+                      onChange={(e) => {
+                        const code = e.target.value;
+                        const found = products.find(p => p.code === code.trim());
+                        setManualForm(prev => ({
+                          ...prev,
+                          productCode: code,
+                          productDescription: found ? found.description : prev.productDescription
+                        }));
+                      }}
+                      className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                      Quantidade (Unidades) *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      required
+                      value={manualForm.quantity}
+                      onChange={(e) => setManualForm(prev => ({ ...prev, quantity: Number(e.target.value) || 1 }))}
+                      className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                    Código do Produto *
+                    Descrição do Produto
                   </label>
                   <input
                     type="text"
-                    required
-                    placeholder="Ex: 19164"
-                    value={manualForm.productCode}
-                    onChange={(e) => {
-                      const code = e.target.value;
-                      const found = products.find(p => p.code === code.trim());
-                      setManualForm(prev => ({
-                        ...prev,
-                        productCode: code,
-                        productDescription: found ? found.description : prev.productDescription
-                      }));
-                    }}
-                    className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                    Quantidade (Unidades) *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    required
-                    value={manualForm.quantity}
-                    onChange={(e) => setManualForm(prev => ({ ...prev, quantity: Number(e.target.value) || 1 }))}
-                    className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                  Descrição do Produto
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTIPACK"
-                  value={manualForm.productDescription}
-                  onChange={(e) => setManualForm(prev => ({ ...prev, productDescription: e.target.value }))}
-                  className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                    Mapa da Rota *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: 17501"
-                    value={manualForm.routeMap}
-                    onChange={(e) => setManualForm(prev => ({ ...prev, routeMap: e.target.value }))}
-                    className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                    Data do Fechamento *
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={manualForm.mapDate}
-                    onChange={(e) => setManualForm(prev => ({ ...prev, mapDate: e.target.value }))}
+                    placeholder="Ex: GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTIPACK"
+                    value={manualForm.productDescription}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, productDescription: e.target.value }))}
                     className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
                   />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                  Prazo Calculado (30 Dias)
-                </label>
-                <div className="bg-[#dcfce7] border border-emerald-300 rounded-xl p-2.5 text-xs font-mono font-black text-emerald-950 flex items-center justify-between">
-                  <span>Data Limite de Baixa:</span>
-                  <span>{formatDateBR(calculateDeadline(manualForm.mapDate))}</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                      Mapa da Rota *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: 17501"
+                      value={manualForm.routeMap}
+                      onChange={(e) => setManualForm(prev => ({ ...prev, routeMap: e.target.value }))}
+                      className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                      Data do Fechamento *
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={manualForm.mapDate}
+                      onChange={(e) => setManualForm(prev => ({ ...prev, mapDate: e.target.value }))}
+                      className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                    Prazo Calculado (30 Dias)
+                  </label>
+                  <div className="bg-[#dcfce7] border border-emerald-300 rounded-xl p-2.5 text-xs font-mono font-black text-emerald-950 flex items-center justify-between">
+                    <span>Data Limite de Baixa:</span>
+                    <span>{formatDateBR(calculateDeadline(manualForm.mapDate))}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                    Observações / Motivo da Sobra
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ex: Identificado no baú após descarga física da rota..."
+                    value={manualForm.notes}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, notes: e.target.value }))}
+                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  ></textarea>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                  Observações / Motivo da Sobra
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Ex: Identificado no baú após descarga física da rota..."
-                  value={manualForm.notes}
-                  onChange={(e) => setManualForm(prev => ({ ...prev, notes: e.target.value }))}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                ></textarea>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-150">
+              {/* Sticky Footer */}
+              <div className="flex items-center justify-end gap-2 p-3 sm:p-4 border-t border-slate-150 shrink-0 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => setShowManualModal(false)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  className="w-1/3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-200 bg-slate-100 rounded-xl transition cursor-pointer text-center"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-black text-slate-950 bg-amber-500 hover:bg-amber-600 rounded-xl transition shadow-sm border border-amber-600 cursor-pointer flex items-center gap-1"
+                  className="flex-1 py-2.5 text-xs font-black text-slate-950 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 rounded-xl transition shadow-md border border-amber-600 cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   <Check className="h-4 w-4 stroke-[3]" />
                   <span>Salvar Sobra</span>
@@ -1059,12 +1194,12 @@ export default function ControleSobrasView({
 
       {/* Modal: Baixa / Encaminhamento */}
       {showBaixaModal && selectedItemForBaixa && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
-            <div className="bg-slate-900 p-4 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-2 sm:p-4 overflow-hidden animate-fade-in">
+          <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden">
+            <div className="bg-slate-900 p-3.5 sm:p-4 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <CheckCircle className="h-5 w-5 text-amber-400" />
-                <h3 className="font-black text-base uppercase font-sans">Dar Baixa na Sobra de P.A.</h3>
+                <h3 className="font-black text-sm sm:text-base uppercase font-sans">Dar Baixa na Sobra de P.A.</h3>
               </div>
               <button 
                 onClick={() => setShowBaixaModal(false)}
@@ -1074,109 +1209,112 @@ export default function ControleSobrasView({
               </button>
             </div>
 
-            <form onSubmit={handleConfirmBaixa} className="p-5 space-y-4">
-              {/* Item Info Summary */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-slate-500">{selectedItemForBaixa.productCode}</span>
-                  <span className="font-mono font-black text-amber-700">{selectedItemForBaixa.quantity} unidades</span>
-                </div>
-                <div className="font-bold text-slate-900 text-sm">{selectedItemForBaixa.productDescription}</div>
-                <div className="text-slate-500 flex items-center gap-3 pt-1">
-                  <span>Mapa: <strong>{selectedItemForBaixa.routeMap}</strong></span>
-                  <span>Data: <strong>{formatDateBR(selectedItemForBaixa.mapDate)}</strong></span>
-                </div>
-              </div>
-
-              {/* Destination Selector */}
-              <div>
-                <label className="block text-xxs font-bold uppercase text-slate-600 mb-1.5">
-                  Destino da Sobra *
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setBaixaForm(prev => ({ ...prev, status: 'DEVOLVIDO', destination: 'ESTOQUE' }))}
-                    className={`p-3 rounded-xl border font-bold text-xs flex flex-col items-center gap-1.5 transition cursor-pointer ${
-                      baixaForm.destination === 'ESTOQUE'
-                        ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs ring-2 ring-blue-500/20'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Building className="h-5 w-5 text-blue-600" />
-                    <span>Devolver ao Estoque</span>
-                    <span className="text-[10px] font-normal text-slate-400">Reintegração física no armazém</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setBaixaForm(prev => ({ ...prev, status: 'ENVIADO', destination: 'CLIENTE' }))}
-                    className={`p-3 rounded-xl border font-bold text-xs flex flex-col items-center gap-1.5 transition cursor-pointer ${
-                      baixaForm.destination === 'CLIENTE'
-                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900 shadow-xs ring-2 ring-emerald-500/20'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Truck className="h-5 w-5 text-emerald-600" />
-                    <span>Encaminhar ao Cliente</span>
-                    <span className="text-[10px] font-normal text-slate-400">Reenvio em rota / entrega</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Client Fields if ENVIADO */}
-              {baixaForm.destination === 'CLIENTE' && (
-                <div className="grid grid-cols-2 gap-3 p-3 bg-emerald-50/50 rounded-xl border border-emerald-200 animate-fade-in">
-                  <div>
-                    <label className="block text-xxs font-bold uppercase text-emerald-900 mb-1">
-                      Código do Cliente (NB)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Ex: 849204"
-                      value={baixaForm.clientCodeNB}
-                      onChange={(e) => setBaixaForm(prev => ({ ...prev, clientCodeNB: e.target.value }))}
-                      className="w-full text-xs font-mono font-bold bg-white border border-emerald-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
+            <form onSubmit={handleConfirmBaixa} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3 sm:space-y-4 flex-1 overscroll-contain">
+                {/* Item Info Summary */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono font-bold text-slate-500">{selectedItemForBaixa.productCode}</span>
+                    <span className="font-mono font-black text-amber-700">{selectedItemForBaixa.quantity} unidades</span>
                   </div>
-                  <div>
-                    <label className="block text-xxs font-bold uppercase text-emerald-900 mb-1">
-                      Data do Reenvio
-                    </label>
-                    <input
-                      type="date"
-                      value={baixaForm.deliveryDate}
-                      onChange={(e) => setBaixaForm(prev => ({ ...prev, deliveryDate: e.target.value }))}
-                      className="w-full text-xs font-semibold bg-white border border-emerald-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
+                  <div className="font-bold text-slate-900 text-sm">{selectedItemForBaixa.productDescription}</div>
+                  <div className="text-slate-500 flex items-center gap-3 pt-1">
+                    <span>Mapa: <strong>{selectedItemForBaixa.routeMap}</strong></span>
+                    <span>Data: <strong>{formatDateBR(selectedItemForBaixa.mapDate)}</strong></span>
                   </div>
                 </div>
-              )}
 
-              <div>
-                <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
-                  Observações da Baixa / Comprovante
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Ex: Baixado no estoque e alinhado com a supervisão de logística..."
-                  value={baixaForm.notes}
-                  onChange={(e) => setBaixaForm(prev => ({ ...prev, notes: e.target.value }))}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                ></textarea>
+                {/* Destination Selector */}
+                <div>
+                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1.5">
+                    Destino da Sobra *
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setBaixaForm(prev => ({ ...prev, status: 'DEVOLVIDO', destination: 'ESTOQUE' }))}
+                      className={`p-3 rounded-xl border font-bold text-xs flex flex-col items-center gap-1 transition cursor-pointer ${
+                        baixaForm.destination === 'ESTOQUE'
+                          ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs ring-2 ring-blue-500/20'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Building className="h-5 w-5 text-blue-600" />
+                      <span>Devolver ao Estoque</span>
+                      <span className="text-[10px] font-normal text-slate-400">Reintegração física no armazém</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setBaixaForm(prev => ({ ...prev, status: 'ENVIADO', destination: 'CLIENTE' }))}
+                      className={`p-3 rounded-xl border font-bold text-xs flex flex-col items-center gap-1 transition cursor-pointer ${
+                        baixaForm.destination === 'CLIENTE'
+                          ? 'bg-emerald-50 border-emerald-400 text-emerald-900 shadow-xs ring-2 ring-emerald-500/20'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Truck className="h-5 w-5 text-emerald-600" />
+                      <span>Encaminhar ao Cliente</span>
+                      <span className="text-[10px] font-normal text-slate-400">Reenvio em rota / entrega</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Client Fields if ENVIADO */}
+                {baixaForm.destination === 'CLIENTE' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 p-3 bg-emerald-50/50 rounded-xl border border-emerald-200 animate-fade-in">
+                    <div>
+                      <label className="block text-xxs font-bold uppercase text-emerald-900 mb-1">
+                        Código do Cliente (NB)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: 849204"
+                        value={baixaForm.clientCodeNB}
+                        onChange={(e) => setBaixaForm(prev => ({ ...prev, clientCodeNB: e.target.value }))}
+                        className="w-full text-xs font-mono font-bold bg-white border border-emerald-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xxs font-bold uppercase text-emerald-900 mb-1">
+                        Data do Reenvio
+                      </label>
+                      <input
+                        type="date"
+                        value={baixaForm.deliveryDate}
+                        onChange={(e) => setBaixaForm(prev => ({ ...prev, deliveryDate: e.target.value }))}
+                        className="w-full text-xs font-semibold bg-white border border-emerald-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xxs font-bold uppercase text-slate-600 mb-1">
+                    Observações da Baixa / Comprovante
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ex: Baixado no estoque e alinhado com a supervisão de logística..."
+                    value={baixaForm.notes}
+                    onChange={(e) => setBaixaForm(prev => ({ ...prev, notes: e.target.value }))}
+                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  ></textarea>
+                </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-150">
+              {/* Sticky Footer */}
+              <div className="flex items-center justify-end gap-2 p-3 sm:p-4 border-t border-slate-150 shrink-0 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => setShowBaixaModal(false)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  className="w-1/3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-200 bg-slate-100 rounded-xl transition cursor-pointer text-center"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-black text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition shadow-sm cursor-pointer flex items-center gap-1.5"
+                  className="flex-1 py-2.5 text-xs font-black text-white bg-slate-900 hover:bg-slate-800 active:bg-slate-950 rounded-xl transition shadow-md cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   <CheckCircle className="h-4 w-4 text-emerald-400" />
                   <span>Confirmar Baixa</span>

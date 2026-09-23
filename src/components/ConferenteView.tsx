@@ -266,34 +266,39 @@ export default function ConferenteView({
   const [guiaObs, setGuiaObs] = useState('');
 
   const checkRouteIsUnloaded = (mapCode: string, plateStr?: string): boolean => {
-    const normMap = normalizeMapCode(mapCode || '').toUpperCase();
-    const upperMap = (mapCode || '').trim().toUpperCase();
-    const upperPlate = (plateStr || '').trim().toUpperCase();
+    if (!mapCode) return false;
+    const normMap = normalizeMapCode(mapCode).toUpperCase();
+    const upperMap = mapCode.trim().toUpperCase();
 
-    // Check in importedRoutes
-    const matchingRoute = importedRoutes.find(r => {
+    // Check in importedRoutes by map code strictly (never by plate alone, as plates repeat across days/trips)
+    const matchingRoute = (importedRoutes || []).find(r => {
       const rNorm = normalizeMapCode(r.routeMap || '').toUpperCase();
       const rUpper = (r.routeMap || '').trim().toUpperCase();
-      const rPlate = (r.plate || '').trim().toUpperCase();
-      return (rNorm === normMap || rUpper === upperMap) || (upperPlate && rPlate === upperPlate);
+      return rNorm === normMap || rUpper === upperMap;
     });
 
     if (matchingRoute) {
       if (matchingRoute.descarregamentoStatus === 'DESCARREGADO') return true;
       if (matchingRoute.unloadingEndTime && matchingRoute.unloadingEndTime.trim().length > 0) return true;
+      if (matchingRoute.descarregamentoStatus === 'AGUARDANDO_DESCARGA' || matchingRoute.descarregamentoStatus === 'EM_DESCARGA' || matchingRoute.descarregamentoStatus === 'PERNOITE') {
+        return false;
+      }
     }
 
-    // Check in carregamentos
-    const matchingCarregamento = (carregamentos || []).find(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').trim().toUpperCase();
-      const cPlate = (c.plate || '').trim().toUpperCase();
-      return (cNorm === normMap || cUpper === upperMap) || (upperPlate && cPlate === upperPlate);
+    // Check in audits by map code strictly
+    const matchingAudit = (audits || []).find(a => {
+      const aNorm = normalizeMapCode(a.routeMap || '').toUpperCase();
+      const aUpper = (a.routeMap || '').trim().toUpperCase();
+      if (aNorm === normMap || aUpper === upperMap) return true;
+      if (a.unifiedMaps) {
+        return a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap || m.trim().toUpperCase() === upperMap);
+      }
+      return false;
     });
 
-    if (matchingCarregamento) {
-      if (matchingCarregamento.status === 'CONCLUIDO') return true;
-      if (matchingCarregamento.unloadingEndTime && matchingCarregamento.unloadingEndTime.trim().length > 0) return true;
+    if (matchingAudit) {
+      if (matchingAudit.descarregamentoStatus === 'DESCARREGADO') return true;
+      if (matchingAudit.unloadingEndTime && matchingAudit.unloadingEndTime.trim().length > 0) return true;
     }
 
     return false;
@@ -321,20 +326,30 @@ export default function ConferenteView({
 
   const handleConfirmSaveGuia = () => {
     if (!pendingUnloadData) return;
-    if (!guiaStartTime || !guiaEndTime) {
-      alert("Por favor, preencha o Horário de Início e o Horário de Término do Descarregamento!");
-      return;
-    }
+    
+    // Auto-fallback times so user never gets blocked on mobile
+    const now = new Date();
+    const endH = String(now.getHours()).padStart(2, '0');
+    const endM = String(now.getMinutes()).padStart(2, '0');
+    const past = new Date(now.getTime() - 25 * 60 * 1000);
+    const startH = String(past.getHours()).padStart(2, '0');
+    const startM = String(past.getMinutes()).padStart(2, '0');
+
+    const effectiveStartTime = guiaStartTime || `${startH}:${startM}`;
+    const effectiveEndTime = guiaEndTime || `${endH}:${endM}`;
 
     const todayDateStr = new Date().toISOString().split('T')[0];
-    const startTimeIso = `${todayDateStr}T${guiaStartTime}:00.000Z`;
-    const endTimeIso = `${todayDateStr}T${guiaEndTime}:00.000Z`;
+    const startTimeIso = `${todayDateStr}T${effectiveStartTime}:00.000Z`;
+    const endTimeIso = `${todayDateStr}T${effectiveEndTime}:00.000Z`;
 
     // 1. Update importedRoutes
     if (importedRoutes.length > 0 && onSaveImportedRoutes) {
+      const pNorm = normalizeMapCode(pendingUnloadData.routeMap).toUpperCase();
+      const pUpper = pendingUnloadData.routeMap.toUpperCase().trim();
       const updatedRoutes = importedRoutes.map(r => {
-        const isMatch = (r.routeMap && r.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
-                        (r.plate && pendingUnloadData.plate && r.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase());
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatch = rNorm === pNorm || rUpper === pUpper;
         if (isMatch) {
           return {
             ...r,
@@ -355,10 +370,13 @@ export default function ConferenteView({
 
     // 2. Update carregamentos
     let updatedCarregamentos = carregamentos || [];
-    const existingCarregamento = updatedCarregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
-      (c.plate && pendingUnloadData.plate && c.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase())
-    );
+    const pNorm = normalizeMapCode(pendingUnloadData.routeMap).toUpperCase();
+    const pUpper = pendingUnloadData.routeMap.toUpperCase().trim();
+    const existingCarregamento = updatedCarregamentos.find(c => {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      return cNorm === pNorm || cUpper === pUpper;
+    });
 
     if (existingCarregamento) {
       updatedCarregamentos = updatedCarregamentos.map(c => {
@@ -403,8 +421,10 @@ export default function ConferenteView({
     // 3. Update audits if exist
     if (audits.length > 0 && onSaveAudits) {
       const updatedAudits = audits.map(a => {
-        const isMatch = (a.routeMap && a.routeMap.toUpperCase() === pendingUnloadData.routeMap.toUpperCase()) ||
-                        (a.plate && pendingUnloadData.plate && a.plate.toUpperCase() === pendingUnloadData.plate.toUpperCase());
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatch = aNorm === pNorm || aUpper === pUpper ||
+          (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === pNorm || m.toUpperCase().trim() === pUpper));
         if (isMatch) {
           return {
             ...a,
@@ -2270,7 +2290,20 @@ export default function ConferenteView({
           effectiveStatus = 'conferindo';
         }
 
-        const descStatus = route.descarregamentoStatus || matchingAudit?.descarregamentoStatus || (route.unloadingEndTime ? 'DESCARREGADO' : route.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA');
+        // Status de descarregamento estritamente condicionado ao registro do empilhador
+        const isDesc = route.descarregamentoStatus === 'DESCARREGADO' || 
+          (route.unloadingEndTime && route.unloadingEndTime.trim().length > 0) ||
+          matchingAudit?.descarregamentoStatus === 'DESCARREGADO' ||
+          (matchingAudit?.unloadingEndTime && matchingAudit.unloadingEndTime.trim().length > 0);
+        
+        const isEmDesc = !isDesc && (
+          route.descarregamentoStatus === 'EM_DESCARGA' ||
+          (route.unloadingStartTime && route.unloadingStartTime.trim().length > 0) ||
+          matchingAudit?.descarregamentoStatus === 'EM_DESCARGA' ||
+          (matchingAudit?.unloadingStartTime && matchingAudit.unloadingStartTime.trim().length > 0)
+        );
+
+        const descStatus = isDesc ? 'DESCARREGADO' : isEmDesc ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA';
         const isPernoite = route.isPernoite || matchingAudit?.isPernoite || false;
         const dock = route.dock || matchingAudit?.dock;
         const empName = route.empilhadorName || matchingAudit?.empilhadorName;
@@ -2324,7 +2357,20 @@ export default function ConferenteView({
         const matchingRoute = (importedRoutes || []).find(r => r.routeMap.toUpperCase() === auditMapUpper);
         const isRouteBlitz = audit.isBlitz || matchingRoute?.isBlitz || false;
 
-        const descStatus = audit.descarregamentoStatus || matchingRoute?.descarregamentoStatus || (audit.unloadingEndTime ? 'DESCARREGADO' : audit.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA');
+        // Status de descarregamento estritamente condicionado ao registro do empilhador
+        const isDesc = audit.descarregamentoStatus === 'DESCARREGADO' || 
+          (audit.unloadingEndTime && audit.unloadingEndTime.trim().length > 0) ||
+          matchingRoute?.descarregamentoStatus === 'DESCARREGADO' || 
+          (matchingRoute?.unloadingEndTime && matchingRoute.unloadingEndTime.trim().length > 0);
+
+        const isEmDesc = !isDesc && (
+          audit.descarregamentoStatus === 'EM_DESCARGA' || 
+          (audit.unloadingStartTime && audit.unloadingStartTime.trim().length > 0) ||
+          matchingRoute?.descarregamentoStatus === 'EM_DESCARGA' || 
+          (matchingRoute?.unloadingStartTime && matchingRoute.unloadingStartTime.trim().length > 0)
+        );
+
+        const descStatus = isDesc ? 'DESCARREGADO' : isEmDesc ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA';
         const isPernoite = audit.isPernoite || matchingRoute?.isPernoite || false;
         const dock = audit.dock || matchingRoute?.dock;
         const empName = audit.empilhadorName || matchingRoute?.empilhadorName;
@@ -2967,10 +3013,11 @@ export default function ConferenteView({
                       return (
                         <div
                           key={route.id}
-                          className={`w-full text-left border text-xs p-3 rounded-xl space-y-2 font-medium shadow-3xs transition-all duration-150 ${btnStyle} ${isSelected ? 'ring-2 ring-amber-500 border-amber-500 bg-amber-50' : ''}`}
+                          className={`w-full max-w-full text-left border text-xs p-3 sm:p-3.5 rounded-xl space-y-2 font-medium shadow-3xs transition-all duration-150 relative overflow-hidden box-border ${btnStyle} ${isSelected ? 'ring-2 ring-amber-500 border-amber-500 bg-amber-50/90' : ''}`}
                         >
+                          {/* Top Header Row */}
                           <div 
-                            className="flex flex-wrap items-center justify-between gap-2 cursor-pointer hover:opacity-85"
+                            className="flex items-center justify-between gap-2 cursor-pointer hover:opacity-90 w-full min-w-0"
                             onClick={() => {
                               if (selectedRouteMaps.length > 0) {
                                 handleToggleRouteMap(route.routeMap);
@@ -3005,7 +3052,7 @@ export default function ConferenteView({
                             }}
                             title={selectedRouteMaps.length > 0 ? "Clique para selecionar/desmarcar este mapa" : route.audit ? "Clique para abrir e conferir este mapa" : "Clique para selecionar este mapa"}
                           >
-                            <div className="flex items-center space-x-2 flex-wrap min-w-0">
+                            <div className="flex items-center space-x-2 min-w-0 flex-1 truncate">
                               {(isPendente || isReabertura || isReconferir || isConferindo) && (
                                 <input
                                   type="checkbox"
@@ -3014,58 +3061,47 @@ export default function ConferenteView({
                                     e.stopPropagation();
                                     handleToggleRouteMap(route.routeMap);
                                   }}
-                                  className="h-4 w-4 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer mr-1 shrink-0"
+                                  className="h-4 w-4 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
                                   title="Marcar para unificar com outro mapa"
                                 />
                               )}
-                              <span className="font-extrabold text-sm truncate">{route.routeMap}</span>
-                              <span className="text-[10px] opacity-75 font-mono truncate">({route.plate})</span>
+                              <span className="font-extrabold text-sm tracking-tight text-slate-900 truncate">{route.routeMap}</span>
+                              <span className="text-[10px] font-mono font-bold text-slate-600 bg-white/80 border border-slate-300/80 px-1.5 py-0.5 rounded shrink-0">({route.plate})</span>
                               {route.isBlitz && (
                                 <span className="bg-red-600 text-white text-[8px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse flex items-center gap-0.5 shrink-0">
-                                  ⚡ Blitz de Refugo
+                                  ⚡ Blitz
                                 </span>
                               )}
                             </div>
-                            <div className="flex items-center gap-1.5 flex-wrap shrink-0">
-                              {(() => {
-                                const isUnloaded = checkRouteIsUnloaded(route.routeMap, route.plate);
-                                return isUnloaded ? (
-                                  <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                                    <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />
-                                    <span>Descarregado</span>
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenGuiaModal({
-                                        routeMap: route.routeMap,
-                                        plate: route.plate,
-                                        driverName: route.driverName,
-                                        helperName: route.helperName,
-                                        targetAudit: route.audit || null
-                                      });
-                                    }}
-                                    className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 transition flex items-center gap-1 cursor-pointer animate-pulse"
-                                    title="Preencher Guia de Descarregamento obrigatória"
-                                  >
-                                    <Clock className="h-2.5 w-2.5 text-amber-700" />
-                                    <span>Guia Pendente</span>
-                                  </button>
-                                );
-                              })()}
-                              <span className={`text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full whitespace-nowrap ${badgeStyle}`}>
-                                {statusText}
-                              </span>
-                              {(isReconferir || isConferindo || route.audit) && (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isReabertura && (
+                                <span className="text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-600 text-white border border-amber-700 animate-pulse whitespace-nowrap">
+                                  🔄 Reabertura
+                                </span>
+                              )}
+                              {isConferindo && (
+                                <span className="text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 whitespace-nowrap">
+                                  🔄 Conferindo
+                                </span>
+                              )}
+                              {isReconferir && (
+                                <span className="text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-300 whitespace-nowrap">
+                                  ⚠️ Reconferir
+                                </span>
+                              )}
+                              {isEmAnalise && (
+                                <span className="text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 whitespace-nowrap">
+                                  Em Análise
+                                </span>
+                              )}
+                              {(isReconferir || isConferindo || route.audit || selectedRoutesForUnify.length > 0) && (
                                 <button
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleToggleRouteMap(route.routeMap);
                                   }}
-                                  className={`text-[9px] font-bold px-2 py-0.5 rounded border transition-colors cursor-pointer whitespace-nowrap ${isSelected ? 'bg-amber-600 text-white border-amber-700' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'}`}
+                                  className={`text-[9px] font-bold px-2 py-0.5 rounded border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${isSelected ? 'bg-amber-600 text-white border-amber-700' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'}`}
                                   title="Unificar este mapa"
                                 >
                                   {isSelected ? '✓ Selecionado' : '+ Unificar'}
@@ -3074,38 +3110,54 @@ export default function ConferenteView({
                             </div>
                           </div>
 
-                          {/* Real-time Descarregamento info footer */}
-                          <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-slate-200/60 text-slate-600">
-                            <div className="flex items-center space-x-1 font-mono">
-                              <span className="font-bold text-slate-800">
-                                {route.dock || 'Doca 01'}
-                              </span>
-                              {route.empilhadorName && (
-                                <span className="text-slate-500 truncate max-w-[110px]">
-                                  • {route.empilhadorName}
+                          {/* Driver / Team Context line if available */}
+                          {(route.driverName || route.helperName) && (
+                            <div className="flex items-center text-[11px] text-slate-600 min-w-0 truncate gap-1">
+                              <span className="text-slate-400 font-medium shrink-0">Motorista:</span>
+                              <span className="font-semibold text-slate-700 truncate">{route.driverName || 'Não informado'}</span>
+                              {route.helperName && (
+                                <span className="text-slate-500 truncate">• Aj: {route.helperName}</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Symmetric Footer: Operador à esquerda, Status badge à direita (sem docas) */}
+                          <div className="flex items-center justify-between gap-2 text-[10px] pt-1.5 border-t border-slate-200/70 text-slate-600 w-full min-w-0">
+                            <div className="flex items-center space-x-1.5 min-w-0 flex-1 truncate">
+                              {route.empilhadorName ? (
+                                <span className="text-slate-600 font-semibold text-[10px] truncate flex items-center space-x-1">
+                                  <span className="opacity-75">🚜</span>
+                                  <span className="truncate max-w-[130px] sm:max-w-[170px]">{route.empilhadorName}</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[10px] truncate">
+                                  Aguardando descarga
                                 </span>
                               )}
                             </div>
 
-                            <div>
+                            <div className="shrink-0 flex items-center">
                               {route.isPernoite ? (
-                                <span className="text-[9px] font-black text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded">
-                                  🌙 Pernoite
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black text-purple-700 bg-purple-100 border border-purple-200 px-2 py-0.5 rounded-full whitespace-nowrap shadow-3xs">
+                                  <span>🌙 Pernoite</span>
                                 </span>
                               ) : route.descarregamentoStatus === 'DESCARREGADO' ? (
-                                <span className="text-[9px] font-black text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded flex items-center space-x-0.5">
-                                  <span>✅ Descarregado</span>
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black text-emerald-800 bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 rounded-full whitespace-nowrap shadow-3xs">
+                                  <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
+                                  <span>Descarregado</span>
                                   {route.unloadingTime && (
-                                    <span className="font-mono">({route.unloadingTime.substring(11, 16)})</span>
+                                    <span className="font-mono text-emerald-950 font-bold">({route.unloadingTime.substring(11, 16)})</span>
                                   )}
                                 </span>
                               ) : route.descarregamentoStatus === 'EM_DESCARGA' ? (
-                                <span className="text-[9px] font-black text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded animate-pulse">
-                                  🚜 Em Descarga
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black text-amber-800 bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded-full whitespace-nowrap shadow-3xs animate-pulse">
+                                  <Clock className="h-3 w-3 text-amber-600 shrink-0" />
+                                  <span>Em Descarga</span>
                                 </span>
                               ) : (
-                                <span className="text-[9px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                                  ⏳ Aguardando Doca
+                                <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-900 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded-full whitespace-nowrap shadow-3xs">
+                                  <Clock className="h-3 w-3 text-amber-600 shrink-0" />
+                                  <span>Pendente</span>
                                 </span>
                               )}
                             </div>
@@ -4161,8 +4213,8 @@ export default function ConferenteView({
 
                 {/* Webcam Live Capture / Simulator block (Floating Modal Overlay for Pristine UX) */}
                 {showWebcam && (
-                  <div className="fixed inset-0 bg-black/85 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
-                    <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 max-w-md w-full space-y-4 flex flex-col items-center shadow-2xl relative animate-in fade-in zoom-in-95 duration-200">
+                  <div className="fixed inset-0 bg-black/85 backdrop-blur-xs z-[9999] flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+                    <div className="bg-slate-950 p-4 sm:p-6 rounded-2xl border border-slate-800 max-w-md w-full space-y-3.5 sm:space-y-4 flex flex-col items-center shadow-2xl relative max-h-[92dvh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
                       <div className="flex items-center justify-between w-full pb-2 border-b border-slate-800">
                         <div className="flex items-center space-x-2">
                           <span className="h-2.5 w-2.5 rounded-full bg-red-600 animate-pulse" />
@@ -4697,108 +4749,110 @@ export default function ConferenteView({
       )}
 
       {/* URGENT SUSPENSION MODAL */}
+      {/* MODAL: PAUSA / SUSPENSÃO URGENTE */}
       {showSuspensionModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto animate-fade-in" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-          {/* Background overlay - positioned below the modal panel */}
-          <div 
-            className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity cursor-pointer" 
-            onClick={() => {
-              setShowSuspensionModal(false);
-              setSuspensionNotesText('');
-            }}
-          ></div>
-
-          {/* Scrolling wrapper for modal panel with pointer-events-none */}
-          <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0 relative pointer-events-none">
-            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-            
-            {/* Modal panel - relative z-10 and pointer-events-auto to capture clicks */}
-            <div className="relative z-10 pointer-events-auto inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-slate-200">
-              <div className="bg-white px-6 pt-6 pb-4 sm:p-6 sm:pb-4">
-                <div className="sm:flex sm:items-start">
-                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-amber-50 sm:mx-0 sm:h-10 sm:w-10 border border-amber-200">
-                    <AlertTriangle className="h-6 w-6 text-amber-500 animate-pulse" />
-                  </div>
-                  <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
-                    <h3 className="text-lg leading-6 font-sans font-black text-slate-900 uppercase tracking-tight" id="modal-title">
-                      Confirmar Pausa da Conferência?
-                    </h3>
-                    <div className="mt-2">
-                      <p className="text-xs text-slate-600">
-                        Você tem certeza de que deseja realizar a pausa da conferência física? O cronômetro será interrompido imediatamente. Para prosseguir, selecione ou digite o motivo da pausa abaixo.
-                      </p>
-                    </div>
-
-                    {/* Pre-defined options */}
-                    <div className="mt-4 space-y-2">
-                      <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Selecione o Motivo da Pausa:</span>
-                      <div className="grid grid-cols-1 gap-2">
-                        {[
-                          'Ida ao banheiro / Necessidade Fisiológica',
-                          'Parada técnica solicitada pela supervisão',
-                          'Necessidade urgente de apoio em outro veículo',
-                          'Dúvida de carga / Conferência de Nota Fiscal com Divergência',
-                        ].map((reasonOption) => (
-                          <button
-                            key={reasonOption}
-                            type="button"
-                            onClick={() => setSuspensionNotesText(reasonOption)}
-                            className={`w-full text-left text-xs px-3 py-2.5 rounded-lg transition cursor-pointer font-medium border ${
-                              suspensionNotesText === reasonOption
-                                ? 'bg-amber-100 text-amber-900 border-amber-400'
-                                : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                            }`}
-                          >
-                            {reasonOption}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="mt-4">
-                      <label htmlFor="suspension_notes" className="text-[10px] text-slate-500 font-bold block uppercase mb-1 tracking-wider">
-                        Ou digite o motivo detalhado:
-                      </label>
-                      <textarea
-                        id="suspension_notes"
-                        rows={3}
-                        className="w-full p-3 bg-slate-50 text-slate-850 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none font-sans"
-                        placeholder="Informe o motivo da parada técnica ou urgência..."
-                        value={suspensionNotesText}
-                        onChange={(e) => setSuspensionNotesText(e.target.value)}
-                      ></textarea>
-                    </div>
-                  </div>
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden animate-fade-in" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 p-3.5 sm:p-4 shrink-0 bg-white">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-500 shrink-0">
+                  <AlertTriangle className="h-5 w-5 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 uppercase tracking-tight" id="modal-title">
+                    Confirmar Pausa da Conferência?
+                  </h3>
+                  <p className="text-[10px] sm:text-xs text-slate-500 font-bold">O cronômetro será congelado</p>
                 </div>
               </div>
-              <div className="bg-slate-50 px-6 py-4 sm:px-6 sm:flex sm:flex-row-reverse gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  disabled={!suspensionNotesText.trim()}
-                  onClick={() => {
-                    handleUrgentSuspend(suspensionNotesText.trim());
-                    setShowSuspensionModal(false);
-                    setSuspensionNotesText('');
-                  }}
-                  className={`w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition ${
-                    suspensionNotesText.trim()
-                      ? 'bg-amber-500 hover:bg-amber-600 text-slate-950 cursor-pointer shadow-xs'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  }`}
-                >
-                  Confirmar Pausa
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowSuspensionModal(false);
-                    setSuspensionNotesText('');
-                  }}
-                  className="mt-3 sm:mt-0 w-full inline-flex justify-center rounded-lg border border-slate-200 shadow-sm px-4 py-2.5 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer transition font-sans"
-                >
-                  Voltar à Conferência
-                </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSuspensionModal(false);
+                  setSuspensionNotesText('');
+                }}
+                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Scrollable Body */}
+            <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3.5 flex-1 overscroll-contain text-xs">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Você tem certeza de que deseja pausar a conferência física? Para prosseguir, selecione ou informe o motivo abaixo.
+              </p>
+
+              {/* Pre-defined options */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Selecione o Motivo da Pausa:</span>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {[
+                    'Ida ao banheiro / Necessidade Fisiológica',
+                    'Parada técnica solicitada pela supervisão',
+                    'Necessidade urgente de apoio em outro veículo',
+                    'Dúvida de carga / Conferência de Nota Fiscal com Divergência',
+                  ].map((reasonOption) => (
+                    <button
+                      key={reasonOption}
+                      type="button"
+                      onClick={() => setSuspensionNotesText(reasonOption)}
+                      className={`w-full text-left text-xs px-3 py-2 rounded-xl transition cursor-pointer font-medium border ${
+                        suspensionNotesText === reasonOption
+                          ? 'bg-amber-100 text-amber-900 border-amber-400 font-bold'
+                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      {reasonOption}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              <div>
+                <label htmlFor="suspension_notes" className="text-[10px] text-slate-500 font-bold block uppercase mb-1 tracking-wider">
+                  Ou digite o motivo detalhado:
+                </label>
+                <textarea
+                  id="suspension_notes"
+                  rows={2}
+                  className="w-full p-2.5 bg-slate-50 text-slate-850 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none font-sans"
+                  placeholder="Informe o motivo da parada técnica ou urgência..."
+                  value={suspensionNotesText}
+                  onChange={(e) => setSuspensionNotesText(e.target.value)}
+                ></textarea>
+              </div>
+            </div>
+
+            {/* Sticky Footer */}
+            <div className="p-3 sm:p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSuspensionModal(false);
+                  setSuspensionNotesText('');
+                }}
+                className="w-1/3 py-2.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl transition"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                disabled={!suspensionNotesText.trim()}
+                onClick={() => {
+                  handleUrgentSuspend(suspensionNotesText.trim());
+                  setShowSuspensionModal(false);
+                  setSuspensionNotesText('');
+                }}
+                className={`flex-1 py-2.5 text-xs font-black uppercase tracking-wider rounded-xl transition ${
+                  suspensionNotesText.trim()
+                    ? 'bg-amber-500 hover:bg-amber-600 text-slate-950 cursor-pointer shadow-sm'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                Confirmar Pausa
+              </button>
             </div>
           </div>
         </div>
@@ -4806,10 +4860,10 @@ export default function ConferenteView({
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_conferente">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_conferente">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-100 space-y-4 max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center space-x-3 text-amber-600">
-              <div className="p-2 bg-amber-50 rounded-lg">
+              <div className="p-2 bg-amber-50 rounded-lg shrink-0">
                 <AlertCircle className="h-5 w-5 text-amber-600 animate-bounce" />
               </div>
               <h3 className="font-sans font-bold text-slate-950 text-sm">{confirmModal.title}</h3>
@@ -4819,18 +4873,18 @@ export default function ConferenteView({
               {confirmModal.message}
             </p>
             
-            <div className="flex items-center justify-end space-x-3 pt-2">
+            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xxs font-bold rounded-lg transition"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={confirmModal.onConfirm}
-                className="px-4 py-2 bg-[#0f35a9] hover:bg-[#0c2a86] text-white text-xxs font-bold rounded-lg transition shadow-3xs"
+                className="px-4 py-2 bg-[#0f35a9] hover:bg-[#0c2a86] text-white text-xs font-bold rounded-xl transition shadow-3xs"
               >
                 Confirmar
               </button>
@@ -4841,38 +4895,50 @@ export default function ConferenteView({
 
       {/* BLITZ DE REFUGO CONFIRMATION MODAL */}
       {showBlitzModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in" id="blitz_refugo_modal">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-5">
-            <div className="flex items-center space-x-3 text-red-600">
-              <div className="p-2 bg-red-50 rounded-lg">
-                <ShieldCheck className="h-6 w-6 text-red-600 animate-pulse" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fade-in overflow-hidden" id="blitz_refugo_modal">
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 flex flex-col max-h-[92dvh] my-auto overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-100 p-3.5 sm:p-4 shrink-0 bg-white">
+              <div className="flex items-center space-x-2.5 text-red-600">
+                <div className="p-2 bg-red-50 rounded-xl border border-red-200 shrink-0">
+                  <ShieldCheck className="h-5 w-5 text-red-600 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-sans font-black text-slate-950 text-sm uppercase tracking-tight">Blitz de Refugo Obrigatória!</h3>
+                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-wider font-mono">Veículo Sorteado em Sistema</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-sans font-black text-slate-950 text-sm uppercase tracking-wide">Blitz de Refugo Obrigatória!</h3>
-                <p className="text-[10px] text-red-500 font-bold uppercase tracking-wider font-mono">Veículo Sorteado em Sistema</p>
-              </div>
+              <button 
+                type="button"
+                onClick={() => setShowBlitzModal(false)}
+                className="text-slate-400 hover:text-slate-700 p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
 
-            <p className="text-xs text-slate-600 leading-relaxed font-sans">
-              Este veículo (Placa: <strong>{activeSession?.plate}</strong>, Rota: <strong>{activeSession?.routeMap}</strong>) foi sorteado na escala circular para a realização da <strong>Blitz de Refugo</strong>.
-              <br /><br />
-              O conferente tem o dever de fazer o rebatimento completo das caixas. Certifique-se de que todas as avarias e refugos identificados foram inseridos na aba <strong>"Refugos e Avarias"</strong> antes de prosseguir com a finalização.
-            </p>
+            <div className="p-3.5 sm:p-4 overflow-y-auto flex-1 overscroll-contain text-xs text-slate-600 leading-relaxed font-sans space-y-2">
+              <p>
+                Este veículo (Placa: <strong>{activeSession?.plate}</strong>, Rota: <strong>{activeSession?.routeMap}</strong>) foi sorteado na escala circular para a realização da <strong>Blitz de Refugo</strong>.
+              </p>
+              <p>
+                O conferente tem o dever de fazer o rebatimento completo das caixas. Certifique-se de que todas as avarias e refugos identificados foram inseridos na aba <strong>"Refugos e Avarias"</strong> antes de prosseguir com a finalização.
+              </p>
+            </div>
 
-            <div className="flex items-center justify-end space-x-3 pt-2">
+            <div className="flex items-center justify-end space-x-2 p-3 sm:p-4 border-t border-slate-100 shrink-0 bg-slate-50">
               <button
                 type="button"
                 onClick={() => setShowBlitzModal(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xxs font-bold rounded-lg transition uppercase font-sans"
+                className="w-1/3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
               >
                 Voltar
               </button>
               <button
                 type="button"
                 onClick={handleConfirmBlitz}
-                className="px-4 py-2 bg-red-600 hover:bg-red-750 text-white text-xxs font-bold rounded-lg transition shadow-sm hover:shadow uppercase font-sans"
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition shadow-sm uppercase font-sans text-center"
               >
-                Entendi, Finalizar Conferência com Blitz
+                Finalizar com Blitz
               </button>
             </div>
           </div>
@@ -4881,19 +4947,20 @@ export default function ConferenteView({
 
       {/* MODAL: GUIA DE DESCARREGAMENTO OBRIGATÓRIA (DPO AMBEV) */}
       {showGuiaDescarregamentoModal && pendingUnloadData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-fade-in" id="guia_descarregamento_modal">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-3 text-amber-600">
-                <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200">
-                  <Clock className="h-6 w-6 text-amber-600 animate-pulse" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fade-in overflow-hidden" id="guia_descarregamento_modal">
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden">
+            {/* Sticky Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 p-3.5 sm:p-4 shrink-0 bg-white">
+              <div className="flex items-center space-x-2.5 text-amber-600">
+                <div className="p-2 bg-amber-50 rounded-xl border border-amber-200 shrink-0">
+                  <Clock className="h-5 w-5 text-amber-600 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="font-sans font-black text-slate-900 text-base uppercase tracking-tight">
+                  <h3 className="font-sans font-black text-slate-900 text-xs sm:text-base uppercase tracking-tight">
                     Guia de Descarregamento Obrigatória
                   </h3>
-                  <p className="text-[11px] text-amber-700 font-bold uppercase tracking-wider font-mono">
-                    DPO Ambev • Registro de Início e Término da Carga
+                  <p className="text-[10px] sm:text-[11px] text-amber-700 font-bold uppercase tracking-wider font-mono">
+                    DPO Ambev • Registro de Horários da Carga
                   </p>
                 </div>
               </div>
@@ -4909,157 +4976,161 @@ export default function ConferenteView({
               </button>
             </div>
 
-            <div className="p-3 bg-amber-50/70 rounded-xl border border-amber-200/80 text-amber-950 text-xs leading-relaxed space-y-1">
-              <div className="flex items-center gap-1.5 font-extrabold text-amber-900 text-xs">
-                <ShieldCheck className="h-4 w-4 text-amber-600 shrink-0" />
-                <span>Bloqueio Operacional DPO: Conferência Física Restrita</span>
+            {/* Scrollable Form Body */}
+            <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3.5 flex-1 overscroll-contain text-xs">
+              <div className="p-2.5 sm:p-3 bg-amber-50/70 rounded-xl border border-amber-200/80 text-amber-950 text-xs leading-relaxed space-y-1">
+                <div className="flex items-center gap-1.5 font-extrabold text-amber-900 text-xs">
+                  <ShieldCheck className="h-4 w-4 text-amber-600 shrink-0" />
+                  <span>Bloqueio Operacional DPO: Iniciar Descarregamento</span>
+                </div>
+                <p className="text-[10px] sm:text-[11px] text-amber-800">
+                  Registre o <strong>Início</strong> e <strong>Término do Descarregamento</strong> para liberar a contagem física dos produtos.
+                </p>
               </div>
-              <p className="text-[11px] text-amber-800">
-                Conforme diretriz operacional, o ajudante ou operador deve registrar formalmente o <strong>Horário de Início</strong> e <strong>Término do Descarregamento</strong> antes de iniciar a contagem dos produtos.
-              </p>
+
+              <div className="grid grid-cols-2 gap-2 sm:gap-3 bg-slate-50 p-2.5 sm:p-3 rounded-xl border border-slate-100 text-xs">
+                <div>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Mapa da Rota</span>
+                  <span className="font-black text-slate-900 font-mono text-xs sm:text-sm">{pendingUnloadData.routeMap}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Placa do Veículo</span>
+                  <span className="font-black text-slate-900 font-mono text-xs sm:text-sm">{pendingUnloadData.plate}</span>
+                </div>
+                {pendingUnloadData.driverName && (
+                  <div className="col-span-2">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase block">Motorista</span>
+                    <span className="font-bold text-slate-800 text-xs">{pendingUnloadData.driverName}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3 text-xs font-sans">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Hora de Início da Descarga <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={guiaStartTime}
+                      onChange={(e) => setGuiaStartTime(e.target.value)}
+                      required
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Hora de Término da Descarga <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={guiaEndTime}
+                      onChange={(e) => setGuiaEndTime(e.target.value)}
+                      required
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Doca de Descarregamento
+                    </label>
+                    <select
+                      value={guiaDock}
+                      onChange={(e) => setGuiaDock(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="DOCA 01">DOCA 01</option>
+                      <option value="DOCA 02">DOCA 02</option>
+                      <option value="DOCA 03">DOCA 03</option>
+                      <option value="DOCA 04">DOCA 04</option>
+                      <option value="DOCA 05">DOCA 05</option>
+                      <option value="DOCA 06">DOCA 06</option>
+                      <option value="DOCA 07">DOCA 07</option>
+                      <option value="DOCA 08">DOCA 08</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Empilhador Responsável
+                    </label>
+                    <select
+                      value={guiaEmpilhadorName}
+                      onChange={(e) => setGuiaEmpilhadorName(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    >
+                      {(empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map(emp => (
+                        <option key={emp.id} value={emp.name}>{emp.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Ajudante Responsável
+                    </label>
+                    <input
+                      type="text"
+                      value={guiaHelperName}
+                      onChange={(e) => setGuiaHelperName(e.target.value)}
+                      placeholder="Nome do ajudante"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] sm:text-[11px] font-extrabold text-slate-700 uppercase mb-1">
+                      Paletes Descarregados
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={guiaPallets}
+                      onChange={(e) => setGuiaPallets(Number(e.target.value))}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 pt-1 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                  <input
+                    type="checkbox"
+                    id="guia_pernoite_check"
+                    checked={guiaIsPernoite}
+                    onChange={(e) => setGuiaIsPernoite(e.target.checked)}
+                    className="h-4 w-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500"
+                  />
+                  <label htmlFor="guia_pernoite_check" className="text-xs font-bold text-slate-700 cursor-pointer">
+                    Veículo liberado para Pernoite (isenção de penalidade 22h)
+                  </label>
+                </div>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
-              <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase block">Mapa da Rota</span>
-                <span className="font-black text-slate-900 font-mono text-sm">{pendingUnloadData.routeMap}</span>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase block">Placa do Veículo</span>
-                <span className="font-black text-slate-900 font-mono text-sm">{pendingUnloadData.plate}</span>
-              </div>
-              {pendingUnloadData.driverName && (
-                <div className="col-span-2">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Motorista</span>
-                  <span className="font-bold text-slate-800 text-xs">{pendingUnloadData.driverName}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-4 text-xs font-sans">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Hora de Início da Descarga <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="time"
-                    value={guiaStartTime}
-                    onChange={(e) => setGuiaStartTime(e.target.value)}
-                    required
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Hora de Término da Descarga <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="time"
-                    value={guiaEndTime}
-                    onChange={(e) => setGuiaEndTime(e.target.value)}
-                    required
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 shadow-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Doca de Descarregamento
-                  </label>
-                  <select
-                    value={guiaDock}
-                    onChange={(e) => setGuiaDock(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
-                  >
-                    <option value="DOCA 01">DOCA 01</option>
-                    <option value="DOCA 02">DOCA 02</option>
-                    <option value="DOCA 03">DOCA 03</option>
-                    <option value="DOCA 04">DOCA 04</option>
-                    <option value="DOCA 05">DOCA 05</option>
-                    <option value="DOCA 06">DOCA 06</option>
-                    <option value="DOCA 07">DOCA 07</option>
-                    <option value="DOCA 08">DOCA 08</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Empilhador Responsável
-                  </label>
-                  <select
-                    value={guiaEmpilhadorName}
-                    onChange={(e) => setGuiaEmpilhadorName(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
-                  >
-                    {(empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map(emp => (
-                      <option key={emp.id} value={emp.name}>{emp.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Ajudante Responsável
-                  </label>
-                  <input
-                    type="text"
-                    value={guiaHelperName}
-                    onChange={(e) => setGuiaHelperName(e.target.value)}
-                    placeholder="Nome do ajudante"
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-extrabold text-slate-700 uppercase mb-1">
-                    Paletes Descarregados
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={guiaPallets}
-                    onChange={(e) => setGuiaPallets(Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center space-x-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="guia_pernoite_check"
-                  checked={guiaIsPernoite}
-                  onChange={(e) => setGuiaIsPernoite(e.target.checked)}
-                  className="h-4 w-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500"
-                />
-                <label htmlFor="guia_pernoite_check" className="text-xs font-bold text-slate-700 cursor-pointer">
-                  Veículo liberado para Pernoite (não conta negativamente para EFD 22h)
-                </label>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-100">
+            {/* Sticky Footer: The "Salvar" button is ALWAYS visible and directly clickable! */}
+            <div className="flex items-center justify-end space-x-2 p-3 sm:p-4 border-t border-slate-100 shrink-0 bg-slate-50/95">
               <button
                 type="button"
                 onClick={() => {
                   setShowGuiaDescarregamentoModal(false);
                   setPendingUnloadData(null);
                 }}
-                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
+                className="w-1/3 py-2.5 sm:py-3 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl transition"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={handleConfirmSaveGuia}
-                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 text-xs font-black rounded-xl transition shadow-md flex items-center space-x-2 cursor-pointer"
+                className="flex-1 py-2.5 sm:py-3 px-3 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 text-xs font-black rounded-xl transition shadow-md flex items-center justify-center space-x-1.5 cursor-pointer"
               >
-                <Check className="h-4 w-4 stroke-[3]" />
-                <span>Salvar Guia e Liberar Conferência</span>
+                <Check className="h-4 w-4 stroke-[3] shrink-0" />
+                <span className="truncate">Salvar Guia e Liberar</span>
               </button>
             </div>
           </div>

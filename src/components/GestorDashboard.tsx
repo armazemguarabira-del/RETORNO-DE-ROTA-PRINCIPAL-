@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, UserRole, ImportedRoute, Vale, CarregamentoProcess, Empilhador } from '../types';
 import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Landmark, Percent, CheckCircle2, AlertTriangle, RefreshCw, Eye, Search, Landmark as BankIcon, HardDrive, Camera, FileSpreadsheet, Sparkles, Check, FileCheck, CircleAlert, Edit, FileText, ZoomIn, ZoomOut, ArrowRight, UploadCloud, XCircle, Folder, Copy, SlidersHorizontal, TrendingUp, Box, Layers, Calendar, Database, Cloud, PlusCircle, X, BookOpen, FileCode, Download, ChevronRight, Award, Trophy, Timer, ChevronDown, ChevronUp } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
-import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES } from '../data';
+import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, deduplicateUsersComprehensive, normalizePersonName, normalizeUserLogin } from '../data';
 import { DEFAULT_MANUAL_HTML } from './DefaultManualContent';
 import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig } from '../clientFirebase';
 import { DatabaseSwitcher } from './DatabaseSwitcher';
@@ -2081,11 +2081,21 @@ export default function GestorDashboard({
     const targetUsernameLower = formattedUsername.toLowerCase();
 
     const isDuplicateLogin = (excludeId?: string | null) => {
+      const cleanNewLogin = normalizeUserLogin(formattedUsername);
       return users.some(u => {
         if (excludeId && u.id === excludeId) return false;
+        const uClean = normalizeUserLogin(u.username || '');
         const uLower = (u.username || '').trim().toLowerCase();
-        const uKey = normalizeLoginKey(u.username);
-        return uLower === targetUsernameLower || uKey === targetLoginKey;
+        return (cleanNewLogin && uClean === cleanNewLogin) || uLower === targetUsernameLower;
+      });
+    };
+
+    const isDuplicateName = (excludeId?: string | null) => {
+      const cleanNewName = normalizePersonName(formattedName);
+      if (!cleanNewName || cleanNewName.length < 3) return false;
+      return users.some(u => {
+        if (excludeId && u.id === excludeId) return false;
+        return normalizePersonName(u.name || '') === cleanNewName;
       });
     };
 
@@ -2093,6 +2103,10 @@ export default function GestorDashboard({
       // Editing Mode
       if (isDuplicateLogin(editingUserId)) {
         alert('Este login de usuário já está cadastrado para outro colaborador. Não é permitida duplicidade de login.');
+        return;
+      }
+      if (isDuplicateName(editingUserId)) {
+        alert(`Já existe outro colaborador cadastrado com o nome "${formattedName}". Verifique para evitar duplicidades.`);
         return;
       }
       const updatedUsers = users.map(u => {
@@ -2117,6 +2131,10 @@ export default function GestorDashboard({
       // Creation Mode
       if (isDuplicateLogin()) {
         alert('Este login de usuário já está cadastrado na plataforma. Não é permitida duplicidade de logins.');
+        return;
+      }
+      if (isDuplicateName()) {
+        alert(`Já existe um colaborador cadastrado com o nome "${formattedName}". Não é permitida duplicidade de nomes.`);
         return;
       }
       const newUser: User = {
@@ -2201,34 +2219,37 @@ export default function GestorDashboard({
     );
   };
 
-  // Strict deduplication of users by login/username
-  const deduplicatedUsers = useMemo(() => {
-    const seen = new Set<string>();
-    const list: User[] = [];
-    for (const u of users) {
-      if (!u) continue;
-      const rawUser = (u.username || '').trim().toLowerCase();
-      const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
-      const key = baseUser || rawUser || (u.id || '').trim().toLowerCase();
-      if (key && !seen.has(key)) {
-        seen.add(key);
-        if (rawUser === 'armazemguarabira@gmail.com') {
-          list.push({ ...u, username: 'armazemguarabira' });
-        } else {
-          list.push(u);
-        }
-      }
-    }
-    return list;
+  // Comprehensive deduplication of users by login/username and person name
+  const userDeduplication = useMemo(() => {
+    return deduplicateUsersComprehensive(users);
   }, [users]);
 
-  // Self-heal and clear any duplicate user records in the persistent database
+  const deduplicatedUsers = userDeduplication.cleanedUsers;
+
+  // Self-heal and clear any duplicate user records in the persistent database and Firestore
   useEffect(() => {
-    if (deduplicatedUsers.length > 0 && deduplicatedUsers.length < users.length) {
-      console.log('[GestorDashboard] Eliminando cadastros duplicados de usuários:', users.length - deduplicatedUsers.length);
-      onSaveUsers(deduplicatedUsers);
+    if (userDeduplication.duplicateIds.length > 0) {
+      console.log('[GestorDashboard] Auto-removendo cadastros duplicados de usuários:', userDeduplication.duplicateIds);
+      onSaveUsers(userDeduplication.cleanedUsers);
+      userDeduplication.duplicateIds.forEach(id => {
+        deleteDocFromFirestore('users', id).catch(() => {});
+      });
     }
-  }, [deduplicatedUsers, users.length, onSaveUsers]);
+  }, [userDeduplication, onSaveUsers]);
+
+  // Manual trigger to scan, remove, and notify user
+  const handleRemoveDuplicateUsersManually = () => {
+    const result = deduplicateUsersComprehensive(users);
+    if (result.duplicateIds.length > 0) {
+      onSaveUsers(result.cleanedUsers);
+      result.duplicateIds.forEach(id => {
+        deleteDocFromFirestore('users', id).catch(() => {});
+      });
+      alert(`Limpeza concluída! Foram encontrados e removidos ${result.duplicateIds.length} cadastro(s) duplicado(s). A lista agora está 100% limpa.`);
+    } else {
+      alert('Nenhum usuário duplicado encontrado! A base de cadastros de usuários já está 100% íntegra e sem duplicidades.');
+    }
+  };
 
   // Action Add Product
   const handleAddProduct = (e: React.FormEvent) => {
@@ -5550,11 +5571,25 @@ export default function GestorDashboard({
             {/* 1. USUARIOS TAB */}
             {cadastroSubTab === 'usuarios' && (
               <div className="space-y-6">
-                <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
+                <div className="border-b border-slate-100 pb-4 flex flex-wrap justify-between items-center gap-3">
                   <div>
-                    <h3 className="font-sans font-bold text-base text-slate-900">Gerenciamento de Usuários</h3>
-                    <p className="text-xxs text-slate-400 mt-0.5">Cadastre Conferentes, Auxiliares de Logística ou Gestores.</p>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="font-sans font-bold text-base text-slate-900">Gerenciamento de Usuários</h3>
+                      <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full border border-slate-200">
+                        {deduplicatedUsers.length} colaboradores
+                      </span>
+                    </div>
+                    <p className="text-xxs text-slate-400 mt-0.5">Cadastre Conferentes, Operadores de Empilhadeira, Auxiliares de Logística ou Gestores.</p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleRemoveDuplicateUsersManually}
+                    className="bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center space-x-1.5 transition cursor-pointer shadow-3xs"
+                    title="Remover usuários duplicados por login ou nome na base"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                    <span>Remover Usuários Duplicados</span>
+                  </button>
                 </div>
 
                 {/* Form users */}

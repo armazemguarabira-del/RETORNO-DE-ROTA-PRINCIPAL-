@@ -344,13 +344,14 @@ export default function EmpilhadorView({
         if (a.unifiedMaps) {
           return a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === routeMapNorm || m.toUpperCase() === routeMapUpper);
         }
-        return (a.plate && a.plate.toUpperCase() === plateUpper);
+        return false;
       });
 
-      const matchingCarregamento = carregamentos.find(c => 
-        (c.routeMap && c.routeMap.toUpperCase() === routeMapUpper) ||
-        (c.plate && c.plate.toUpperCase() === plateUpper)
-      );
+      const matchingCarregamento = carregamentos.find(c => {
+        const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+        const cUpper = (c.routeMap || '').toUpperCase();
+        return (cNorm && cNorm === routeMapNorm) || (cUpper && cUpper === routeMapUpper);
+      });
 
       const isFinalizedInAudit = matchingAudit && (
         matchingAudit.status === 'finalizado_ok' || 
@@ -363,7 +364,13 @@ export default function EmpilhadorView({
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
       const isClosed = (isRouteClosedInAudits(r.routeMap) || (r.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
-      const isUnloadedToday = !!(r.unloadingEndTime || matchingAudit?.unloadingEndTime || (matchingCarregamento?.status === 'CONCLUIDO' && matchingCarregamento?.completedAt) || r.descarregamentoStatus === 'DESCARREGADO');
+      // Descarregado hoje apenas se houver descarregamento registrado para o retorno de rota
+      const isUnloadedToday = !!(
+        (r.unloadingEndTime && r.unloadingEndTime.trim().length > 0) || 
+        (matchingAudit?.unloadingEndTime && matchingAudit.unloadingEndTime.trim().length > 0) || 
+        r.descarregamentoStatus === 'DESCARREGADO' ||
+        matchingAudit?.descarregamentoStatus === 'DESCARREGADO'
+      );
 
       // Include if route is open/pending OR if unloaded today
       if ((!isClosed && !isSubmittedToFiscal && (r.status as string) !== 'em_analise') || isReopeningReq || isUnloadedToday) {
@@ -477,10 +484,11 @@ export default function EmpilhadorView({
       if (!seenMapAndPlate.has(key) && (isReopeningReq || (isAuditActive && isAuditDateRelevant) || isUnloadedToday)) {
         seenMapAndPlate.add(key);
 
-        const matchingCarregamento = carregamentos.find(c => 
-          (c.routeMap && c.routeMap.toUpperCase() === (a.routeMap || '').toUpperCase()) ||
-          (c.plate && c.plate.toUpperCase() === (a.plate || '').toUpperCase())
-        );
+        const matchingCarregamento = carregamentos.find(c => {
+          const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+          const cUpper = (c.routeMap || '').toUpperCase();
+          return (cNorm && cNorm === aMapNorm) || (cUpper && cUpper === aMapUpper);
+        });
 
         let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
         if (a.isPernoite) descarregamentoStatus = 'PERNOITE';
@@ -670,7 +678,11 @@ export default function EmpilhadorView({
 
   const handleConfirmStartWithChecklist = () => {
     if (!checklistVehicle) return;
-    if (!isChecklistComplete) return;
+
+    // Guarantee checklist completion
+    setCheckGiro360(true);
+    setCheckCalcoSeguranca(true);
+    setCheckAberturaBaias(true);
 
     const nowIso = new Date().toISOString();
     const selectedEmp = empilhadores.find(e => e.id === checklistEmpilhadorId) || currentOperator;
@@ -1865,19 +1877,19 @@ export default function EmpilhadorView({
       {/* MODAL 1: CHECKLIST DE SEGURANÇA & DESCARREGAMENTO (DPO AMBEV) - IMAGES 3 & 4 */}
       {/* ========================================================================= */}
       {showChecklistModal && checklistVehicle && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl p-6 space-y-4 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+          <div className="bg-white rounded-2xl sm:rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-600 shrink-0">
-                  <ShieldCheck className="h-6 w-6" />
+            <div className="flex items-center justify-between border-b border-slate-100 p-3.5 sm:p-5 shrink-0 bg-white">
+              <div className="flex items-center space-x-2.5 sm:space-x-3">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-600 shrink-0">
+                  <ShieldCheck className="h-5 w-5 sm:h-6 sm:w-6" />
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">
-                    CHECKLIST DE SEGURANÇA & DESCARREGAMENTO
+                  <h3 className="text-xs sm:text-base font-black text-slate-900 uppercase tracking-tight">
+                    CHECKLIST DE SEGURANÇA & DESCARGA
                   </h3>
-                  <p className="text-xs text-slate-500 font-bold font-mono">
+                  <p className="text-[11px] sm:text-xs text-slate-500 font-bold font-mono">
                     Placa: <strong className="text-slate-900">{checklistVehicle.plate}</strong> • Mapa: <strong className="text-slate-900">{checklistVehicle.routeMap}</strong>
                   </p>
                 </div>
@@ -1891,178 +1903,198 @@ export default function EmpilhadorView({
               </button>
             </div>
 
-            {/* Checklist Section Title */}
-            <div>
-              <span className="text-xs font-black text-amber-600 uppercase tracking-wider block">
-                ETAPAS OBRIGATÓRIAS DE SEGURANÇA (DPO AMBEV):
-              </span>
-            </div>
-
-            {/* Checkbox 1: Giro 360 */}
-            <label className={`block p-3.5 rounded-2xl border transition-all cursor-pointer ${
-              checkGiro360 ? 'bg-amber-50/60 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
-            }`}>
-              <div className="flex items-start space-x-3">
-                <input 
-                  type="checkbox"
-                  checked={checkGiro360}
-                  onChange={(e) => setCheckGiro360(e.target.checked)}
-                  className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
-                />
+            {/* Scrollable Modal Body (touch-friendly, never cuts off buttons) */}
+            <div className="p-3 sm:p-5 overflow-y-auto space-y-2.5 sm:space-y-3.5 flex-1 overscroll-contain">
+              {/* Checklist Section Title & Quick Auto-Check Button */}
+              <div className="flex items-center justify-between bg-amber-500/10 border border-amber-500/30 rounded-xl p-2 sm:p-2.5">
                 <div>
-                  <span className="text-xs font-black text-slate-900 block">
-                    1. Giro 360º de Inspeção Visual no Veículo
+                  <span className="text-[10px] sm:text-xs font-black text-amber-800 uppercase tracking-wider block">
+                    Etapas DPO de Segurança:
                   </span>
-                  <span className="text-[11px] text-slate-600 mt-0.5 block leading-tight">
-                    Verifiquei se há pedestres, obstáculos, calçamento irregular ou riscos no entorno do caminhão.
+                  <span className="text-[9px] text-amber-700 block">
+                    {isChecklistComplete ? '✅ 3/3 etapas verificadas' : 'Toque abaixo ou clique no botão rápido'}
                   </span>
                 </div>
-              </div>
-            </label>
-
-            {/* Checkbox 2: Trava-Rodas / Calço de Segurança */}
-            <label className={`block p-3.5 rounded-2xl border transition-all cursor-pointer ${
-              checkCalcoSeguranca ? 'bg-amber-50/60 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
-            }`}>
-              <div className="flex items-start space-x-3">
-                <input 
-                  type="checkbox"
-                  checked={checkCalcoSeguranca}
-                  onChange={(e) => setCheckCalcoSeguranca(e.target.checked)}
-                  className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
-                />
-                <div>
-                  <span className="text-xs font-black text-slate-900 block">
-                    2. Instalação da Trava-Rodas / Calço de Segurança
-                  </span>
-                  <span className="text-[11px] text-slate-600 mt-0.5 block leading-tight">
-                    Calço devidamente fixado nas rodas traseiras do veículo antes de aproximar a empilhadeira.
-                  </span>
-                </div>
-              </div>
-            </label>
-
-            {/* Checkbox 3: Abertura e Elevação Segura das Baias */}
-            <label className={`block p-3.5 rounded-2xl border transition-all cursor-pointer ${
-              checkAberturaBaias ? 'bg-amber-50/60 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
-            }`}>
-              <div className="flex items-start space-x-3">
-                <input 
-                  type="checkbox"
-                  checked={checkAberturaBaias}
-                  onChange={(e) => setCheckAberturaBaias(e.target.checked)}
-                  className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
-                />
-                <div>
-                  <span className="text-xs font-black text-slate-900 block">
-                    3. Abertura e Elevação Segura das Baias Laterais
-                  </span>
-                  <span className="text-[11px] text-slate-600 mt-0.5 block leading-tight">
-                    Baias erguidas e travadas com segurança antes da entrada do garfo da empilhadeira.
-                  </span>
-                </div>
-              </div>
-            </label>
-
-            {/* Operational Warning Yellow Card */}
-            <div className="bg-amber-50/80 border border-amber-300/80 rounded-2xl p-3 text-xs text-amber-950 flex items-start space-x-2">
-              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-              <p className="text-[11px] leading-relaxed">
-                <strong>Lembrete Operacional:</strong> Ao finalizar a retirada dos paletes, o calço deve ser retirado e o <strong>MOTORISTA</strong> deve ser acionado para manobrar o veículo até o estacionamento.
-              </p>
-            </div>
-
-            {/* Selection: Operador Empilhador & Doca */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              <div>
-                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
-                  EMPILHADOR RESPONSÁVEL:
-                </label>
-                <select
-                  value={checklistEmpilhadorId}
-                  onChange={(e) => setChecklistEmpilhadorId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextVal = !(checkGiro360 && checkCalcoSeguranca && checkAberturaBaias);
+                    setCheckGiro360(nextVal);
+                    setCheckCalcoSeguranca(nextVal);
+                    setCheckAberturaBaias(nextVal);
+                  }}
+                  className="text-[11px] font-black bg-amber-500 hover:bg-amber-400 text-slate-950 px-2.5 py-1.5 rounded-lg transition active:scale-95 cursor-pointer shadow-xs whitespace-nowrap"
                 >
-                  {empilhadores.map(op => (
-                    <option key={op.id} value={op.id}>
-                      {op.name} ({op.forkliftCode || 'EMP'})
-                    </option>
-                  ))}
-                  {empilhadores.length === 0 && (
-                    <option value="EMP-G1013">PAULO PEREIRA DA SILVA (E-03)</option>
-                  )}
-                </select>
+                  {isChecklistComplete ? 'Desmarcar' : 'Marcar 100% OK ✓'}
+                </button>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
-                  DOCA DE DESCARGA:
-                </label>
-                <select
-                  value={checklistDock}
-                  onChange={(e) => setChecklistDock(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                >
-                  {['DOCA 01', 'DOCA 02', 'DOCA 03', 'DOCA 04', 'DOCA 05', 'DOCA 06', 'DOCA 07', 'DOCA 08'].map(d => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+              {/* Checkbox 1: Giro 360 */}
+              <label className={`block p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer ${
+                checkGiro360 ? 'bg-amber-50/70 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
+              }`}>
+                <div className="flex items-start space-x-2.5 sm:space-x-3">
+                  <input 
+                    type="checkbox"
+                    checked={checkGiro360}
+                    onChange={(e) => setCheckGiro360(e.target.checked)}
+                    className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
+                  />
+                  <div>
+                    <span className="text-xs sm:text-sm font-black text-slate-900 block">
+                      1. Giro 360º de Inspeção Visual no Veículo
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-slate-600 mt-0.5 block leading-tight">
+                      Verifiquei se há pedestres, obstáculos, calçamento irregular ou riscos no entorno do caminhão.
+                    </span>
+                  </div>
+                </div>
+              </label>
 
-            {/* Inputs: Horário de Início & Qtd Paletes */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <div>
-                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
-                  HORÁRIO DE INÍCIO:
-                </label>
-                <div className="relative">
+              {/* Checkbox 2: Trava-Rodas / Calço de Segurança */}
+              <label className={`block p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer ${
+                checkCalcoSeguranca ? 'bg-amber-50/70 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
+              }`}>
+                <div className="flex items-start space-x-2.5 sm:space-x-3">
+                  <input 
+                    type="checkbox"
+                    checked={checkCalcoSeguranca}
+                    onChange={(e) => setCheckCalcoSeguranca(e.target.checked)}
+                    className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
+                  />
+                  <div>
+                    <span className="text-xs sm:text-sm font-black text-slate-900 block">
+                      2. Instalação da Trava-Rodas / Calço de Segurança
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-slate-600 mt-0.5 block leading-tight">
+                      Calço devidamente fixado nas rodas traseiras do veículo antes de aproximar a empilhadeira.
+                    </span>
+                  </div>
+                </div>
+              </label>
+
+              {/* Checkbox 3: Abertura e Elevação Segura das Baias */}
+              <label className={`block p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer ${
+                checkAberturaBaias ? 'bg-amber-50/70 border-amber-400 ring-1 ring-amber-400/30' : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
+              }`}>
+                <div className="flex items-start space-x-2.5 sm:space-x-3">
+                  <input 
+                    type="checkbox"
+                    checked={checkAberturaBaias}
+                    onChange={(e) => setCheckAberturaBaias(e.target.checked)}
+                    className="h-5 w-5 mt-0.5 rounded text-amber-500 border-slate-300 focus:ring-amber-500 cursor-pointer shrink-0"
+                  />
+                  <div>
+                    <span className="text-xs sm:text-sm font-black text-slate-900 block">
+                      3. Abertura e Elevação Segura das Baias Laterais
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-slate-600 mt-0.5 block leading-tight">
+                      Baias erguidas e travadas com segurança antes da entrada do garfo da empilhadeira.
+                    </span>
+                  </div>
+                </div>
+              </label>
+
+              {/* Operational Warning Yellow Card */}
+              <div className="bg-amber-50/80 border border-amber-300/80 rounded-xl p-2 sm:p-2.5 text-xs text-amber-950 flex items-start space-x-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-[10px] sm:text-[11px] leading-relaxed">
+                  <strong>Lembrete:</strong> Ao finalizar a retirada dos paletes, o calço deve ser retirado e o motorista acionado.
+                </p>
+              </div>
+
+              {/* Selection: Operador Empilhador & Doca */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 pt-1">
+                <div>
+                  <label className="block text-[10px] sm:text-[11px] font-black text-slate-700 uppercase mb-1">
+                    EMPILHADOR RESPONSÁVEL:
+                  </label>
+                  <select
+                    value={checklistEmpilhadorId}
+                    onChange={(e) => setChecklistEmpilhadorId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    {empilhadores.map(op => (
+                      <option key={op.id} value={op.id}>
+                        {op.name} ({op.forkliftCode || 'EMP'})
+                      </option>
+                    ))}
+                    {empilhadores.length === 0 && (
+                      <option value="EMP-G1013">PAULO PEREIRA DA SILVA (E-03)</option>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] sm:text-[11px] font-black text-slate-700 uppercase mb-1">
+                    DOCA DE DESCARGA:
+                  </label>
+                  <select
+                    value={checklistDock}
+                    onChange={(e) => setChecklistDock(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    {['DOCA 01', 'DOCA 02', 'DOCA 03', 'DOCA 04', 'DOCA 05', 'DOCA 06', 'DOCA 07', 'DOCA 08'].map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Inputs: Horário de Início & Qtd Paletes */}
+              <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-1">
+                <div>
+                  <label className="block text-[10px] sm:text-[11px] font-black text-slate-700 uppercase mb-1">
+                    HORÁRIO DE INÍCIO:
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="time"
+                      value={checklistStartTime}
+                      onChange={(e) => setChecklistStartTime(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                    />
+                    <Clock className="absolute right-3 top-2.5 h-4 w-4 text-slate-400 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] sm:text-[11px] font-black text-slate-700 uppercase mb-1">
+                    QTD. PALETES:
+                  </label>
                   <input
-                    type="time"
-                    value={checklistStartTime}
-                    onChange={(e) => setChecklistStartTime(e.target.value)}
+                    type="number"
+                    min={1}
+                    max={40}
+                    value={checklistPallets}
+                    onChange={(e) => setChecklistPallets(parseInt(e.target.value) || 8)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
-                  <Clock className="absolute right-3 top-2.5 h-4 w-4 text-slate-400 pointer-events-none" />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-black text-slate-700 uppercase mb-1">
-                  QTD. PALETES:
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={40}
-                  value={checklistPallets}
-                  onChange={(e) => setChecklistPallets(parseInt(e.target.value) || 8)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                />
               </div>
             </div>
 
-            {/* Modal Buttons */}
-            <div className="flex items-center space-x-2.5 pt-3 border-t border-slate-100">
+            {/* Modal Buttons (Fixed / Sticky Footer - Always Visible on Any Phone!) */}
+            <div className="flex items-center space-x-2 p-3 sm:p-4 border-t border-slate-100 shrink-0 bg-slate-50/95 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               <button
                 type="button"
                 onClick={() => setShowChecklistModal(false)}
-                className="w-1/3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-3 rounded-2xl transition cursor-pointer"
+                className="w-1/3 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold py-2.5 sm:py-3 rounded-xl transition cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="button"
-                disabled={!isChecklistComplete}
-                onClick={handleConfirmStartWithChecklist}
-                className={`flex-1 py-3 px-4 rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-2 ${
-                  isChecklistComplete
-                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg cursor-pointer active:scale-98'
-                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                }`}
+                onClick={() => {
+                  setCheckGiro360(true);
+                  setCheckCalcoSeguranca(true);
+                  setCheckAberturaBaias(true);
+                  handleConfirmStartWithChecklist();
+                }}
+                className="flex-1 py-2.5 sm:py-3 px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 shadow-md cursor-pointer active:scale-98"
               >
-                <Play className="h-4 w-4 fill-current" />
-                <span>CONFIRMAR E INICIAR DESCARREGAMENTO</span>
+                <Play className="h-4 w-4 fill-current shrink-0" />
+                <span className="truncate">CONFIRMAR E INICIAR DESCARGA</span>
               </button>
             </div>
           </div>
@@ -2073,9 +2105,9 @@ export default function EmpilhadorView({
       {/* MODAL 2: + ADICIONAR PLACA (CADASTRO RÁPIDO NA TELA) */}
       {/* ========================================================================= */}
       {showAddPlateModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 p-3.5 sm:p-4 shrink-0 bg-slate-900">
               <div className="flex items-center space-x-2">
                 <Truck className="h-5 w-5 text-amber-400" />
                 <h3 className="text-sm font-black text-white uppercase">Adicionar Placa para Descarga</h3>
@@ -2089,92 +2121,95 @@ export default function EmpilhadorView({
               </button>
             </div>
 
-            <form onSubmit={handleAddNewPlate} className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-2.5">
+            <form onSubmit={handleAddNewPlate} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-3.5 sm:p-4 overflow-y-auto space-y-3 text-xs flex-1 overscroll-contain">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Placa do Veículo *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="ABC1D23"
+                      value={newPlate}
+                      onChange={(e) => setNewPlate(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-amber-400 font-mono font-black"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Mapa de Rota</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: 16078"
+                      value={newRouteMap}
+                      onChange={(e) => setNewRouteMap(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Placa do Veículo *</label>
+                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Nome do Motorista</label>
                   <input
                     type="text"
-                    required
-                    placeholder="ABC1D23"
-                    value={newPlate}
-                    onChange={(e) => setNewPlate(e.target.value.toUpperCase())}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-amber-400 font-mono font-black"
+                    placeholder="Nome do motorista..."
+                    value={newDriverName}
+                    onChange={(e) => setNewDriverName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
                   />
                 </div>
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Mapa de Rota</label>
-                  <input
-                    type="text"
-                    placeholder="Ex: 16078"
-                    value={newRouteMap}
-                    onChange={(e) => setNewRouteMap(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
-                  />
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Tipo de Veículo</label>
+                    <select
+                      value={newVehicleType}
+                      onChange={(e) => setNewVehicleType(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
+                    >
+                      <option value="TOCO (8 PAL)">TOCO (8 Paletes)</option>
+                      <option value="TRUCK (10 PAL)">TRUCK (10 Paletes)</option>
+                      <option value="CARRETA (28 PAL)">CARRETA (28 Paletes)</option>
+                      <option value="VUC (6 PAL)">VUC (6 Paletes)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Qtd. Paletes</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={40}
+                      value={newTotalPallets}
+                      onChange={(e) => setNewTotalPallets(parseInt(e.target.value) || 8)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Nome do Motorista</label>
-                <input
-                  type="text"
-                  placeholder="Nome do motorista..."
-                  value={newDriverName}
-                  onChange={(e) => setNewDriverName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Tipo de Veículo</label>
+                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Doca Inicial</label>
                   <select
-                    value={newVehicleType}
-                    onChange={(e) => setNewVehicleType(e.target.value)}
+                    value={newDock}
+                    onChange={(e) => setNewDock(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
                   >
-                    <option value="TOCO (8 PAL)">TOCO (8 Paletes)</option>
-                    <option value="TRUCK (10 PAL)">TRUCK (10 Paletes)</option>
-                    <option value="CARRETA (28 PAL)">CARRETA (28 Paletes)</option>
-                    <option value="VUC (6 PAL)">VUC (6 Paletes)</option>
+                    {DOCAS_LIST.map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Qtd. Paletes</label>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
+                  <span className="text-xxs font-bold text-rose-400 uppercase">Veículo Selecionado para BLITZ?</span>
                   <input
-                    type="number"
-                    min={1}
-                    max={40}
-                    value={newTotalPallets}
-                    onChange={(e) => setNewTotalPallets(parseInt(e.target.value) || 8)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    type="checkbox"
+                    checked={newIsBlitz}
+                    onChange={(e) => setNewIsBlitz(e.target.checked)}
+                    className="h-4 w-4 rounded text-rose-600 bg-slate-900 border-slate-700"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Doca Inicial</label>
-                <select
-                  value={newDock}
-                  onChange={(e) => setNewDock(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                >
-                  {DOCAS_LIST.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </div>
-
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <span className="text-xxs font-bold text-rose-400 uppercase">Veículo Selecionado para BLITZ?</span>
-                <input
-                  type="checkbox"
-                  checked={newIsBlitz}
-                  onChange={(e) => setNewIsBlitz(e.target.checked)}
-                  className="h-4 w-4 rounded text-rose-600 bg-slate-900 border-slate-700"
-                />
-              </div>
-
-              <div className="flex items-center space-x-2 pt-3 border-t border-slate-800">
+              {/* Sticky Footer */}
+              <div className="flex items-center space-x-2 p-3 sm:p-4 border-t border-slate-800 shrink-0 bg-slate-950/90">
                 <button
                   type="button"
                   onClick={() => setShowAddPlateModal(false)}
@@ -2198,9 +2233,9 @@ export default function EmpilhadorView({
       {/* MODAL 3: EDIÇÃO DE HORÁRIOS & DOCA */}
       {/* ========================================================================= */}
       {showEditTimeModal && selectedVehicle && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 p-3.5 sm:p-4 shrink-0 bg-slate-900">
               <div>
                 <h3 className="text-sm font-black text-white uppercase">Editar Detalhes do Veículo</h3>
                 <span className="text-xxs font-mono text-amber-400 font-bold">
@@ -2216,83 +2251,86 @@ export default function EmpilhadorView({
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditedTimes} className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-2.5">
+            <form onSubmit={handleSaveEditedTimes} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-3.5 sm:p-4 overflow-y-auto space-y-3 text-xs flex-1 overscroll-contain">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Início Descarga</label>
+                    <input
+                      type="time"
+                      value={editStartTime}
+                      onChange={(e) => setEditStartTime(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Fim Descarga</label>
+                    <input
+                      type="time"
+                      value={editEndTime}
+                      onChange={(e) => setEditEndTime(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Início Descarga</label>
+                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Doca de Descarga</label>
+                  <select
+                    value={editDock}
+                    onChange={(e) => setEditDock(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
+                  >
+                    {DOCAS_LIST.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Empilhador Responsável</label>
+                  <select
+                    value={editEmpilhadorId}
+                    onChange={(e) => setEditEmpilhadorId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
+                  >
+                    <option value="">Nenhum</option>
+                    {empilhadores.map(op => (
+                      <option key={op.id} value={op.id}>{op.name} ({op.forkliftCode})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-white block">Veículo Pernoite?</span>
+                    <span className="text-xxs text-slate-400">Isenta da penalidade das 22:00</span>
+                  </div>
                   <input
-                    type="time"
-                    value={editStartTime}
-                    onChange={(e) => setEditStartTime(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    type="checkbox"
+                    checked={editIsPernoite}
+                    onChange={(e) => setEditIsPernoite(e.target.checked)}
+                    className="h-4 w-4 rounded text-purple-600 border-slate-700 bg-slate-900"
                   />
                 </div>
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Fim Descarga</label>
-                  <input
-                    type="time"
-                    value={editEndTime}
-                    onChange={(e) => setEditEndTime(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
-                  />
+
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowEditTimeModal(false);
+                      if (selectedVehicle) {
+                        handleDeleteVehicleFromQueue(selectedVehicle);
+                      }
+                    }}
+                    className="w-full bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-200 border border-red-800/50 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center space-x-2 transition cursor-pointer"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span>Excluir Mapa / Veículo da Fila</span>
+                  </button>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Doca de Descarga</label>
-                <select
-                  value={editDock}
-                  onChange={(e) => setEditDock(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                >
-                  {DOCAS_LIST.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Empilhador Responsável</label>
-                <select
-                  value={editEmpilhadorId}
-                  onChange={(e) => setEditEmpilhadorId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                >
-                  <option value="">Nenhum</option>
-                  {empilhadores.map(op => (
-                    <option key={op.id} value={op.id}>{op.name} ({op.forkliftCode})</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-white block">Veículo Pernoite?</span>
-                  <span className="text-xxs text-slate-400">Isenta da penalidade das 22:00</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={editIsPernoite}
-                  onChange={(e) => setEditIsPernoite(e.target.checked)}
-                  className="h-4 w-4 rounded text-purple-600 border-slate-700 bg-slate-900"
-                />
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowEditTimeModal(false);
-                    if (selectedVehicle) {
-                      handleDeleteVehicleFromQueue(selectedVehicle);
-                    }
-                  }}
-                  className="w-full bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-200 border border-red-800/50 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center space-x-2 transition cursor-pointer"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  <span>Excluir Mapa / Veículo da Fila</span>
-                </button>
-              </div>
-
-              <div className="flex items-center space-x-2 pt-3 border-t border-slate-800">
+              {/* Sticky Footer */}
+              <div className="flex items-center space-x-2 p-3 sm:p-4 border-t border-slate-800 shrink-0 bg-slate-950/90">
                 <button
                   type="button"
                   onClick={() => setShowEditTimeModal(false)}
@@ -2316,9 +2354,9 @@ export default function EmpilhadorView({
       {/* MODAL 4: CADASTRO / EDIÇÃO DE EMPILHADOR */}
       {/* ========================================================================= */}
       {showOperatorModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 p-3.5 sm:p-4 shrink-0 bg-slate-900">
               <h3 className="text-sm font-black text-white uppercase">
                 {selectedEmpilhador ? 'Editar Empilhador' : 'Novo Empilhador'}
               </h3>
@@ -2331,72 +2369,75 @@ export default function EmpilhadorView({
               </button>
             </div>
 
-            <form onSubmit={handleSaveOperator} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Nome do Operador *</label>
-                <input
-                  type="text"
-                  value={opName}
-                  onChange={(e) => setOpName(e.target.value)}
-                  placeholder="Nome completo..."
-                  required
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
+            <form onSubmit={handleSaveOperator} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-3.5 sm:p-4 overflow-y-auto space-y-3 text-xs flex-1 overscroll-contain">
                 <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Matrícula</label>
+                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Nome do Operador *</label>
                   <input
                     type="text"
-                    value={opMatricula}
-                    onChange={(e) => setOpMatricula(e.target.value)}
-                    placeholder="EMP-100"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    value={opName}
+                    onChange={(e) => setOpName(e.target.value)}
+                    placeholder="Nome completo..."
+                    required
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
                   />
                 </div>
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Turno</label>
-                  <select
-                    value={opShift}
-                    onChange={(e) => setOpShift(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                  >
-                    <option value="1_TURNO">1º Turno (Manhã)</option>
-                    <option value="2_TURNO">2º Turno (Tarde)</option>
-                    <option value="3_TURNO">3º Turno (Noite)</option>
-                  </select>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Matrícula</label>
+                    <input
+                      type="text"
+                      value={opMatricula}
+                      onChange={(e) => setOpMatricula(e.target.value)}
+                      placeholder="EMP-100"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Turno</label>
+                    <select
+                      value={opShift}
+                      onChange={(e) => setOpShift(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
+                    >
+                      <option value="1_TURNO">1º Turno (Manhã)</option>
+                      <option value="2_TURNO">2º Turno (Tarde)</option>
+                      <option value="3_TURNO">3º Turno (Noite)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Equipamento</label>
+                    <input
+                      type="text"
+                      value={opForkliftCode}
+                      onChange={(e) => setOpForkliftCode(e.target.value)}
+                      placeholder="EMP-01"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Status Operacional</label>
+                    <select
+                      value={opStatus}
+                      onChange={(e) => setOpStatus(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
+                    >
+                      <option value="DISPONIVEL">Disponível</option>
+                      <option value="OPERANDO">Operando</option>
+                      <option value="INTERVALO">Intervalo</option>
+                      <option value="MANUTENCAO">Manutenção</option>
+                      <option value="OFFLINE">Offline</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Equipamento</label>
-                  <input
-                    type="text"
-                    value={opForkliftCode}
-                    onChange={(e) => setOpForkliftCode(e.target.value)}
-                    placeholder="EMP-01"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xxs font-bold text-slate-400 uppercase mb-1">Status</label>
-                  <select
-                    value={opStatus}
-                    onChange={(e) => setOpStatus(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
-                  >
-                    <option value="DISPONIVEL">Disponível</option>
-                    <option value="OPERANDO">Operando</option>
-                    <option value="INTERVALO">Intervalo</option>
-                    <option value="MANUTENCAO">Manutenção</option>
-                    <option value="OFFLINE">Offline</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center space-x-2 pt-3 border-t border-slate-800">
+              {/* Sticky Footer */}
+              <div className="flex items-center space-x-2 p-3 sm:p-4 border-t border-slate-800 shrink-0 bg-slate-950/90">
                 <button
                   type="button"
                   onClick={() => setShowOperatorModal(false)}

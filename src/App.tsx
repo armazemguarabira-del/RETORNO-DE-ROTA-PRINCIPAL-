@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem } from './types';
-import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from './data';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration } from './types';
+import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive } from './data';
 import { ImageDB } from './imageDb';
-import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
+import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
 import Header from './components/Header';
 import ConferenteView from './components/ConferenteView';
 import FiscalView from './components/FiscalView';
@@ -77,15 +77,89 @@ export default function App() {
   const [fiscalAlerts, setFiscalAlerts] = useState<FiscalAlert[]>([]);
   const [importedRoutes, setImportedRoutes] = useState<ImportedRoute[]>([]);
 
-  // Session & UI Navigation states
+  // Liga DPO State (5S, Relatos de Segurança, Blitz de Refugo, Declaração de Zero Quebras)
+  const [fiveSEntries, setFiveSEntries] = useState<FiveSEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambev_liga_5s_entries');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [safetyReports, setSafetyReports] = useState<SafetyReport[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambev_liga_safety_reports');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [blitzEntries, setBlitzEntries] = useState<BlitzRefugoEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambev_liga_blitz_entries');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [zeroBreakDeclarations, setZeroBreakDeclarations] = useState<ZeroBreakDeclaration[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambev_liga_break_declarations');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Session & UI Navigation states with robust persistence (never arbitrarily revert to another user)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-    return DEFAULT_USERS.find(u => u.id === savedUserId) || DEFAULT_USERS.find(u => u.role === 'gestor') || DEFAULT_USERS[0] || null;
+    try {
+      const savedUserStr = localStorage.getItem('logiroute_authenticated_user');
+      if (savedUserStr) {
+        const parsed = JSON.parse(savedUserStr);
+        if (parsed && parsed.id) return parsed;
+      }
+      const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
+      if (savedUserId) {
+        const found = DEFAULT_USERS.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase()));
+        if (found) return found;
+      }
+    } catch (e) {}
+    return null;
   });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return localStorage.getItem('logiroute_is_authenticated') === 'true';
   });
-  const [activeTab, setActiveTab] = useState<string>('conferencias');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      let role = '';
+      const savedUserStr = localStorage.getItem('logiroute_authenticated_user');
+      if (savedUserStr) {
+        const parsed = JSON.parse(savedUserStr);
+        if (parsed?.role) role = parsed.role;
+      }
+      if (!role) {
+        const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
+        if (savedUserId) {
+          const found = DEFAULT_USERS.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase()));
+          if (found?.role) role = found.role;
+        }
+      }
+      const savedTab = localStorage.getItem('logiroute_active_tab');
+      if (savedTab) {
+        return savedTab;
+      }
+      if (role === 'empilhador') return 'carregamento';
+      if (role === 'conferente') return 'conferencias';
+      if (role === 'auxiliar_logistica' || role === 'financeiro') return 'reconciliacao';
+      if (role === 'gestor') return 'dashboard';
+      if (role === 'monitoramento') return 'monitoramento_view';
+    } catch (e) {}
+    return 'reconciliacao';
+  });
 
   // Quota & Permission status state
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(getIsFirestoreQuotaExceeded());
@@ -495,38 +569,29 @@ export default function App() {
       };
       const cleanedRemote = db.users.filter((u: User) => !isFictitious(u));
       
-      // Deduplicate by username or id so no duplicate accounts can exist
-      const seenUsernames = new Set<string>();
-      const deduplicated: User[] = [];
-      for (const u of cleanedRemote) {
-        const rawUser = (u.username || '').trim().toLowerCase();
-        const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
-        const normUser = baseUser || rawUser || (u.id || '').trim().toLowerCase();
-        if (normUser && !seenUsernames.has(normUser)) {
-          seenUsernames.add(normUser);
-          if (rawUser === 'armazemguarabira@gmail.com') {
-            deduplicated.push({ ...u, username: 'armazemguarabira' });
-          } else {
-            deduplicated.push(u);
-          }
-        }
+      // Strict comprehensive deduplication by username, id, and normalized name
+      const { cleanedUsers: deduplicated, duplicateIds } = deduplicateUsersComprehensive(cleanedRemote);
+      if (duplicateIds.length > 0) {
+        duplicateIds.forEach(id => {
+          deleteDocFromFirestore('users', id).catch(() => {});
+        });
       }
 
       // If remote database is completely empty (e.g. brand new initialization), use DEFAULT_USERS; otherwise respect the DB
       const activeUsers = deduplicated.length > 0 ? deduplicated : DEFAULT_USERS;
       setUsers(activeUsers);
       setCurrentUser(prevUser => {
-        if (prevUser) {
-          // Keep current logged in user and refresh data if updated in users collection
-          const matched = activeUsers.find((u: User) => u.id === prevUser.id);
-          return matched || prevUser;
-        }
         const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-        if (savedUserId) {
-          const matched = activeUsers.find((u: User) => u.id === savedUserId);
-          if (matched) return matched;
+        const targetId = prevUser?.id || savedUserId;
+        if (targetId) {
+          const matched = activeUsers.find((u: User) => u.id === targetId || (u.username && u.username.toLowerCase() === targetId.toLowerCase()));
+          if (matched) {
+            try { localStorage.setItem('logiroute_authenticated_user', JSON.stringify(matched)); } catch (e) {}
+            return matched;
+          }
+          if (prevUser) return prevUser;
         }
-        return activeUsers.find((u: User) => u.role === 'gestor') || activeUsers[0] || null;
+        return prevUser;
       });
     }
 
@@ -569,6 +634,26 @@ export default function App() {
 
     if (db.controleSobras !== undefined && Array.isArray(db.controleSobras)) {
       setControleSobras(db.controleSobras);
+    }
+
+    if (db.fiveSEntries !== undefined && Array.isArray(db.fiveSEntries)) {
+      setFiveSEntries(db.fiveSEntries);
+      try { localStorage.setItem('ambev_liga_5s_entries', JSON.stringify(db.fiveSEntries)); } catch (e) {}
+    }
+
+    if (db.safetyReports !== undefined && Array.isArray(db.safetyReports)) {
+      setSafetyReports(db.safetyReports);
+      try { localStorage.setItem('ambev_liga_safety_reports', JSON.stringify(db.safetyReports)); } catch (e) {}
+    }
+
+    if (db.blitzEntries !== undefined && Array.isArray(db.blitzEntries)) {
+      setBlitzEntries(db.blitzEntries);
+      try { localStorage.setItem('ambev_liga_blitz_entries', JSON.stringify(db.blitzEntries)); } catch (e) {}
+    }
+
+    if (db.zeroBreakDeclarations !== undefined && Array.isArray(db.zeroBreakDeclarations)) {
+      setZeroBreakDeclarations(db.zeroBreakDeclarations);
+      try { localStorage.setItem('ambev_liga_break_declarations', JSON.stringify(db.zeroBreakDeclarations)); } catch (e) {}
     }
 
     if (db.returnForecasts !== undefined && Array.isArray(db.returnForecasts)) {
@@ -639,7 +724,14 @@ export default function App() {
 
     // 1. Check persistent user ID if authenticated
     const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-    const defaultUser = users.find(u => u.id === savedUserId) || users.find(u => u.role === 'gestor') || users[0];
+    const savedUserStr = localStorage.getItem('logiroute_authenticated_user');
+    let defaultUser: User | null = null;
+    if (savedUserStr) {
+      try { defaultUser = JSON.parse(savedUserStr); } catch (e) {}
+    }
+    if (!defaultUser && savedUserId) {
+      defaultUser = users.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase())) || DEFAULT_USERS.find(u => u.id === savedUserId) || null;
+    }
     if (defaultUser) {
       setCurrentUser(defaultUser);
     }
@@ -861,11 +953,60 @@ export default function App() {
     const handleNav = (e: any) => {
       if (e?.detail) {
         setActiveTab(e.detail);
+        try { localStorage.setItem('logiroute_active_tab', e.detail); } catch (err) {}
       }
     };
     window.addEventListener('logiroute:navigate-tab', handleNav);
     return () => window.removeEventListener('logiroute:navigate-tab', handleNav);
   }, []);
+
+  // Guardião anti tela branca: valida e normaliza a aba ativa para o perfil logado
+  useEffect(() => {
+    if (!currentUser) return;
+    const role = currentUser.role;
+
+    const allowedTabs: Record<string, string[]> = {
+      conferente: ['conferencias', 'carregamento', 'liga'],
+      empilhador: ['carregamento', 'descarregamento', 'liga'],
+      auxiliar_logistica: [
+        'reconciliacao', 'historico', 'divergencias', 'mapas_importados',
+        'sincronizador', 'vales_view', 'pasta_evidencias', 'sobras',
+        'monitoramento_view', 'dashboard', 'cadastros', 'efd_histograma',
+        'liga', 'backup', 'exportar', 'carregamento', 'conferencias'
+      ],
+      financeiro: [
+        'reconciliacao', 'historico', 'divergencias', 'mapas_importados',
+        'sincronizador', 'vales_view', 'pasta_evidencias', 'sobras',
+        'monitoramento_view', 'dashboard', 'cadastros', 'efd_histograma',
+        'liga', 'backup', 'exportar', 'carregamento', 'conferencias'
+      ],
+      monitoramento: [
+        'monitoramento_view', 'historico', 'divergencias', 'sobras',
+        'carregamento', 'liga'
+      ],
+      gestor: [
+        'dashboard', 'cadastros', 'efd_histograma', 'reconciliacao',
+        'historico', 'divergencias', 'mapas_importados', 'sincronizador',
+        'vales_view', 'pasta_evidencias', 'sobras', 'carregamento',
+        'conferencias', 'monitoramento_view', 'liga', 'backup', 'exportar'
+      ]
+    };
+
+    const allowed = allowedTabs[role];
+    if (allowed && !allowed.includes(activeTab)) {
+      const defaultTab = 
+        role === 'empilhador' ? 'carregamento' :
+        role === 'conferente' ? 'conferencias' :
+        role === 'auxiliar_logistica' ? 'reconciliacao' :
+        role === 'financeiro' ? 'reconciliacao' :
+        role === 'monitoramento' ? 'monitoramento_view' :
+        'dashboard';
+      setActiveTab(defaultTab);
+      try { localStorage.setItem('logiroute_active_tab', defaultTab); } catch (e) {}
+    } else {
+      try { localStorage.setItem('logiroute_active_tab', activeTab); } catch (e) {}
+    }
+  }, [currentUser, activeTab]);
 
   // Disabled auto-generation of delay alerts to keep database alerts pristine
   /*
@@ -876,21 +1017,11 @@ export default function App() {
 
   // Sync state changes back to AppStore (localStorage) and Server
   const handleSaveUsers = (newUsers: User[]) => {
-    const seenUsernames = new Set<string>();
-    const deduplicated: User[] = [];
-    for (const u of newUsers) {
-      if (!u) continue;
-      const rawUser = (u.username || '').trim().toLowerCase();
-      const baseUser = rawUser.includes('@') ? rawUser.split('@')[0] : rawUser;
-      const normUser = baseUser || rawUser || (u.id || '').trim().toLowerCase();
-      if (normUser && !seenUsernames.has(normUser)) {
-        seenUsernames.add(normUser);
-        if (rawUser === 'armazemguarabira@gmail.com') {
-          deduplicated.push({ ...u, username: 'armazemguarabira' });
-        } else {
-          deduplicated.push(u);
-        }
-      }
+    const { cleanedUsers: deduplicated, duplicateIds } = deduplicateUsersComprehensive(newUsers);
+    if (duplicateIds.length > 0) {
+      duplicateIds.forEach(id => {
+        deleteDocFromFirestore('users', id).catch(() => {});
+      });
     }
     setUsers(deduplicated);
     pushDatabaseToServer({ users: deduplicated });
@@ -984,10 +1115,44 @@ export default function App() {
     pushDatabaseToServer({ carregamentos: newCarregamentos, carregamentoProcesses: newCarregamentos });
   };
 
+  const handleSaveLigaData = (data: {
+    fiveSEntries?: FiveSEntry[];
+    safetyReports?: SafetyReport[];
+    blitzEntries?: BlitzRefugoEntry[];
+    zeroBreakDeclarations?: ZeroBreakDeclaration[];
+  }) => {
+    const payload: any = {};
+    if (data.fiveSEntries !== undefined) {
+      setFiveSEntries(data.fiveSEntries);
+      try { localStorage.setItem('ambev_liga_5s_entries', JSON.stringify(data.fiveSEntries)); } catch (e) {}
+      payload.fiveSEntries = data.fiveSEntries;
+    }
+    if (data.safetyReports !== undefined) {
+      setSafetyReports(data.safetyReports);
+      try { localStorage.setItem('ambev_liga_safety_reports', JSON.stringify(data.safetyReports)); } catch (e) {}
+      payload.safetyReports = data.safetyReports;
+    }
+    if (data.blitzEntries !== undefined) {
+      setBlitzEntries(data.blitzEntries);
+      try { localStorage.setItem('ambev_liga_blitz_entries', JSON.stringify(data.blitzEntries)); } catch (e) {}
+      payload.blitzEntries = data.blitzEntries;
+    }
+    if (data.zeroBreakDeclarations !== undefined) {
+      setZeroBreakDeclarations(data.zeroBreakDeclarations);
+      try { localStorage.setItem('ambev_liga_break_declarations', JSON.stringify(data.zeroBreakDeclarations)); } catch (e) {}
+      payload.zeroBreakDeclarations = data.zeroBreakDeclarations;
+    }
+    pushDatabaseToServer(payload);
+  };
+
   // Switch tabs when current user role changes
   const handleUserChange = (user: User) => {
     setCurrentUser(user);
-    localStorage.setItem('logiroute_authenticated_user_id', user.id);
+    try {
+      localStorage.setItem('logiroute_authenticated_user_id', user.id);
+      localStorage.setItem('logiroute_authenticated_user', JSON.stringify(user));
+      localStorage.setItem('logiroute_last_login_username', user.username || user.id);
+    } catch (e) {}
     if (user.role === 'empilhador') {
       setActiveTab('carregamento');
     } else if (user.role === 'conferente') {
@@ -1004,8 +1169,12 @@ export default function App() {
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     setIsAuthenticated(true);
-    localStorage.setItem('logiroute_is_authenticated', 'true');
-    localStorage.setItem('logiroute_authenticated_user_id', user.id);
+    try {
+      localStorage.setItem('logiroute_is_authenticated', 'true');
+      localStorage.setItem('logiroute_authenticated_user_id', user.id);
+      localStorage.setItem('logiroute_authenticated_user', JSON.stringify(user));
+      localStorage.setItem('logiroute_last_login_username', user.username || user.id);
+    } catch (e) {}
 
     // Route active tabs based on permission roles
     if (user.role === 'empilhador') {
@@ -1023,8 +1192,11 @@ export default function App() {
 
   const handleLogout = () => {
     setIsAuthenticated(false);
-    localStorage.removeItem('logiroute_is_authenticated');
-    localStorage.removeItem('logiroute_authenticated_user_id');
+    try {
+      localStorage.removeItem('logiroute_is_authenticated');
+      localStorage.removeItem('logiroute_authenticated_user_id');
+      localStorage.removeItem('logiroute_authenticated_user');
+    } catch (e) {}
   };
 
   // Render branded Login View if not authenticated
@@ -1035,12 +1207,22 @@ export default function App() {
   if (!currentUser) {
     const availableUsers = users.length > 0 ? users : DEFAULT_USERS;
     const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
-    const fallbackUser = availableUsers.find(u => u.id === savedUserId) 
-      || availableUsers.find(u => u.role === 'gestor') 
-      || availableUsers[0];
+    const savedUserStr = localStorage.getItem('logiroute_authenticated_user');
+    let fallbackUser: User | null = null;
+    if (savedUserStr) {
+      try { fallbackUser = JSON.parse(savedUserStr); } catch (e) {}
+    }
+    if (!fallbackUser && savedUserId) {
+      fallbackUser = availableUsers.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase())) || null;
+    }
 
     if (fallbackUser) {
       setTimeout(() => setCurrentUser(fallbackUser), 0);
+    } else {
+      setTimeout(() => {
+        setIsAuthenticated(false);
+        try { localStorage.removeItem('logiroute_is_authenticated'); } catch (e) {}
+      }, 0);
     }
 
     return (
@@ -1241,7 +1423,7 @@ export default function App() {
         )}
 
         {/* VIEW 1: CONFERENTE (PHYSICAL AUDITOR) */}
-        {(currentUser.role === 'conferente' || currentUser.role === 'gestor') && activeTab === 'conferencias' && (
+        {(currentUser.role === 'conferente' || currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') && activeTab === 'conferencias' && (
           <ConferenteView
             currentUser={currentUser}
             drivers={drivers}
@@ -1267,7 +1449,7 @@ export default function App() {
         )}
 
         {/* VIEW 2: AUXILIAR DE LOGÍSTICA & FINANCEIRO (FISCAL WORKSPACE & HISTORY) */}
-        {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (activeTab === 'reconciliacao' || activeTab === 'historico' || activeTab === 'divergencias' || activeTab === 'mapas_importados' || activeTab === 'sincronizador' || activeTab === 'vales_view') && (
+        {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (activeTab === 'reconciliacao' || activeTab === 'historico' || activeTab === 'divergencias' || activeTab === 'mapas_importados' || activeTab === 'sincronizador' || activeTab === 'vales_view' || activeTab === 'pasta_evidencias') && (
           <FiscalView
             currentUser={currentUser}
             drivers={drivers}
@@ -1334,10 +1516,10 @@ export default function App() {
           />
         )}
 
-        {/* VIEW 3: GESTOR & AUXILIAR DE LOGÍSTICA & FINANCEIRO (CADASTROS ACCESS) */}
+        {/* VIEW 3: GESTOR & AUXILIAR DE LOGÍSTICA & FINANCEIRO (CADASTROS & DASHBOARD ACCESS) */}
         {(currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') && (
           <>
-            {currentUser.role === 'gestor' && activeTab === 'dashboard' && (
+            {(currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro') && activeTab === 'dashboard' && (
               <GestorDashboard
                 currentUser={currentUser}
                 drivers={drivers}
@@ -1442,6 +1624,11 @@ export default function App() {
               importedRoutes={importedRoutes}
               carregamentos={carregamentos}
               empilhadores={empilhadores}
+              fiveSEntries={fiveSEntries}
+              safetyReports={safetyReports}
+              blitzEntries={blitzEntries}
+              zeroBreakDeclarations={zeroBreakDeclarations}
+              onSaveLigaData={handleSaveLigaData}
               onNavigateTab={(tab: string) => setActiveTab(tab)}
             />
           </div>
@@ -1466,6 +1653,121 @@ export default function App() {
               fiscalAlerts={fiscalAlerts}
             />
           </div>
+        )}
+
+        {/* VIEW FALLBACK DE SEGURANÇA TOTAL (ANTI TELA BRANCA): CASO NENHUMA ABA ESPECÍFICA TENHA SIDO ACIONADA */}
+        {!['sobras', 'carregamento', 'descarregamento', 'conferencias', 'reconciliacao', 'historico', 'divergencias', 'mapas_importados', 'sincronizador', 'vales_view', 'pasta_evidencias', 'monitoramento_view', 'dashboard', 'cadastros', 'efd_histograma', 'liga', 'backup', 'exportar'].includes(activeTab) && (
+          currentUser.role === 'conferente' ? (
+            <ConferenteView
+              currentUser={currentUser}
+              drivers={drivers}
+              vehicles={vehicles}
+              products={products}
+              activeAssets={activeAssets}
+              audits={audits}
+              onSaveAudits={handleSaveAudits}
+              onSaveDrivers={handleSaveDrivers}
+              onSaveVehicles={handleSaveVehicles}
+              returnForecasts={returnForecasts}
+              onSaveForecasts={handleSaveForecasts}
+              fiscalAlerts={fiscalAlerts}
+              onSaveAlerts={handleSaveAlerts}
+              importedRoutes={importedRoutes}
+              onSaveImportedRoutes={handleSaveImportedRoutes}
+              carregamentos={carregamentos}
+              onSaveCarregamentos={handleSaveCarregamentos}
+              empilhadores={empilhadores}
+              onSaveEmpilhadores={handleSaveEmpilhadores}
+              onNavigateTab={(tab: string) => setActiveTab(tab)}
+            />
+          ) : currentUser.role === 'empilhador' ? (
+            <EmpilhadorView
+              currentUser={currentUser}
+              empilhadores={empilhadores}
+              onSaveEmpilhadores={handleSaveEmpilhadores}
+              carregamentos={carregamentos}
+              onSaveCarregamentos={handleSaveCarregamentos}
+              importedRoutes={importedRoutes}
+              onSaveImportedRoutes={handleSaveImportedRoutes}
+              audits={audits}
+              onSaveAudits={handleSaveAudits}
+              returnForecasts={returnForecasts}
+              onSaveForecasts={handleSaveForecasts}
+              fiscalAlerts={fiscalAlerts}
+              onSaveAlerts={handleSaveAlerts}
+              vehicles={vehicles}
+              drivers={drivers}
+              products={products}
+              activeAssets={activeAssets}
+              onNavigateTab={(tab: string) => setActiveTab(tab)}
+            />
+          ) : currentUser.role === 'monitoramento' ? (
+            <MonitoramentoView
+              currentUser={currentUser}
+              importedRoutes={importedRoutes}
+              onSaveImportedRoutes={handleSaveImportedRoutes}
+              returnForecasts={returnForecasts}
+              onSaveForecasts={handleSaveForecasts}
+              drivers={drivers}
+              onSaveDrivers={handleSaveDrivers}
+              vehicles={vehicles}
+              audits={audits}
+              onSaveAudits={handleSaveAudits}
+            />
+          ) : currentUser.role === 'gestor' ? (
+            <GestorDashboard
+              currentUser={currentUser}
+              drivers={drivers}
+              vehicles={vehicles}
+              products={products}
+              activeAssets={activeAssets}
+              audits={audits}
+              users={users}
+              onSaveUsers={handleSaveUsers}
+              onSaveDrivers={handleSaveDrivers}
+              onSaveVehicles={handleSaveVehicles}
+              onSaveProducts={handleSaveProducts}
+              onSaveAudits={handleSaveAudits}
+              importedRoutes={importedRoutes}
+              onSaveImportedRoutes={handleSaveImportedRoutes}
+              vales={vales}
+              onSaveVales={handleSaveVales}
+              carregamentos={carregamentos}
+              onSaveCarregamentos={handleSaveCarregamentos}
+              empilhadores={empilhadores}
+              onSaveEmpilhadores={handleSaveEmpilhadores}
+              forceTab="dashboard"
+              auditLogs={auditLogs}
+              customManualHTML={customManualHTML}
+              onSaveCustomManual={handleSaveCustomManual}
+              onResetPlatformData={handleResetPlatformData}
+              onNavigateTab={(tab: string) => setActiveTab(tab)}
+            />
+          ) : (
+            <FiscalView
+              currentUser={currentUser}
+              drivers={drivers}
+              onSaveDrivers={handleSaveDrivers}
+              vehicles={vehicles}
+              products={products}
+              onSaveProducts={handleSaveProducts}
+              activeAssets={activeAssets}
+              audits={audits}
+              onSaveAudits={handleSaveAudits}
+              fiscalAlerts={fiscalAlerts}
+              onSaveAlerts={handleSaveAlerts}
+              importedRoutes={importedRoutes}
+              onSaveImportedRoutes={handleSaveImportedRoutes}
+              vales={vales}
+              onSaveVales={handleSaveVales}
+              carregamentos={carregamentos}
+              onSaveCarregamentos={handleSaveCarregamentos}
+              activeTab="reconciliacao"
+              onResetPlatformData={handleResetPlatformData}
+              returnForecasts={returnForecasts}
+              onSaveForecasts={handleSaveForecasts}
+            />
+          )
         )}
       </main>
 

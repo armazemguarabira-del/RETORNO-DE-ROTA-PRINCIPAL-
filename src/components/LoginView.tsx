@@ -11,7 +11,13 @@ interface LoginViewProps {
 }
 
 export default function LoginView({ users, onLoginSuccess }: LoginViewProps) {
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(() => {
+    try {
+      return localStorage.getItem('logiroute_last_login_username') || '';
+    } catch {
+      return '';
+    }
+  });
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
@@ -89,6 +95,9 @@ export default function LoginView({ users, onLoginSuccess }: LoginViewProps) {
     if (matchedUser) {
       const userPassword = matchedUser.password || '123';
       if (password === userPassword) {
+        try {
+          localStorage.setItem('logiroute_last_login_username', matchedUser.username || matchedUser.id);
+        } catch (e) {}
         onLoginSuccess(matchedUser);
       } else {
         setError('Senha incorreta para o usuário informado.');

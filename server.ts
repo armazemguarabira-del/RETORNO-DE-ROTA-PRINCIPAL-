@@ -23,7 +23,12 @@ let currentDb: Record<string, any> = {
   photos: [],
   customManual: '',
   empilhadores: [],
-  carregamentoProcesses: []
+  carregamentoProcesses: [],
+  controleSobras: [],
+  fiveSEntries: [],
+  safetyReports: [],
+  blitzEntries: [],
+  zeroBreakDeclarations: []
 };
 
 function loadDatabaseFromFile() {

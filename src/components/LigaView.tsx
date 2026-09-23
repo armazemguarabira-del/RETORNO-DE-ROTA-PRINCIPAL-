@@ -23,7 +23,10 @@ import {
   Truck,
   RotateCcw,
   Sparkle,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Video,
+  Smartphone,
+  RefreshCw
 } from 'lucide-react';
 import { 
   User, 
@@ -45,6 +48,16 @@ interface LigaViewProps {
   carregamentos: CarregamentoProcess[];
   empilhadores: Empilhador[];
   onNavigateTab?: (tab: string) => void;
+  fiveSEntries?: FiveSEntry[];
+  safetyReports?: SafetyReport[];
+  blitzEntries?: BlitzRefugoEntry[];
+  zeroBreakDeclarations?: ZeroBreakDeclaration[];
+  onSaveLigaData?: (data: {
+    fiveSEntries?: FiveSEntry[];
+    safetyReports?: SafetyReport[];
+    blitzEntries?: BlitzRefugoEntry[];
+    zeroBreakDeclarations?: ZeroBreakDeclaration[];
+  }) => void;
 }
 
 export default function LigaView({
@@ -54,7 +67,12 @@ export default function LigaView({
   importedRoutes,
   carregamentos,
   empilhadores,
-  onNavigateTab
+  onNavigateTab,
+  fiveSEntries: propFiveSEntries,
+  safetyReports: propSafetyReports,
+  blitzEntries: propBlitzEntries,
+  zeroBreakDeclarations: propZeroBreakDeclarations,
+  onSaveLigaData
 }: LigaViewProps) {
   // Current date strings (Local and ISO)
   const todayStr = useMemo(() => {
@@ -135,9 +153,13 @@ export default function LigaView({
   const isConferenteRole = gestorRoleTab === 'conferente';
 
   // -------------------------------------------------------------
-  // PERSISTED LOCAL DATA (5S, Relatos de Segurança, Blitz, Quebras)
+  // PERSISTED DATA (5S, Relatos de Segurança, Blitz, Quebras)
+  // Sincronizado com App.tsx e Firebase para NUNCA perder pontos
   // -------------------------------------------------------------
   const [fiveSEntries, setFiveSEntries] = useState<FiveSEntry[]>(() => {
+    if (propFiveSEntries && Array.isArray(propFiveSEntries) && propFiveSEntries.length > 0) {
+      return propFiveSEntries;
+    }
     try {
       const saved = localStorage.getItem('ambev_liga_5s_entries');
       return saved ? JSON.parse(saved) : [];
@@ -147,6 +169,9 @@ export default function LigaView({
   });
 
   const [safetyReports, setSafetyReports] = useState<SafetyReport[]>(() => {
+    if (propSafetyReports && Array.isArray(propSafetyReports) && propSafetyReports.length > 0) {
+      return propSafetyReports;
+    }
     try {
       const saved = localStorage.getItem('ambev_liga_safety_reports');
       return saved ? JSON.parse(saved) : [];
@@ -156,6 +181,9 @@ export default function LigaView({
   });
 
   const [blitzEntries, setBlitzEntries] = useState<BlitzRefugoEntry[]>(() => {
+    if (propBlitzEntries && Array.isArray(propBlitzEntries) && propBlitzEntries.length > 0) {
+      return propBlitzEntries;
+    }
     try {
       const saved = localStorage.getItem('ambev_liga_blitz_entries');
       return saved ? JSON.parse(saved) : [];
@@ -165,6 +193,9 @@ export default function LigaView({
   });
 
   const [zeroBreakDeclarations, setZeroBreakDeclarations] = useState<ZeroBreakDeclaration[]>(() => {
+    if (propZeroBreakDeclarations && Array.isArray(propZeroBreakDeclarations) && propZeroBreakDeclarations.length > 0) {
+      return propZeroBreakDeclarations;
+    }
     try {
       const saved = localStorage.getItem('ambev_liga_break_declarations');
       return saved ? JSON.parse(saved) : [];
@@ -173,13 +204,41 @@ export default function LigaView({
     }
   });
 
-  // Save helpers
+  // Sync with incoming remote updates
+  useEffect(() => {
+    if (propFiveSEntries && Array.isArray(propFiveSEntries)) {
+      setFiveSEntries(propFiveSEntries);
+    }
+  }, [propFiveSEntries]);
+
+  useEffect(() => {
+    if (propSafetyReports && Array.isArray(propSafetyReports)) {
+      setSafetyReports(propSafetyReports);
+    }
+  }, [propSafetyReports]);
+
+  useEffect(() => {
+    if (propBlitzEntries && Array.isArray(propBlitzEntries)) {
+      setBlitzEntries(propBlitzEntries);
+    }
+  }, [propBlitzEntries]);
+
+  useEffect(() => {
+    if (propZeroBreakDeclarations && Array.isArray(propZeroBreakDeclarations)) {
+      setZeroBreakDeclarations(propZeroBreakDeclarations);
+    }
+  }, [propZeroBreakDeclarations]);
+
+  // Save helpers: Persiste localmente e envia ao Firebase / Servidor central
   const saveFiveS = (newEntries: FiveSEntry[]) => {
     setFiveSEntries(newEntries);
     try {
       localStorage.setItem('ambev_liga_5s_entries', JSON.stringify(newEntries));
     } catch (e) {
       console.warn("Could not save 5s entries", e);
+    }
+    if (onSaveLigaData) {
+      onSaveLigaData({ fiveSEntries: newEntries });
     }
   };
 
@@ -190,6 +249,9 @@ export default function LigaView({
     } catch (e) {
       console.warn("Could not save safety reports", e);
     }
+    if (onSaveLigaData) {
+      onSaveLigaData({ safetyReports: newReports });
+    }
   };
 
   const saveBlitz = (newBlitz: BlitzRefugoEntry[]) => {
@@ -199,6 +261,9 @@ export default function LigaView({
     } catch (e) {
       console.warn("Could not save blitz entries", e);
     }
+    if (onSaveLigaData) {
+      onSaveLigaData({ blitzEntries: newBlitz });
+    }
   };
 
   const saveZeroBreaks = (newBreaks: ZeroBreakDeclaration[]) => {
@@ -207,6 +272,9 @@ export default function LigaView({
       localStorage.setItem('ambev_liga_break_declarations', JSON.stringify(newBreaks));
     } catch (e) {
       console.warn("Could not save zero break declarations", e);
+    }
+    if (onSaveLigaData) {
+      onSaveLigaData({ zeroBreakDeclarations: newBreaks });
     }
   };
 
@@ -231,7 +299,153 @@ export default function LigaView({
 
   const [viewingPhotoUrl, setViewingPhotoUrl] = useState<string | null>(null);
 
-  // File input refs for mobile camera capture
+  // -------------------------------------------------------------
+  // WEBCAM STREAMING (IDÊNTICA A TROCAS E REPOSIÇÕES NO CONFERENTE)
+  // Sem travar o aparelho, sem fechar a aba do navegador
+  // -------------------------------------------------------------
+  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  const [showWebcamModal, setShowWebcamModal] = useState<boolean>(false);
+  const [isWebcamSimulated, setIsWebcamSimulated] = useState<boolean>(false);
+  const [webcamTarget, setWebcamTarget] = useState<'5s' | 'safety' | null>(null);
+  const [webcamFacingMode, setWebcamFacingMode] = useState<'environment' | 'user'>('environment');
+  const [webcamError, setWebcamError] = useState<string>('');
+
+  // Start live in-app streaming camera
+  const startWebcam = async (target: '5s' | 'safety') => {
+    setWebcamTarget(target);
+    setIsWebcamSimulated(false);
+    setShowWebcamModal(true);
+    setWebcamError('');
+
+    try {
+      if (webcamStream) {
+        webcamStream.getTracks().forEach(t => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: webcamFacingMode,
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      });
+      setWebcamStream(stream);
+      setTimeout(() => {
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+    } catch (err: any) {
+      console.warn("Câmera web stream indisponível, ativando modo simulador/sandbox:", err);
+      setIsWebcamSimulated(true);
+    }
+  };
+
+  const stopWebcamStream = () => {
+    if (webcamStream) {
+      webcamStream.getTracks().forEach(track => track.stop());
+      setWebcamStream(null);
+    }
+    setShowWebcamModal(false);
+    setWebcamTarget(null);
+  };
+
+  const switchCameraFacing = async () => {
+    const nextMode = webcamFacingMode === 'environment' ? 'user' : 'environment';
+    setWebcamFacingMode(nextMode);
+    if (!isWebcamSimulated) {
+      try {
+        if (webcamStream) {
+          webcamStream.getTracks().forEach(t => t.stop());
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: nextMode,
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+        setWebcamStream(stream);
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        console.warn("Erro ao inverter câmera", err);
+      }
+    }
+  };
+
+  const handleCaptureSnapshot = () => {
+    const video = webcamVideoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+
+    if (ctx) {
+      if (!isWebcamSimulated && video && video.videoWidth > 0) {
+        ctx.drawImage(video, 0, 0, 640, 480);
+      } else {
+        // High quality simulated preview
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(15, 15, 610, 450);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = 'bold 22px sans-serif';
+        ctx.fillText(webcamTarget === '5s' ? 'FOTO 5S REGISTRADA' : 'RELATO DE SEGURANÇA', 35, 75);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '14px sans-serif';
+        ctx.fillText(`Colaborador: ${activeSubjectUser.name}`, 35, 115);
+        ctx.fillText(`Função: ${isEmpilhadorRole ? 'Operador de Empilhadeira' : 'Conferente de Rota'}`, 35, 145);
+        ctx.fillText(`Unidade: Pau Brasil Guarabira`, 35, 175);
+        ctx.fillText(`Horário: ${new Date().toLocaleTimeString('pt-BR')}`, 35, 205);
+      }
+
+      // Watermark footer
+      ctx.fillStyle = webcamTarget === '5s' ? 'rgba(88, 28, 135, 0.92)' : 'rgba(180, 83, 9, 0.92)';
+      ctx.fillRect(0, 415, 640, 65);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(
+        webcamTarget === '5s' 
+          ? `PAU BRASIL AMBEV • AUDITORIA 5S ${isEmpilhadorRole ? 'EMPILHADEIRA' : 'POSTO'} VALIDADA` 
+          : `PAU BRASIL AMBEV • RELATO DE SEGURANÇA / ANOMALIA`, 
+        14, 
+        436
+      );
+      ctx.font = '10px sans-serif';
+      ctx.fillText(
+        `Colaborador: ${activeSubjectUser.name} (${activeSubjectUser.username}) • Data: ${new Date().toLocaleString('pt-BR')}`, 
+        14, 
+        458
+      );
+
+      const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+      if (webcamTarget === '5s') {
+        setTemp5SPhoto(compressedBase64);
+        setShow5SModal(true);
+      } else {
+        setSafetyPhoto(compressedBase64);
+        setShowSafetyModal(true);
+      }
+    }
+
+    stopWebcamStream();
+  };
+
+  // Stop stream if component unmounts
+  useEffect(() => {
+    return () => {
+      if (webcamStream) {
+        webcamStream.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, [webcamStream]);
+
+  // Secondary file input refs for gallery / backup selection (WITHOUT forcing native hardware camera app)
   const fiveSFileInputRef = useRef<HTMLInputElement>(null);
   const safetyFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -245,7 +459,7 @@ export default function LigaView({
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const maxDim = 1000;
+        const maxDim = 800;
         let width = img.width;
         let height = img.height;
         if (width > height) {
@@ -263,7 +477,19 @@ export default function LigaView({
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
-        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+
+        // Watermark footer
+        if (ctx) {
+          ctx.fillStyle = target === '5s' ? 'rgba(88, 28, 135, 0.90)' : 'rgba(180, 83, 9, 0.90)';
+          ctx.fillRect(0, height - 45, width, 45);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 11px monospace';
+          ctx.fillText(`PAU BRASIL AMBEV • ${target === '5s' ? '5S VALIDADO' : 'RELATO SEGURANÇA'}`, 10, height - 26);
+          ctx.font = '10px sans-serif';
+          ctx.fillText(`${activeSubjectUser.name} • ${new Date().toLocaleString('pt-BR')}`, 10, height - 10);
+        }
+
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
 
         if (target === '5s') {
           setTemp5SPhoto(compressedBase64);
@@ -796,7 +1022,9 @@ export default function LigaView({
             <div className="flex items-center space-x-2">
               <span className="bg-amber-500 text-slate-950 text-xs font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider flex items-center space-x-1 shadow-sm">
                 <Trophy className="h-3.5 w-3.5 fill-slate-950" />
-                <span>LIGA OPERACIONAL DPO</span>
+                <span>
+                  {isEmpilhadorRole ? 'GUIA DA LIGA DPO • EMPILHADOR' : 'GUIA DA LIGA DPO • CONFERENTE'}
+                </span>
               </span>
               <span className="bg-blue-900/60 border border-blue-500/30 text-blue-300 text-xs font-bold px-2.5 py-0.5 rounded-full uppercase">
                 Pau Brasil Guarabira
@@ -804,11 +1032,15 @@ export default function LigaView({
             </div>
 
             <h1 className="text-xl md:text-3xl font-black tracking-tight text-white flex items-center space-x-2">
-              <span>Performance & Metas Logísticas</span>
+              <span>
+                {isEmpilhadorRole ? 'Guia do Operador de Empilhadeira' : 'Guia do Auditor e Conferente'}
+              </span>
             </h1>
 
             <p className="text-xs md:text-sm text-slate-400 max-w-2xl">
-              Acompanhamento de metas diárias, produtividade, acuracidade na 1ª contagem, blitz de refugo, 5S e gestão de segurança.
+              {isEmpilhadorRole 
+                ? 'Painel exclusivo do Operador: Metas diárias de EFD Descarregamento (até 22:00), Zero Quebras por Movimentação, Câmera Web 5S do Equipamento e Relatos de Segurança.'
+                : 'Painel exclusivo do Conferente: Metas diárias de Produtividade (Tempo ≤15 min), Acuracidade na 1ª Contagem (≥95%), Blitz de Refugo (2 veículos), Câmera Web 5S e Relatos de Segurança.'}
             </p>
           </div>
 
@@ -1148,11 +1380,11 @@ export default function LigaView({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setShow5SModal(true)}
-                      className="w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm flex items-center justify-center space-x-1.5 cursor-pointer"
+                      onClick={() => startWebcam('5s')}
+                      className="w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3 rounded-lg shadow-sm flex items-center justify-center space-x-1.5 cursor-pointer active:scale-95 transition"
                     >
-                      <Camera className="h-3.5 w-3.5" />
-                      <span>Tirar Foto do 5S</span>
+                      <Camera className="h-4 w-4 text-amber-300 animate-pulse" />
+                      <span>Câmera Web 5S Empilhadeira</span>
                     </button>
                   )}
                 </div>
@@ -1391,11 +1623,11 @@ export default function LigaView({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setShow5SModal(true)}
-                      className="w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2 px-3 rounded-lg shadow-sm flex items-center justify-center space-x-1.5 cursor-pointer"
+                      onClick={() => startWebcam('5s')}
+                      className="w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3 rounded-lg shadow-sm flex items-center justify-center space-x-1.5 cursor-pointer active:scale-95 transition"
                     >
-                      <Camera className="h-3.5 w-3.5" />
-                      <span>Tirar Foto do 5S</span>
+                      <Camera className="h-4 w-4 text-amber-300 animate-pulse" />
+                      <span>Câmera Web 5S Posto</span>
                     </button>
                   )}
                 </div>
@@ -1828,18 +2060,122 @@ export default function LigaView({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* MODAL 1: REGISTRAR 5S COM FOTO */}
+      {/* WEBCAM LIVE STREAM MODAL (IDÊNTICA A TROCAS E REPOSIÇÕES NO CONFERENTE) */}
+      {/* Câmera Web fluida no navegador, sem travar o celular nem fechar a aba */}
+      {/* ------------------------------------------------------------- */}
+      {showWebcamModal && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-xs z-[99999] flex items-center justify-center p-3 sm:p-4 overflow-hidden animate-fade-in">
+          <div className="bg-slate-950 p-4 sm:p-6 rounded-2xl border border-slate-800 max-w-md w-full space-y-3.5 sm:space-y-4 flex flex-col items-center shadow-2xl relative max-h-[94dvh] overflow-y-auto">
+            <div className="flex items-center justify-between w-full pb-2 border-b border-slate-800">
+              <div className="flex items-center space-x-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-bold text-slate-200 uppercase tracking-wider font-sans">
+                  {isWebcamSimulated ? 'Simulador Digital DPO Ambev' : 'Câmera Web Ativa'}
+                </span>
+              </div>
+              <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/30 uppercase font-black font-mono">
+                {webcamTarget === '5s' 
+                  ? (isEmpilhadorRole ? '5S Empilhadeira' : '5S Posto Conferente') 
+                  : 'Relato de Segurança'}
+              </span>
+            </div>
+
+            {isWebcamSimulated ? (
+              <div className="w-full aspect-video bg-slate-900 rounded-xl flex flex-col items-center justify-center border border-slate-800 relative overflow-hidden group p-4 text-center">
+                <Sparkles className="h-8 w-8 text-amber-400 animate-bounce mb-2" />
+                <span className="text-xs font-bold text-white uppercase tracking-tight">Registro Fotográfico Ambev DPO</span>
+                <span className="text-[11px] text-slate-400 mt-1">
+                  {activeSubjectUser.name} • {isEmpilhadorRole ? 'Operador de Empilhadeira' : 'Conferente de Rota'}
+                </span>
+                <div className="absolute bottom-2 left-2 right-2 text-center text-[9px] font-mono text-slate-400 bg-black/60 py-1 rounded">
+                  Foco Automático e Carimbo Institucional Pau Brasil
+                </div>
+              </div>
+            ) : (
+              <div className="w-full relative rounded-xl overflow-hidden border border-slate-800 aspect-video bg-slate-900 flex items-center justify-center">
+                <video 
+                  ref={webcamVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted
+                  className="w-full h-full object-cover" 
+                />
+                <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-xs text-white text-[9px] font-mono font-bold px-2 py-0.5 rounded flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                  <span>AO VIVO</span>
+                </div>
+              </div>
+            )}
+
+            {webcamError && (
+              <p className="text-xxs font-semibold text-red-400 bg-red-500/10 p-2.5 rounded-lg w-full text-center border border-red-500/20">
+                {webcamError}
+              </p>
+            )}
+
+            <div className="flex space-x-2.5 w-full">
+              <button
+                type="button"
+                onClick={handleCaptureSnapshot}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black py-2.5 px-4 rounded-xl transition flex items-center justify-center space-x-1.5 cursor-pointer shadow-md active:scale-95"
+              >
+                <Camera className="h-4 w-4 text-amber-300" />
+                <span>Capturar Foto</span>
+              </button>
+              <button
+                type="button"
+                onClick={stopWebcamStream}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2.5 px-4 rounded-xl cursor-pointer transition border border-slate-700 font-bold active:scale-95"
+              >
+                Cancelar
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between w-full pt-2 border-t border-slate-900 text-xxs">
+              <button
+                type="button"
+                onClick={switchCameraFacing}
+                className="text-slate-400 hover:text-white flex items-center space-x-1 py-1 px-2.5 rounded bg-slate-900 hover:bg-slate-850 border border-slate-800 cursor-pointer font-bold transition"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Inverter Câmera</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isWebcamSimulated) {
+                    startWebcam(webcamTarget || '5s');
+                  } else {
+                    if (webcamStream) {
+                      webcamStream.getTracks().forEach(track => track.stop());
+                      setWebcamStream(null);
+                    }
+                    setIsWebcamSimulated(true);
+                  }
+                }}
+                className="text-amber-400 hover:text-amber-300 flex items-center space-x-1 py-1 px-2.5 rounded bg-slate-900 hover:bg-slate-850 border border-slate-800 cursor-pointer font-bold transition"
+              >
+                <Sparkles className="h-3 w-3" />
+                <span>{isWebcamSimulated ? 'Câmera Real' : 'Modo Simulador'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL 1: REGISTRAR 5S COM CÂMERA WEB */}
       {/* ------------------------------------------------------------- */}
       {show5SModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2">
                 <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
                   <Camera className="h-4 w-4" />
                 </div>
                 <h3 className="font-extrabold text-base text-slate-900">
-                  {isEmpilhadorRole ? '5S da Empilhadeira (Foto Obrigatória)' : '5S do Posto de Trabalho (Foto Obrigatória)'}
+                  {isEmpilhadorRole ? '5S da Empilhadeira (Câmera Web)' : '5S do Posto de Trabalho (Câmera Web)'}
                 </h3>
               </div>
               <button 
@@ -1852,7 +2188,7 @@ export default function LigaView({
             </div>
 
             <p className="text-xs text-slate-600">
-              Tire uma foto através do celular comprovando que seu local de trabalho / empilhadeira está limpo e organizado segundo as diretrizes DPO.
+              Registre a comprovação fotográfica de organização e limpeza do seu posto ou empilhadeira conforme as diretrizes DPO.
             </p>
 
             {temp5SPhoto ? (
@@ -1860,34 +2196,53 @@ export default function LigaView({
                 <div className="relative rounded-xl overflow-hidden border border-slate-300 max-h-60 flex items-center justify-center bg-slate-900">
                   <img src={temp5SPhoto} alt="Prévia 5S" className="max-h-60 w-auto object-contain" />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setTemp5SPhoto('')}
-                  className="text-xs font-bold text-red-600 hover:text-red-800 underline cursor-pointer"
-                >
-                  Tirar outra foto
-                </button>
+                <div className="flex items-center justify-between">
+                  <span className="text-xxs font-bold text-emerald-600 flex items-center space-x-1">
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Foto capturada e carimbada</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => startWebcam('5s')}
+                    className="text-xs font-bold text-purple-600 hover:text-purple-800 underline cursor-pointer"
+                  >
+                    Tirar outra foto com Câmera Web
+                  </button>
+                </div>
               </div>
             ) : (
-              <div 
-                onClick={() => fiveSFileInputRef.current?.click()}
-                className="border-2 border-dashed border-purple-300 hover:border-purple-500 rounded-xl p-6 text-center cursor-pointer bg-purple-50/50 hover:bg-purple-50 transition"
-              >
-                <Camera className="h-10 w-10 text-purple-600 mx-auto mb-2 animate-pulse" />
-                <div className="text-xs font-extrabold text-purple-900">
-                  Clique aqui para Abrir a Câmera ou Selecionar Foto
+              <div className="space-y-3">
+                <div 
+                  onClick={() => startWebcam('5s')}
+                  className="border-2 border-dashed border-purple-300 hover:border-purple-500 rounded-xl p-6 text-center cursor-pointer bg-purple-50/50 hover:bg-purple-50 transition group"
+                >
+                  <Camera className="h-10 w-10 text-purple-600 mx-auto mb-2 group-hover:scale-110 transition animate-pulse" />
+                  <div className="text-sm font-extrabold text-purple-900">
+                    Abrir Câmera Web (Foto Instantânea)
+                  </div>
+                  <div className="text-xxs text-purple-600 mt-1">
+                    Transmissão de vídeo direta no navegador • Não trava o celular
+                  </div>
                 </div>
-                <div className="text-xxs text-purple-600 mt-1">
-                  Formatos aceitos: JPG, PNG • Compressão automática
+
+                <div className="flex items-center justify-between text-xxs text-slate-500">
+                  <span>Problemas na câmera do aparelho?</span>
+                  <button
+                    type="button"
+                    onClick={() => fiveSFileInputRef.current?.click()}
+                    className="text-purple-700 hover:underline font-bold flex items-center space-x-1 cursor-pointer"
+                  >
+                    <ImageIcon className="h-3 w-3" />
+                    <span>Selecionar da Galeria</span>
+                  </button>
+                  <input
+                    ref={fiveSFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => handlePhotoCapture(e, '5s')}
+                  />
                 </div>
-                <input
-                  ref={fiveSFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => handlePhotoCapture(e, '5s')}
-                />
               </div>
             )}
 
@@ -1899,7 +2254,7 @@ export default function LigaView({
                 type="text"
                 value={temp5SNotes}
                 onChange={(e) => setTemp5SNotes(e.target.value)}
-                placeholder="Ex: Cabine aspirada, checklist diário concluído..."
+                placeholder="Ex: Cabine aspirada, posto organizado, checklist concluído..."
                 className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
             </div>
@@ -1915,7 +2270,7 @@ export default function LigaView({
               <button
                 type="button"
                 onClick={handleSave5SSubmit}
-                className="px-5 py-2 text-xs font-black text-white bg-purple-600 hover:bg-purple-700 rounded-lg shadow-sm transition flex items-center space-x-1 cursor-pointer"
+                className="px-5 py-2 text-xs font-black text-white bg-purple-600 hover:bg-purple-700 rounded-lg shadow-sm transition flex items-center space-x-1 cursor-pointer active:scale-95"
               >
                 <Check className="h-4 w-4" />
                 <span>Salvar e Garantir 1 Ponto</span>
@@ -1930,7 +2285,7 @@ export default function LigaView({
       {/* ------------------------------------------------------------- */}
       {showSafetyModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2">
                 <div className="w-8 h-8 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center">
@@ -1973,34 +2328,53 @@ export default function LigaView({
                 <div className="relative rounded-xl overflow-hidden border border-slate-300 max-h-60 flex items-center justify-center bg-slate-900">
                   <img src={safetyPhoto} alt="Prévia Ocorrência" className="max-h-60 w-auto object-contain" />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSafetyPhoto('')}
-                  className="text-xs font-bold text-red-600 hover:text-red-800 underline cursor-pointer"
-                >
-                  Tirar outra foto
-                </button>
+                <div className="flex items-center justify-between">
+                  <span className="text-xxs font-bold text-emerald-600 flex items-center space-x-1">
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Foto do relato registrada</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => startWebcam('safety')}
+                    className="text-xs font-bold text-sky-600 hover:text-sky-800 underline cursor-pointer"
+                  >
+                    Tirar outra foto com Câmera Web
+                  </button>
+                </div>
               </div>
             ) : (
-              <div 
-                onClick={() => safetyFileInputRef.current?.click()}
-                className="border-2 border-dashed border-sky-300 hover:border-sky-500 rounded-xl p-6 text-center cursor-pointer bg-sky-50/50 hover:bg-sky-50 transition"
-              >
-                <Camera className="h-10 w-10 text-sky-600 mx-auto mb-2 animate-pulse" />
-                <div className="text-xs font-extrabold text-sky-900">
-                  Foto Comprobatória (Obrigatória)
+              <div className="space-y-3">
+                <div 
+                  onClick={() => startWebcam('safety')}
+                  className="border-2 border-dashed border-sky-300 hover:border-sky-500 rounded-xl p-6 text-center cursor-pointer bg-sky-50/50 hover:bg-sky-50 transition group"
+                >
+                  <Camera className="h-10 w-10 text-sky-600 mx-auto mb-2 group-hover:scale-110 transition animate-pulse" />
+                  <div className="text-sm font-extrabold text-sky-900">
+                    Abrir Câmera Web (Foto do Relato)
+                  </div>
+                  <div className="text-xxs text-sky-600 mt-1">
+                    Transmissão de vídeo direta no navegador • Não trava o celular
+                  </div>
                 </div>
-                <div className="text-xxs text-sky-600 mt-1">
-                  Tire uma foto nítida do risco ou anomalia identificada
+
+                <div className="flex items-center justify-between text-xxs text-slate-500">
+                  <span>Problemas na câmera do aparelho?</span>
+                  <button
+                    type="button"
+                    onClick={() => safetyFileInputRef.current?.click()}
+                    className="text-sky-700 hover:underline font-bold flex items-center space-x-1 cursor-pointer"
+                  >
+                    <ImageIcon className="h-3 w-3" />
+                    <span>Selecionar da Galeria</span>
+                  </button>
+                  <input
+                    ref={safetyFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => handlePhotoCapture(e, 'safety')}
+                  />
                 </div>
-                <input
-                  ref={safetyFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => handlePhotoCapture(e, 'safety')}
-                />
               </div>
             )}
 
@@ -2028,7 +2402,7 @@ export default function LigaView({
               <button
                 type="button"
                 onClick={handleSaveSafetyReport}
-                className="px-5 py-2 text-xs font-black text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-sm transition flex items-center space-x-1 cursor-pointer"
+                className="px-5 py-2 text-xs font-black text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-sm transition flex items-center space-x-1 cursor-pointer active:scale-95"
               >
                 <Check className="h-4 w-4" />
                 <span>Salvar Relato (+1 Ponto)</span>

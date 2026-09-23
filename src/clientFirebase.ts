@@ -45,7 +45,11 @@ const COLLECTION_MAP: Record<string, string> = {
   customManual: "customManual",
   empilhadores: "empilhadores",
   carregamentoProcesses: "carregamentoProcesses",
-  controleSobras: "controleSobras"
+  controleSobras: "controleSobras",
+  fiveSEntries: "fiveSEntries",
+  safetyReports: "safetyReports",
+  blitzEntries: "blitzEntries",
+  zeroBreakDeclarations: "zeroBreakDeclarations"
 };
 
 const TRACKED_COLLECTIONS = [
@@ -63,7 +67,11 @@ const TRACKED_COLLECTIONS = [
   "customManual",
   "empilhadores",
   "carregamentoProcesses",
-  "controleSobras"
+  "controleSobras",
+  "fiveSEntries",
+  "safetyReports",
+  "blitzEntries",
+  "zeroBreakDeclarations"
 ];
 
 /**
@@ -889,7 +897,11 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
     customManual: "",
     empilhadores: [],
     carregamentoProcesses: [],
-    controleSobras: []
+    controleSobras: [],
+    fiveSEntries: [],
+    safetyReports: [],
+    blitzEntries: [],
+    zeroBreakDeclarations: []
   };
 
   const attach = (colName: string) => {
@@ -1064,7 +1076,11 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
     customManual: "",
     empilhadores: [],
     carregamentoProcesses: [],
-    controleSobras: []
+    controleSobras: [],
+    fiveSEntries: [],
+    safetyReports: [],
+    blitzEntries: [],
+    zeroBreakDeclarations: []
   };
 
   try {
