@@ -1335,8 +1335,8 @@ export default function FiscalView({
       ? valeToPrint.quantidade 
       : (detailedShortages.length > 0 ? detailedShortages.reduce((sum, d) => sum + d.diff, 0) : null);
 
-    // Limit shortage items to top 4 rows + consolidated row to strictly guarantee 1 page
-    const maxItemsToShow = 4;
+    // Limit shortage items to top 5 rows + consolidated row to strictly guarantee 1 page
+    const maxItemsToShow = 5;
     const itemsToShow = detailedShortages.slice(0, maxItemsToShow);
     const hiddenItemsCount = detailedShortages.length - maxItemsToShow;
     const hiddenItemsTotalCost = hiddenItemsCount > 0 
@@ -1348,22 +1348,22 @@ export default function FiscalView({
 
     const shortageRowsHtml = itemsToShow.map(item => `
       <tr>
-        <td style="padding: 3px 5px; font-family: monospace; font-weight: bold; color: #475569;">${item.code}</td>
-        <td style="padding: 3px 5px; font-weight: 500;">${item.name}</td>
-        <td style="padding: 3px 5px; text-align: center; font-family: monospace;">${item.expected}</td>
-        <td style="padding: 3px 5px; text-align: center; font-family: monospace;">${item.found}</td>
-        <td style="padding: 3px 5px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff}</td>
-        <td style="padding: 3px 5px; text-align: right; font-family: monospace;">R$ ${item.cost.toFixed(2)}</td>
-        <td style="padding: 3px 5px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
+        <td style="padding: 7px 9px; font-family: monospace; font-weight: bold; color: #475569;">${item.code}</td>
+        <td style="padding: 7px 9px; font-weight: 600;">${item.name}</td>
+        <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.expected}</td>
+        <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.found}</td>
+        <td style="padding: 7px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff}</td>
+        <td style="padding: 7px 9px; text-align: right; font-family: monospace;">R$ ${item.cost.toFixed(2)}</td>
+        <td style="padding: 7px 9px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
       </tr>
     `).join('');
 
     const hiddenRowHtml = hiddenItemsCount > 0 ? `
       <tr style="background: #f8fafc; font-style: italic; color: #64748b;">
-        <td colspan="4" style="padding: 3px 5px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
-        <td style="padding: 3px 5px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenItemsTotalDiff}</td>
-        <td style="padding: 3px 5px; text-align: right;">---</td>
-        <td style="padding: 3px 5px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenItemsTotalCost.toFixed(2)}</td>
+        <td colspan="4" style="padding: 6px 9px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
+        <td style="padding: 6px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenItemsTotalDiff}</td>
+        <td style="padding: 6px 9px; text-align: right;">---</td>
+        <td style="padding: 6px 9px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenItemsTotalCost.toFixed(2)}</td>
       </tr>
     ` : '';
 
@@ -1376,7 +1376,7 @@ export default function FiscalView({
   <style>
     @page {
       size: A4 portrait;
-      margin: 6mm 8mm 6mm 8mm;
+      margin: 8mm 10mm;
     }
     * {
       box-sizing: border-box;
@@ -1388,150 +1388,206 @@ export default function FiscalView({
     html, body {
       width: 100%;
       height: 100%;
-      max-height: 100vh;
-      overflow: hidden !important;
       background: #ffffff;
       color: #0f172a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: 10px;
-      line-height: 1.35;
+      font-size: 11px;
+      line-height: 1.45;
     }
     .print-card {
       width: 100%;
+      min-height: calc(297mm - 16mm);
       height: 100%;
-      max-height: 280mm;
       padding: 4px 6px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
       box-sizing: border-box;
       page-break-inside: avoid;
-      page-break-after: avoid;
-      overflow: hidden;
+      break-inside: avoid;
     }
     .header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      border-bottom: 2px solid #0f172a;
-      padding-bottom: 6px;
-      margin-bottom: 6px;
+      border-bottom: 2.5px solid #0f172a;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
     }
     .company-title {
-      font-size: 15px;
+      font-size: 19px;
       font-weight: 900;
       text-transform: uppercase;
-      letter-spacing: -0.02em;
+      letter-spacing: -0.01em;
       color: #0f172a;
     }
     .company-sub {
-      font-size: 8.5px;
+      font-size: 10.5px;
       color: #475569;
       font-family: monospace;
       text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .company-tag {
+      font-size: 10px;
+      font-weight: bold;
+      color: #b45309;
+      text-transform: uppercase;
+      margin-top: 3px;
+      display: block;
     }
     .badge-vale {
       background: #f1f5f9;
-      border: 1px solid #cbd5e1;
-      border-radius: 4px;
-      padding: 3px 8px;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 6px 12px;
       text-align: right;
+    }
+    .badge-vale-label {
+      font-size: 9px;
+      color: #64748b;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-vale-id {
+      font-family: monospace;
+      font-size: 16px;
+      font-weight: 900;
+      color: #dc2626;
+      line-height: 1.2;
+    }
+    .badge-vale-date {
+      font-size: 9.5px;
+      color: #475569;
+      font-family: monospace;
     }
     .title-banner {
       background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 4px;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
       text-align: center;
-      padding: 5px 6px;
-      margin-bottom: 6px;
+      padding: 9px 12px;
+      margin-bottom: 10px;
     }
     .title-banner h2 {
-      font-size: 11px;
+      font-size: 14px;
       font-weight: 900;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
       color: #0f172a;
     }
     .title-banner span {
-      font-size: 8px;
+      font-size: 10px;
       color: #64748b;
       font-weight: 600;
       display: block;
+      margin-top: 3px;
     }
     .declaration {
-      background: #ffffff;
-      border: 1px solid #e2e8f0;
-      border-left: 3px solid #f59e0b;
-      padding: 6px 8px;
-      border-radius: 4px;
-      font-size: 9.5px;
-      line-height: 1.4;
+      background: #fffbeb;
+      border: 1.5px solid #fde68a;
+      border-left: 4px solid #f59e0b;
+      padding: 11px 15px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.55;
       text-align: justify;
-      margin-bottom: 6px;
+      color: #78350f;
+      margin-bottom: 10px;
+    }
+    .declaration strong {
+      color: #0f172a;
     }
     .info-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 6px;
+      gap: 12px;
       background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 4px;
-      padding: 6px 8px;
-      font-size: 9px;
-      margin-bottom: 6px;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 11px 15px;
+      font-size: 11.5px;
+      line-height: 1.6;
+      margin-bottom: 10px;
+    }
+    .info-col-title {
+      font-weight: 900;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: #475569;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 3px;
+      margin-bottom: 5px;
     }
     .info-grid strong {
       color: #0f172a;
     }
     .table-container {
-      margin-bottom: 6px;
+      margin-bottom: 10px;
+    }
+    .table-title {
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      color: #0f172a;
+      margin-bottom: 5px;
+      letter-spacing: 0.02em;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 8.5px;
+      font-size: 11px;
     }
     th, td {
       border: 1px solid #cbd5e1;
-      padding: 3px 5px;
+      padding: 7px 9px;
     }
     th {
       background: #f1f5f9;
-      font-weight: bold;
+      font-weight: 800;
       text-transform: uppercase;
+      font-size: 10px;
       color: #334155;
+      letter-spacing: 0.03em;
     }
     .obs-box {
       background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 4px;
-      padding: 4px 6px;
-      font-size: 8px;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 9px 13px;
+      font-size: 11px;
       color: #475569;
       font-style: italic;
-      margin-bottom: 6px;
+      margin-bottom: 10px;
     }
     .legal-notice {
-      font-size: 7.5px;
-      color: #94a3b8;
+      font-size: 9.5px;
+      color: #64748b;
       text-align: justify;
-      line-height: 1.25;
-      margin-bottom: 10px;
+      line-height: 1.45;
+      margin-bottom: 15px;
+      padding: 0 2px;
+    }
+    .signatures-area {
+      margin-top: auto;
+      padding-top: 10px;
     }
     .signatures {
       display: grid;
       grid-template-columns: repeat(${additionalColabs.length > 2 ? 4 : (additionalColabs.length > 0 ? 3 + additionalColabs.length : 3)}, 1fr);
-      gap: 5px 8px;
+      gap: 12px 14px;
       text-align: center;
-      padding-top: 6px;
     }
     .sig-line {
-      border-top: 1px solid #64748b;
-      padding-top: 3px;
+      border-top: 1.5px solid #475569;
+      padding-top: 6px;
+      margin-top: 36px;
     }
     .sig-name {
-      font-weight: bold;
-      font-size: 8px;
+      font-weight: 800;
+      font-size: 11px;
       color: #0f172a;
       white-space: nowrap;
       overflow: hidden;
@@ -1539,11 +1595,13 @@ export default function FiscalView({
       display: block;
     }
     .sig-role {
-      font-size: 6.5px;
+      font-size: 9.5px;
       color: #64748b;
       text-transform: uppercase;
       font-family: monospace;
+      font-weight: 600;
       display: block;
+      margin-top: 1px;
     }
   </style>
 </head>
@@ -1555,14 +1613,14 @@ export default function FiscalView({
         <div>
           <div class="company-title">PAU BRASIL DISTRIBUIDORA LTDA</div>
           <div class="company-sub">Logística de Retorno & Aferição Física • Unidade Guarabira/PB</div>
-          <div style="font-size: 8px; font-weight: bold; color: #b45309; text-transform: uppercase; margin-top: 2px;">
+          <div class="company-tag">
             Documento Oficial de Termo de Responsabilidade e Desconto
           </div>
         </div>
         <div class="badge-vale">
-          <div style="font-size: 7.5px; color: #64748b; font-weight: bold; text-transform: uppercase;">Vale Financeiro Nº</div>
-          <div style="font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626;">${valeToPrint.id}</div>
-          <div style="font-size: 7.5px; color: #475569; font-family: monospace;">Emissão: ${new Date(valeToPrint.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</div>
+          <div class="badge-vale-label">Vale Financeiro Nº</div>
+          <div class="badge-vale-id">${valeToPrint.id}</div>
+          <div class="badge-vale-date">Emissão: ${new Date(valeToPrint.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</div>
         </div>
       </div>
 
@@ -1580,16 +1638,16 @@ export default function FiscalView({
       <!-- Info Grid -->
       <div class="info-grid">
         <div>
-          <div style="font-weight: bold; font-size: 8px; text-transform: uppercase; color: #64748b; margin-bottom: 2px;">Informações da Rota / Transporte</div>
+          <div class="info-col-title">Informações da Rota / Transporte</div>
           <div><strong>Mapa de Carga:</strong> <span style="font-family: monospace; font-weight: bold;">${valeToPrint.routeMap}</span></div>
           <div><strong>Placa do Veículo:</strong> <span style="font-family: monospace; text-transform: uppercase; font-weight: bold;">${vehiclePlate}</span></div>
           <div><strong>Data da Viagem:</strong> ${arrivalDateFormatted}</div>
           <div><strong>Volumes / Quantidade:</strong> <span style="font-weight: bold;">${totalQty !== null ? `${totalQty} volumes/itens` : 'Conforme laudo'}</span></div>
         </div>
         <div>
-          <div style="font-weight: bold; font-size: 8px; text-transform: uppercase; color: #64748b; margin-bottom: 2px;">Equipe da Operação & Aferição</div>
+          <div class="info-col-title">Equipe da Operação & Aferição</div>
           <div><strong>Responsável:</strong> ${valeToPrint.colaboradorName} (${valeToPrint.colaboradorRole}${valeToPrint.colaboradorValor ? ` - Cota: R$ ${valeToPrint.colaboradorValor.toFixed(2)}` : ''})</div>
-          ${additionalColabs.length > 0 ? `<div><strong>Ajudantes / Co-responsáveis:</strong> ${additionalColabs.map(c => `${c.name} (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</div>` : `<div><strong>Ajudante da Rota:</strong> ${helperName}</div>`}
+          ${additionalColabs.length > 0 ? `<div><strong>Ajudantes / Co-responsáveis:</strong> ${additionalColabs.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</div>` : `<div><strong>Ajudante da Rota:</strong> ${helperName}</div>`}
           <div><strong>Conferente de Pátio:</strong> ${conferenteName}</div>
           <div><strong>Fiscal / Emissor:</strong> ${currentUser.name}</div>
         </div>
@@ -1597,7 +1655,7 @@ export default function FiscalView({
 
       <!-- Shortage Details -->
       <div class="table-container">
-        <div style="font-size: 8px; font-weight: bold; text-transform: uppercase; color: #0f172a; margin-bottom: 3px;">
+        <div class="table-title">
           Demonstrativo de Itens em Falta / Desvios Constatados:
         </div>
         ${detailedShortages.length > 0 ? `
@@ -1617,16 +1675,16 @@ export default function FiscalView({
               ${shortageRowsHtml}
               ${hiddenRowHtml}
               <tr style="background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
-                <td colspan="4" style="text-align: right; text-transform: uppercase; padding: 4px 6px;">Total do Desconto Autorizado:</td>
-                <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 4px 6px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
-                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 11px; font-weight: 900; color: #dc2626; padding: 4px 6px;">R$ ${valeToPrint.valor.toFixed(2)}</td>
+                <td colspan="4" style="text-align: right; text-transform: uppercase; padding: 7px 9px;">Total do Desconto Autorizado:</td>
+                <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 7px 9px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
+                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626; padding: 7px 9px;">R$ ${valeToPrint.valor.toFixed(2)}</td>
               </tr>
             </tbody>
           </table>
         ` : `
-          <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 8px; font-size: 9px;">
+          <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 6px; padding: 12px 15px; font-size: 12px;">
             <div><strong>Descrição da Falta:</strong> ${valeToPrint.descricao}</div>
-            <div style="margin-top: 3px; font-weight: bold; color: #dc2626;">Valor Total Autorizado: R$ ${valeToPrint.valor.toFixed(2)}</div>
+            <div style="margin-top: 5px; font-weight: bold; color: #dc2626; font-size: 13px;">Valor Total Autorizado: R$ ${valeToPrint.valor.toFixed(2)}</div>
           </div>
         `}
       </div>
@@ -1643,24 +1701,34 @@ export default function FiscalView({
     </div>
 
     <!-- Signatures -->
-    <div class="signatures">
-      <div class="sig-line">
-        <span class="sig-name">${valeToPrint.colaboradorName}</span>
-        <span class="sig-role">${valeToPrint.colaboradorRole} (Principal)</span>
-      </div>
-      ${additionalColabs.map((c, i) => `
-        <div class="sig-line">
-          <span class="sig-name">${c.name}</span>
-          <span class="sig-role">${c.role} ${additionalColabs.length > 1 ? `(${i + 1}º)` : ''}</span>
+    <div class="signatures-area">
+      <div class="signatures">
+        <div class="sig-block">
+          <div class="sig-line">
+            <span class="sig-name">${valeToPrint.colaboradorName}</span>
+            <span class="sig-role">${valeToPrint.colaboradorRole} (Principal)</span>
+          </div>
         </div>
-      `).join('')}
-      <div class="sig-line">
-        <span class="sig-name">${currentUser.name}</span>
-        <span class="sig-role">Fiscal de Logística</span>
-      </div>
-      <div class="sig-line">
-        <span class="sig-name">Elisson Minervino</span>
-        <span class="sig-role">Gestor de Logística</span>
+        ${additionalColabs.map((c, i) => `
+          <div class="sig-block">
+            <div class="sig-line">
+              <span class="sig-name">${c.name}</span>
+              <span class="sig-role">${c.role} ${additionalColabs.length > 1 ? `(${i + 1}º)` : ''}</span>
+            </div>
+          </div>
+        `).join('')}
+        <div class="sig-block">
+          <div class="sig-line">
+            <span class="sig-name">${currentUser.name}</span>
+            <span class="sig-role">Fiscal de Logística</span>
+          </div>
+        </div>
+        <div class="sig-block">
+          <div class="sig-line">
+            <span class="sig-name">Elisson Minervino</span>
+            <span class="sig-role">Gestor de Logística</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -9773,11 +9841,11 @@ export default function FiscalView({
 
                 return (
                   <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-250 max-w-3xl w-full max-h-[95vh] overflow-y-auto flex flex-col">
+                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-250 max-w-4xl w-full max-h-[95vh] overflow-y-auto flex flex-col">
                       <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-950 text-white">
                         <span className="font-sans font-bold text-xs uppercase tracking-wider flex items-center space-x-2">
                           <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                          <span>Recibo Termo de Autorização de Desconto (Modelo Definitivo)</span>
+                          <span>Recibo Termo de Autorização de Desconto (Modelo Oficial Ampliado)</span>
                         </span>
                         <button
                           type="button"
@@ -9789,29 +9857,29 @@ export default function FiscalView({
                       </div>
 
                       {/* Printable Receipt Sheet */}
-                      <div className="p-5 space-y-3.5 flex-1 text-slate-800 bg-white" id="print-area">
+                      <div className="p-6 md:p-8 space-y-5 flex-1 text-slate-800 bg-white" id="print-area">
                         {/* Logo & Timbre */}
-                        <div className="flex justify-between items-start border-b-2 border-slate-900 pb-2.5">
+                        <div className="flex flex-col sm:flex-row justify-between items-start border-b-2 border-slate-900 pb-3 gap-3">
                           <div>
-                            <span className="font-sans font-black text-base text-slate-900 uppercase tracking-tight block">PAU BRASIL DISTRIBUIDORA LTDA</span>
-                            <span className="text-[9px] text-slate-500 block uppercase font-mono tracking-wider">Logística de Retorno & Aferição Física • Unidade Guarabira/PB</span>
-                            <span className="text-[9px] text-amber-700 block font-bold uppercase mt-0.5">Termo Oficial de Autorização de Desconto em Folha</span>
+                            <span className="font-sans font-black text-xl text-slate-900 uppercase tracking-tight block">PAU BRASIL DISTRIBUIDORA LTDA</span>
+                            <span className="text-xs text-slate-500 block uppercase font-mono tracking-wider mt-0.5">Logística de Retorno & Aferição Física • Unidade Guarabira/PB</span>
+                            <span className="text-xs text-amber-700 block font-bold uppercase mt-1">Termo Oficial de Autorização de Desconto em Folha</span>
                           </div>
-                          <div className="bg-slate-50 px-3 py-1.5 rounded border border-slate-200 text-right">
-                            <span className="text-[8px] text-slate-400 block uppercase font-bold">VALE FINANCEIRO Nº</span>
-                            <span className="font-mono text-sm font-black text-red-600 block">{viewingVale.id}</span>
-                            <span className="text-[8px] text-slate-500 font-mono block">Emissão: {new Date(viewingVale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                          <div className="bg-slate-50 px-4 py-2 rounded-lg border border-slate-200 text-right shrink-0">
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider">VALE FINANCEIRO Nº</span>
+                            <span className="font-mono text-lg font-black text-red-600 block">{viewingVale.id}</span>
+                            <span className="text-[10px] text-slate-500 font-mono block">Emissão: {new Date(viewingVale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                           </div>
                         </div>
 
                         {/* Title Banner */}
-                        <div className="text-center py-1 bg-slate-50 border border-slate-200 rounded">
-                          <h4 className="font-sans font-black text-xs uppercase tracking-wider text-slate-900">AUTORIZAÇÃO DE DESCONTO EM FOLHA DE PAGAMENTO</h4>
-                          <span className="text-[8px] font-mono text-slate-500 font-semibold block">Fundamentação Legal: Artigo 462, § 1º da CLT</span>
+                        <div className="text-center py-2.5 px-3 bg-slate-50 border border-slate-200 rounded-lg">
+                          <h4 className="font-sans font-black text-sm uppercase tracking-wider text-slate-900">AUTORIZAÇÃO DE DESCONTO EM FOLHA DE PAGAMENTO</h4>
+                          <span className="text-xxs font-mono text-slate-500 font-semibold block mt-0.5">Fundamentação Legal: Artigo 462, § 1º da CLT</span>
                         </div>
 
                         {/* Main Statement */}
-                        <p className="text-xs leading-relaxed text-justify bg-amber-50/40 p-2.5 rounded border border-amber-200/60">
+                        <p className="text-xs sm:text-sm leading-relaxed text-justify bg-amber-50/60 p-4 rounded-xl border border-amber-200 text-slate-900">
                           Eu, <strong>{viewingVale.colaboradorName}</strong>, registrado sob o papel de <strong>{viewingVale.colaboradorRole}</strong>
                           {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 && (
                             <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingVale.colaboradoresAdicionais.map((c, i) => (
@@ -9821,116 +9889,116 @@ export default function FiscalView({
                         </p>
 
                         {/* Informações sobre a Rota e Equipe (Colaboradores Envolvidos) */}
-                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-4 text-xs">
-                          <div className="space-y-1">
-                            <span className="text-slate-400 text-[9px] font-bold uppercase block">Informações da Rota / Transporte</span>
-                            <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.2 rounded font-bold">{viewingVale.routeMap}</span></div>
-                            <div><strong>Placa do Veículo:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.2 rounded font-bold uppercase">{vehiclePlate}</span></div>
-                            <div><strong>Data da Viagem:</strong> <span className="text-slate-700">{arrivalDateFormatted}</span></div>
-                            <div><strong>Volumes / Quantidade:</strong> <span className="font-bold text-slate-900">{viewingVale.quantidade !== undefined ? `${viewingVale.quantidade} volumes/itens` : (detailedShortages.length > 0 ? `${detailedShortages.reduce((s, d) => s + d.diff, 0)} volumes/itens` : 'Conforme laudo')}</span></div>
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-y-3 gap-x-6 text-xs sm:text-sm">
+                          <div className="space-y-1.5">
+                            <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider block border-b border-slate-200 pb-1">Informações da Rota / Transporte</span>
+                            <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded font-bold ml-1">{viewingVale.routeMap}</span></div>
+                            <div><strong>Placa do Veículo:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded font-bold uppercase ml-1">{vehiclePlate}</span></div>
+                            <div><strong>Data da Viagem:</strong> <span className="text-slate-700 ml-1">{arrivalDateFormatted}</span></div>
+                            <div><strong>Volumes / Quantidade:</strong> <span className="font-bold text-slate-900 ml-1">{viewingVale.quantidade !== undefined ? `${viewingVale.quantidade} volumes/itens` : (detailedShortages.length > 0 ? `${detailedShortages.reduce((s, d) => s + d.diff, 0)} volumes/itens` : 'Conforme laudo')}</span></div>
                           </div>
-                          <div className="space-y-1">
-                            <span className="text-slate-400 text-[9px] font-bold uppercase block">Colaboradores da Operação & Aferição</span>
-                            <div><strong>Responsável Principal:</strong> <span className="font-semibold text-slate-900">{viewingVale.colaboradorName} ({viewingVale.colaboradorRole}{viewingVale.colaboradorValor ? ` - Cota: R$ ${viewingVale.colaboradorValor.toFixed(2)}` : ''})</span></div>
+                          <div className="space-y-1.5">
+                            <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider block border-b border-slate-200 pb-1">Colaboradores da Operação & Aferição</span>
+                            <div><strong>Responsável Principal:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.colaboradorName} ({viewingVale.colaboradorRole}{viewingVale.colaboradorValor ? ` - Cota: R$ ${viewingVale.colaboradorValor.toFixed(2)}` : ''})</span></div>
                             {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? (
-                              <div><strong>Co-responsáveis:</strong> <span className="text-slate-700">{viewingVale.colaboradoresAdicionais.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</span></div>
+                              <div><strong>Co-responsáveis:</strong> <span className="text-slate-700 ml-1">{viewingVale.colaboradoresAdicionais.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</span></div>
                             ) : (
-                              <div><strong>Ajudante de Rota:</strong> <span className="text-slate-700">{helperName}</span></div>
+                              <div><strong>Ajudante de Rota:</strong> <span className="text-slate-700 ml-1">{helperName}</span></div>
                             )}
-                            <div><strong>Conferente de Pátio:</strong> <span className="text-slate-700">{conferenteName}</span></div>
-                            <div><strong>Fiscal de Logística:</strong> <span className="font-semibold text-slate-900">{currentUser.name}</span></div>
+                            <div><strong>Conferente de Pátio:</strong> <span className="text-slate-700 ml-1">{conferenteName}</span></div>
+                            <div><strong>Fiscal de Logística:</strong> <span className="font-semibold text-slate-900 ml-1">{currentUser.name}</span></div>
                           </div>
                         </div>
 
                         {/* Detail Table of Involved Assets & Shortages */}
-                        <div className="space-y-1.5">
-                          <span className="text-slate-900 font-bold text-[9px] uppercase tracking-wider block">Divergências de Inventário Constatadas (Faltas de P.A / A.G):</span>
+                        <div className="space-y-2">
+                          <span className="text-slate-900 font-bold text-xs uppercase tracking-wider block">Divergências de Inventário Constatadas (Faltas de P.A / A.G):</span>
                           
                           {detailedShortages.length > 0 ? (
-                            <div className="border border-slate-250 rounded overflow-hidden text-xxs font-sans shadow-2xs">
+                            <div className="border border-slate-200 rounded-xl overflow-hidden text-xs font-sans shadow-2xs">
                               <table className="w-full text-left border-collapse">
-                                <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[8.5px] border-b border-slate-250">
+                                <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[10px] border-b border-slate-200">
                                   <tr>
-                                    <th className="py-1 px-2">Cód.</th>
-                                    <th className="py-1 px-2">Descrição</th>
-                                    <th className="py-1 px-2 text-center">Faturado</th>
-                                    <th className="py-1 px-2 text-center">Conferido</th>
-                                    <th className="py-1 px-2 text-center text-red-600">Falta</th>
-                                    <th className="py-1 px-2 text-right">Unit.</th>
-                                    <th className="py-1 px-2 text-right">Subtotal</th>
+                                    <th className="py-2 px-3">Cód.</th>
+                                    <th className="py-2 px-3">Descrição</th>
+                                    <th className="py-2 px-3 text-center">Faturado</th>
+                                    <th className="py-2 px-3 text-center">Conferido</th>
+                                    <th className="py-2 px-3 text-center text-red-600">Falta</th>
+                                    <th className="py-2 px-3 text-right">Unit.</th>
+                                    <th className="py-2 px-3 text-right">Subtotal</th>
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-200 text-slate-800 text-[9px]">
-                                  {detailedShortages.slice(0, 4).map(item => (
+                                <tbody className="divide-y divide-slate-200 text-slate-800 text-xs">
+                                  {detailedShortages.slice(0, 5).map(item => (
                                     <tr key={item.code} className="hover:bg-slate-50">
-                                      <td className="py-1 px-2 font-mono font-bold text-slate-600">{item.code}</td>
-                                      <td className="py-1 px-2 font-medium truncate max-w-[200px]">{item.name}</td>
-                                      <td className="py-1 px-2 text-center font-mono">{item.expected}</td>
-                                      <td className="py-1 px-2 text-center font-mono">{item.found}</td>
-                                      <td className="py-1 px-2 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
-                                      <td className="py-1 px-2 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
-                                      <td className="py-1 px-2 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
+                                      <td className="py-2 px-3 font-mono font-bold text-slate-600">{item.code}</td>
+                                      <td className="py-2 px-3 font-medium truncate max-w-[220px]">{item.name}</td>
+                                      <td className="py-2 px-3 text-center font-mono">{item.expected}</td>
+                                      <td className="py-2 px-3 text-center font-mono">{item.found}</td>
+                                      <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
+                                      <td className="py-2 px-3 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
+                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
                                     </tr>
                                   ))}
-                                  {detailedShortages.length > 4 && (
-                                    <tr className="bg-slate-50 text-[8.5px] italic text-slate-500">
-                                      <td colSpan={4} className="py-1 px-2">+ {detailedShortages.length - 4} outros itens detalhados no sistema de conferência</td>
-                                      <td className="py-1 px-2 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(4).reduce((s, d) => s + d.diff, 0)}</td>
-                                      <td className="py-1 px-2 text-right">---</td>
-                                      <td className="py-1 px-2 text-right font-mono font-bold">R$ {detailedShortages.slice(4).reduce((s, d) => s + d.totalCost, 0).toFixed(2)}</td>
+                                  {detailedShortages.length > 5 && (
+                                    <tr className="bg-slate-50 text-[10px] italic text-slate-500">
+                                      <td colSpan={4} className="py-2 px-3">+ {detailedShortages.length - 5} outros itens detalhados no sistema de conferência</td>
+                                      <td className="py-2 px-3 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(5).reduce((s, d) => s + d.diff, 0)}</td>
+                                      <td className="py-2 px-3 text-right">---</td>
+                                      <td className="py-2 px-3 text-right font-mono font-bold">R$ {detailedShortages.slice(5).reduce((s, d) => s + d.totalCost, 0).toFixed(2)}</td>
                                     </tr>
                                   )}
-                                  <tr className="bg-slate-100 font-bold text-slate-900 text-[9.5px] border-t-2 border-slate-300">
-                                    <td colSpan={4} className="py-1.5 px-2 text-right uppercase">Total Descontado:</td>
-                                    <td className="py-1.5 px-2 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
-                                    <td colSpan={2} className="py-1.5 px-2 text-right font-mono font-black text-red-600 text-xs">R$ {viewingVale.valor.toFixed(2)}</td>
+                                  <tr className="bg-slate-100 font-bold text-slate-900 text-xs border-t-2 border-slate-300">
+                                    <td colSpan={4} className="py-2 px-3 text-right uppercase">Total Descontado:</td>
+                                    <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
+                                    <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-red-600 text-sm">R$ {viewingVale.valor.toFixed(2)}</td>
                                   </tr>
                                 </tbody>
                               </table>
                             </div>
                           ) : (
-                            <div className="border border-slate-300 rounded p-2 text-xs text-slate-700 space-y-1 bg-slate-50 leading-relaxed">
-                              <div><strong>Detalhamento dos Itens / Avarias:</strong> <span className="font-semibold text-slate-900">{viewingVale.descricao}</span></div>
-                              <div className="text-[10px] text-slate-500 font-mono">Valor Total de Desconto: <strong>R$ {viewingVale.valor.toFixed(2)}</strong></div>
+                            <div className="border border-slate-200 rounded-xl p-4 text-xs sm:text-sm text-slate-700 space-y-1.5 bg-slate-50 leading-relaxed">
+                              <div><strong>Detalhamento dos Itens / Avarias:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.descricao}</span></div>
+                              <div className="text-xs text-slate-500 font-mono">Valor Total de Desconto: <strong className="text-slate-900">R$ {viewingVale.valor.toFixed(2)}</strong></div>
                             </div>
                           )}
                         </div>
 
                         {viewingVale.observacao && (
-                          <div className="p-2 bg-slate-50 border border-slate-200 rounded text-[9px] italic text-slate-600 font-sans">
+                          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs italic text-slate-600 font-sans">
                             <strong>Observações e Notas:</strong> {viewingVale.observacao}
                           </div>
                         )}
 
-                        <p className="text-[8px] text-slate-400 leading-tight text-justify font-sans">
+                        <p className="text-[10px] text-slate-500 leading-relaxed text-justify font-sans">
                           O desconto acima autorizado decorre de procedimento de aferição física no retorno de rota e expressa a concordância do colaborador com a reposição do prejuízo constatado, em estrita conformidade com o Artigo 462, § 1º da CLT e com as normas regulamentares internas de guarda e responsabilidade patrimonial da Pau Brasil Distribuidora Ltda.
                         </p>
 
                         {/* Signatures */}
-                        <div className={`grid ${viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-3'} gap-4 pt-5 text-center text-[9px]`}>
-                          <div className="space-y-1">
-                            <div className="border-b border-slate-400 mx-auto w-11/12" />
+                        <div className={`grid ${viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-3'} gap-6 pt-6 text-center text-xs`}>
+                          <div className="space-y-1.5">
+                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
                             <span className="font-bold text-slate-900 block truncate">{viewingVale.colaboradorName}</span>
-                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono">{viewingVale.colaboradorRole} (Principal)</span>
+                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono">{viewingVale.colaboradorRole} (Principal)</span>
                           </div>
                           {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.map((c, i) => (
-                            <div key={i} className="space-y-1">
-                              <div className="border-b border-slate-400 mx-auto w-11/12" />
+                            <div key={i} className="space-y-1.5">
+                              <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
                               <span className="font-bold text-slate-900 block truncate">{c.name}</span>
-                              <span className="text-[7.5px] text-slate-400 block uppercase font-mono">
+                              <span className="text-[9.5px] text-slate-500 block uppercase font-mono">
                                 {c.role} {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 1 ? `(${i + 1}º Ajudante)` : ''}
                               </span>
                             </div>
                           ))}
-                          <div className="space-y-1">
-                            <div className="border-b border-slate-400 mx-auto w-11/12" />
+                          <div className="space-y-1.5">
+                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
                             <span className="font-bold text-slate-900 block truncate">{currentUser.name}</span>
-                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono font-bold">Fiscal de Logística</span>
+                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Fiscal de Logística</span>
                           </div>
-                          <div className="space-y-1">
-                            <div className="border-b border-slate-400 mx-auto w-11/12" />
+                          <div className="space-y-1.5">
+                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
                             <span className="font-bold text-slate-900 block truncate">Elisson Minervino</span>
-                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono font-bold">Gestor de Logística</span>
+                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Gestor de Logística</span>
                           </div>
                         </div>
                       </div>
