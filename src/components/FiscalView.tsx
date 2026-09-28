@@ -1327,8 +1327,14 @@ export default function FiscalView({
     }
 
     const additionalColabs = valeToPrint.colaboradoresAdicionais || [];
+    const totalInvolvedColabs = 1 + additionalColabs.length;
+    const printCalculatedShares = calculateRateioShares(Number(valeToPrint.valor) || 0, totalInvolvedColabs);
+    const principalPrintShare = valeToPrint.colaboradorValor !== undefined && valeToPrint.colaboradorValor > 0
+      ? valeToPrint.colaboradorValor
+      : printCalculatedShares[0];
+
     const additionalColabsStatement = additionalColabs.length > 0 
-      ? ` em conjunto com o(s) colaborador(es) co-responsável(is) ${additionalColabs.map(c => `<strong>${c.name}</strong> (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')},` 
+      ? ` em conjunto com o(s) colaborador(es) co-responsável(is) ${additionalColabs.map((c, i) => `<strong>${c.name}</strong> (${c.role} - R$ ${(c.valor !== undefined && c.valor > 0 ? c.valor : (printCalculatedShares[i + 1] ?? 0)).toFixed(2)})`).join(', ')},` 
       : '';
 
     const totalQty = valeToPrint.quantidade !== undefined 
@@ -1603,6 +1609,30 @@ export default function FiscalView({
       display: block;
       margin-top: 1px;
     }
+    .sig-cota {
+      font-size: 10px;
+      font-weight: 900;
+      font-family: monospace;
+      color: #065f46;
+      background: #ecfdf5;
+      border: 1.5px solid #a7f3d0;
+      border-radius: 4px;
+      padding: 2px 6px;
+      display: inline-block;
+      margin-top: 5px;
+      letter-spacing: 0.02em;
+    }
+    .sig-auth {
+      font-size: 9px;
+      font-weight: 600;
+      color: #64748b;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 2px 6px;
+      display: inline-block;
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
@@ -1707,26 +1737,33 @@ export default function FiscalView({
           <div class="sig-line">
             <span class="sig-name">${valeToPrint.colaboradorName}</span>
             <span class="sig-role">${valeToPrint.colaboradorRole} (Principal)</span>
+            <div class="sig-cota">Valor Rateado: R$ ${principalPrintShare.toFixed(2)}</div>
           </div>
         </div>
-        ${additionalColabs.map((c, i) => `
-          <div class="sig-block">
-            <div class="sig-line">
-              <span class="sig-name">${c.name}</span>
-              <span class="sig-role">${c.role} ${additionalColabs.length > 1 ? `(${i + 1}º)` : ''}</span>
+        ${additionalColabs.map((c, i) => {
+          const helperShare = c.valor !== undefined && c.valor > 0 ? c.valor : (printCalculatedShares[i + 1] ?? 0);
+          return `
+            <div class="sig-block">
+              <div class="sig-line">
+                <span class="sig-name">${c.name}</span>
+                <span class="sig-role">${c.role} ${additionalColabs.length > 1 ? `(${i + 1}º Ajudante)` : ''}</span>
+                <div class="sig-cota">Valor Rateado: R$ ${helperShare.toFixed(2)}</div>
+              </div>
             </div>
-          </div>
-        `).join('')}
+          `;
+        }).join('')}
         <div class="sig-block">
           <div class="sig-line">
             <span class="sig-name">${currentUser.name}</span>
             <span class="sig-role">Fiscal de Logística</span>
+            <div class="sig-auth">Emissor / Aferição</div>
           </div>
         </div>
         <div class="sig-block">
           <div class="sig-line">
             <span class="sig-name">Elisson Minervino</span>
             <span class="sig-role">Gestor de Logística</span>
+            <div class="sig-auth">Autorização Gerencial</div>
           </div>
         </div>
       </div>
@@ -9975,32 +10012,58 @@ export default function FiscalView({
                         </p>
 
                         {/* Signatures */}
-                        <div className={`grid ${viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-3'} gap-6 pt-6 text-center text-xs`}>
-                          <div className="space-y-1.5">
-                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
-                            <span className="font-bold text-slate-900 block truncate">{viewingVale.colaboradorName}</span>
-                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono">{viewingVale.colaboradorRole} (Principal)</span>
-                          </div>
-                          {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.map((c, i) => (
-                            <div key={i} className="space-y-1.5">
-                              <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
-                              <span className="font-bold text-slate-900 block truncate">{c.name}</span>
-                              <span className="text-[9.5px] text-slate-500 block uppercase font-mono">
-                                {c.role} {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 1 ? `(${i + 1}º Ajudante)` : ''}
-                              </span>
+                        {(() => {
+                          const additional = viewingVale.colaboradoresAdicionais || [];
+                          const totalCount = 1 + additional.length;
+                          const calculatedShares = calculateRateioShares(Number(viewingVale.valor) || 0, totalCount);
+                          const principalShare = viewingVale.colaboradorValor !== undefined && viewingVale.colaboradorValor > 0 
+                            ? viewingVale.colaboradorValor 
+                            : calculatedShares[0];
+
+                          return (
+                            <div className={`grid ${additional.length > 0 ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-3'} gap-6 pt-6 text-center text-xs`}>
+                              <div className="space-y-1.5 flex flex-col items-center">
+                                <div className="border-b-2 border-slate-400 w-11/12 mt-6" />
+                                <span className="font-bold text-slate-900 block truncate max-w-full">{viewingVale.colaboradorName}</span>
+                                <span className="text-[9.5px] text-slate-500 block uppercase font-mono">{viewingVale.colaboradorRole} (Principal)</span>
+                                <div className="mt-1 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded px-2.5 py-1 text-[11px] font-mono font-black shadow-3xs">
+                                  Valor Rateado: R$ {principalShare.toFixed(2)}
+                                </div>
+                              </div>
+                              {additional.map((c, i) => {
+                                const helperShare = c.valor !== undefined && c.valor > 0 ? c.valor : (calculatedShares[i + 1] ?? 0);
+                                return (
+                                  <div key={i} className="space-y-1.5 flex flex-col items-center">
+                                    <div className="border-b-2 border-slate-400 w-11/12 mt-6" />
+                                    <span className="font-bold text-slate-900 block truncate max-w-full">{c.name}</span>
+                                    <span className="text-[9.5px] text-slate-500 block uppercase font-mono">
+                                      {c.role} {additional.length > 1 ? `(${i + 1}º Ajudante)` : ''}
+                                    </span>
+                                    <div className="mt-1 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded px-2.5 py-1 text-[11px] font-mono font-black shadow-3xs">
+                                      Valor Rateado: R$ {helperShare.toFixed(2)}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              <div className="space-y-1.5 flex flex-col items-center">
+                                <div className="border-b-2 border-slate-400 w-11/12 mt-6" />
+                                <span className="font-bold text-slate-900 block truncate max-w-full">{currentUser.name}</span>
+                                <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Fiscal de Logística</span>
+                                <div className="mt-1 bg-slate-100 text-slate-600 border border-slate-200 rounded px-2 py-0.5 text-[10px] font-sans font-medium">
+                                  Emissor / Aferição
+                                </div>
+                              </div>
+                              <div className="space-y-1.5 flex flex-col items-center">
+                                <div className="border-b-2 border-slate-400 w-11/12 mt-6" />
+                                <span className="font-bold text-slate-900 block truncate max-w-full">Elisson Minervino</span>
+                                <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Gestor de Logística</span>
+                                <div className="mt-1 bg-slate-100 text-slate-600 border border-slate-200 rounded px-2 py-0.5 text-[10px] font-sans font-medium">
+                                  Autorização Gerencial
+                                </div>
+                              </div>
                             </div>
-                          ))}
-                          <div className="space-y-1.5">
-                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
-                            <span className="font-bold text-slate-900 block truncate">{currentUser.name}</span>
-                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Fiscal de Logística</span>
-                          </div>
-                          <div className="space-y-1.5">
-                            <div className="border-b-2 border-slate-400 mx-auto w-11/12 mt-6" />
-                            <span className="font-bold text-slate-900 block truncate">Elisson Minervino</span>
-                            <span className="text-[9.5px] text-slate-500 block uppercase font-mono font-bold">Gestor de Logística</span>
-                          </div>
-                        </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Modal Footer buttons */}
