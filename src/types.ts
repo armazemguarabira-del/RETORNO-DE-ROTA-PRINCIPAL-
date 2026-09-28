@@ -234,6 +234,7 @@ export interface ImportedRoute {
   driverId: string;
   driverName?: string;
   helperName?: string;
+  helperId?: string;
   routeDate: string; // The date of the route requested during import
   status: 'pendente' | 'conferindo' | 'fechado' | 'em_analise' | 'reconferir';
   importedAt: string;
@@ -313,6 +314,14 @@ export function getAssetCanonicalName(code: string): string {
   }
 }
 
+export interface ValeCollaborator {
+  id: string;
+  name: string;
+  role: string; // 'MOTORISTA' | 'AJUDANTE' | 'CONFERENTE' | 'AUXILIAR' | 'OUTRO'
+  valor?: number;
+  cpf?: string;
+}
+
 export interface Vale {
   id: string;
   auditId?: string; // mapa de auditoria de onde veio
@@ -320,7 +329,9 @@ export interface Vale {
   colaboradorId: string; // id do motorista/ajudante/conferente ou nome
   colaboradorName: string;
   colaboradorRole: string; // 'MOTORISTA' | 'AJUDANTE' | 'CONFERENTE' | etc.
+  colaboradorValor?: number; // Cota individual rateada do colaborador principal
   valor: number;
+  quantidade?: number; // quantidade de volumes ou itens em desvio
   descricao: string; // Ex: "Falta de 3 cx Spaten no mapa MAPA-108"
   dataGeracao: string; // YYYY-MM-DD
   status: 'PENDENTE_ASSINATURA' | 'ASSINADO' | 'COMPENSADO' | 'DESCONTADO_EM_FOLHA';
@@ -328,6 +339,7 @@ export interface Vale {
   signedPdfUrl?: string; // base64 do PDF ou imagem do vale assinado
   signedPdfName?: string; // nome do arquivo PDF
   acknowledgedByGestor?: boolean; // Se o gestor marcou ciente no card do vale
+  colaboradoresAdicionais?: ValeCollaborator[]; // Colaboradores adicionais co-responsáveis
 }
 
 export interface AuditLogEntry {

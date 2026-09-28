@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
-import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info } from 'lucide-react';
+import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
@@ -290,6 +290,7 @@ function AuditHistoryDetails({ audit }: { audit: AuditSession }) {
 
 interface FiscalViewProps {
   currentUser: User;
+  users?: User[];
   drivers: Driver[];
   onSaveDrivers?: (drivers: Driver[]) => void;
   vehicles: Vehicle[];
@@ -719,6 +720,7 @@ const getUnifiedTimeline = (audit: AuditSession, importedRoutes: ImportedRoute[]
 
 export default function FiscalView({
   currentUser,
+  users = DEFAULT_USERS,
   drivers,
   onSaveDrivers,
   vehicles,
@@ -1095,13 +1097,610 @@ export default function FiscalView({
   }, [audits, dismissedPopupAuditIds]);
   
   // Vales State and Form States
-  const [viewingVale, setViewingVale] = useState<any | null>(null);
+  const [viewingVale, setViewingVale] = useState<Vale | null>(null);
+  const [editingVale, setEditingVale] = useState<Vale | null>(null);
   const [valeColaboradorId, setValeColaboradorId] = useState('');
+  const [valeColaboradorName, setValeColaboradorName] = useState('');
+  const [valeColaboradorRole, setValeColaboradorRole] = useState('MOTORISTA');
+  const [valeColaboradorValor, setValeColaboradorValor] = useState<number | undefined>(undefined);
+  const [valeQuantidadeColaboradores, setValeQuantidadeColaboradores] = useState<number>(1);
   const [valeRouteMap, setValeRouteMap] = useState('');
   const [valeValeValor, setValeValeValor] = useState('');
+  const [valeQuantidade, setValeQuantidade] = useState('');
   const [valeDescricao, setValeDescricao] = useState('');
   const [valeObservacao, setValeObservacao] = useState('');
+  const [valeColaboradoresAdicionais, setValeColaboradoresAdicionais] = useState<ValeCollaborator[]>([]);
   const [uploadingValeId, setUploadingValeId] = useState<string | null>(null);
+
+  // Rateio utility: splits total value evenly among count people, distributing remainder cents exactly
+  const calculateRateioShares = (totalValue: number, count: number): number[] => {
+    if (count <= 0) return [totalValue];
+    if (!totalValue || totalValue <= 0) return Array(count).fill(0);
+    const totalCents = Math.round(totalValue * 100);
+    const baseCents = Math.floor(totalCents / count);
+    const remainderCents = totalCents % count;
+    const shares: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const cents = baseCents + (i < remainderCents ? 1 : 0);
+      shares.push(cents / 100);
+    }
+    return shares;
+  };
+
+  // Adjust number of collaborators in Emission Form and automatically calculate rateio
+  const handleSetEmissionNumColaboradores = (count: number) => {
+    const targetCount = Math.max(1, count);
+    setValeQuantidadeColaboradores(targetCount);
+    const totalVal = Number(valeValeValor) || 0;
+    const shares = calculateRateioShares(totalVal, targetCount);
+    setValeColaboradorValor(shares[0]);
+
+    const currentAdicionais = [...valeColaboradoresAdicionais];
+    const newAdicionais: ValeCollaborator[] = [];
+    for (let i = 0; i < targetCount - 1; i++) {
+      const existing = currentAdicionais[i];
+      newAdicionais.push({
+        id: existing?.id || 'colab_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 5),
+        name: existing?.name || '',
+        role: existing?.role || 'AJUDANTE',
+        valor: shares[i + 1]
+      });
+    }
+    setValeColaboradoresAdicionais(newAdicionais);
+  };
+
+  // When discount value changes in Emission Form, recalculate rateio shares immediately
+  const handleEmissionValorChange = (newValStr: string) => {
+    setValeValeValor(newValStr);
+    const totalVal = Number(newValStr) || 0;
+    const targetCount = Math.max(1, valeQuantidadeColaboradores);
+    const shares = calculateRateioShares(totalVal, targetCount);
+    setValeColaboradorValor(shares[0]);
+
+    const updatedAdicionais = valeColaboradoresAdicionais.map((c, idx) => ({
+      ...c,
+      valor: shares[idx + 1]
+    }));
+    setValeColaboradoresAdicionais(updatedAdicionais);
+  };
+
+  const handleUpdateEmissionHelper = (index: number, updates: Partial<ValeCollaborator>) => {
+    const next = [...valeColaboradoresAdicionais];
+    while (next.length <= index) {
+      next.push({
+        id: 'colab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        name: '',
+        role: 'AJUDANTE'
+      });
+    }
+    next[index] = {
+      ...next[index],
+      ...updates
+    };
+    setValeColaboradoresAdicionais(next);
+  };
+
+  const handleClearEmissionHelper = (index: number) => {
+    const next = valeColaboradoresAdicionais.filter((_, i) => i !== index);
+    setValeColaboradoresAdicionais(next);
+    const newCount = Math.max(1, 1 + next.length);
+    setValeQuantidadeColaboradores(newCount);
+    const totalVal = Number(valeValeValor) || 0;
+    const shares = calculateRateioShares(totalVal, newCount);
+    setValeColaboradorValor(shares[0]);
+  };
+
+  // Adjust number of collaborators in Editing Modal and automatically recalculate rateio
+  const handleSetEditingNumColaboradores = (count: number) => {
+    if (!editingVale) return;
+    const targetCount = Math.max(1, count);
+    const totalVal = Number(editingVale.valor) || 0;
+    const shares = calculateRateioShares(totalVal, targetCount);
+
+    const currentAdicionais = editingVale.colaboradoresAdicionais || [];
+    const newAdicionais: ValeCollaborator[] = [];
+    for (let i = 0; i < targetCount - 1; i++) {
+      const existing = currentAdicionais[i];
+      newAdicionais.push({
+        id: existing?.id || 'colab_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 5),
+        name: existing?.name || '',
+        role: existing?.role || 'AJUDANTE',
+        valor: shares[i + 1]
+      });
+    }
+
+    setEditingVale({
+      ...editingVale,
+      colaboradorValor: shares[0],
+      colaboradoresAdicionais: newAdicionais
+    });
+  };
+
+  // When discount value changes in Editing Modal, recalculate rateio shares immediately
+  const handleEditingValorChange = (newVal: number) => {
+    if (!editingVale) return;
+    const currentCount = 1 + (editingVale.colaboradoresAdicionais?.length || 0);
+    const shares = calculateRateioShares(newVal, currentCount);
+
+    const updatedAdicionais = (editingVale.colaboradoresAdicionais || []).map((c, idx) => ({
+      ...c,
+      valor: shares[idx + 1]
+    }));
+
+    setEditingVale({
+      ...editingVale,
+      valor: newVal,
+      colaboradorValor: shares[0],
+      colaboradoresAdicionais: updatedAdicionais
+    });
+  };
+
+  const handleUpdateEditingHelper = (index: number, updates: Partial<ValeCollaborator>) => {
+    if (!editingVale) return;
+    const next = [...(editingVale.colaboradoresAdicionais || [])];
+    while (next.length <= index) {
+      next.push({
+        id: 'colab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        name: '',
+        role: 'AJUDANTE'
+      });
+    }
+    next[index] = {
+      ...next[index],
+      ...updates
+    };
+    setEditingVale({
+      ...editingVale,
+      colaboradoresAdicionais: next
+    });
+  };
+
+  const handleClearEditingHelper = (index: number) => {
+    if (!editingVale) return;
+    const next = (editingVale.colaboradoresAdicionais || []).filter((_, i) => i !== index);
+    const newCount = Math.max(1, 1 + next.length);
+    const shares = calculateRateioShares(Number(editingVale.valor) || 0, newCount);
+    setEditingVale({
+      ...editingVale,
+      colaboradorValor: shares[0],
+      colaboradoresAdicionais: next.map((c, idx) => ({
+        ...c,
+        valor: shares[idx + 1]
+      }))
+    });
+  };
+
+  // Generate printable document strictly formatted to fit exactly 1 single A4 page
+  const generatePrintableValeDocument = (valeToPrint: Vale) => {
+    const associatedAudit = (audits || []).find(a => a.id === valeToPrint.auditId || a.routeMap === valeToPrint.routeMap);
+    const vehiclePlate = associatedAudit?.plate || 'Não cadastrada';
+    const arrivalDateFormatted = associatedAudit?.arrivalDate 
+      ? new Date(associatedAudit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR') 
+      : new Date(valeToPrint.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR');
+    const helperName = associatedAudit?.helperId ? getHelperName(associatedAudit.helperId) : 'N/A';
+    const usersList = users || DEFAULT_USERS;
+    const foundUser = usersList.find(u => u.id === associatedAudit?.conferenteId || u.username === associatedAudit?.conferenteId);
+    const conferenteName = foundUser 
+      ? foundUser.name 
+      : (associatedAudit?.conferenteId 
+          ? (associatedAudit.conferenteId === 'conferente_01' ? 'João Conferente' : associatedAudit.conferenteId === 'conferente_02' ? 'Pedro Ajudante' : associatedAudit.conferenteId) 
+          : 'Conferente de Pátio');
+
+    const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; diff: number; cost: number; totalCost: number }> = [];
+
+    if (associatedAudit) {
+      associatedAudit.items.forEach(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          detailedShortages.push({
+            code: i.productCode,
+            name: i.productDescription || 'Produto',
+            expected: fisc,
+            found: phys,
+            diff: diff,
+            cost: unitCost,
+            totalCost: diff * unitCost
+          });
+        }
+      });
+
+      associatedAudit.assets.forEach(a => {
+        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        if (phys < fisc) {
+          const diff = fisc - phys;
+          const unitCost = a.cost ?? 18.0;
+          detailedShortages.push({
+            code: a.assetId,
+            name: a.assetName || 'Ativo',
+            expected: fisc,
+            found: phys,
+            diff: diff,
+            cost: unitCost,
+            totalCost: diff * unitCost
+          });
+        }
+      });
+    }
+
+    const additionalColabs = valeToPrint.colaboradoresAdicionais || [];
+    const additionalColabsStatement = additionalColabs.length > 0 
+      ? ` em conjunto com o(s) colaborador(es) co-responsável(is) ${additionalColabs.map(c => `<strong>${c.name}</strong> (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')},` 
+      : '';
+
+    const totalQty = valeToPrint.quantidade !== undefined 
+      ? valeToPrint.quantidade 
+      : (detailedShortages.length > 0 ? detailedShortages.reduce((sum, d) => sum + d.diff, 0) : null);
+
+    // Limit shortage items to top 4 rows + consolidated row to strictly guarantee 1 page
+    const maxItemsToShow = 4;
+    const itemsToShow = detailedShortages.slice(0, maxItemsToShow);
+    const hiddenItemsCount = detailedShortages.length - maxItemsToShow;
+    const hiddenItemsTotalCost = hiddenItemsCount > 0 
+      ? detailedShortages.slice(maxItemsToShow).reduce((s, it) => s + it.totalCost, 0) 
+      : 0;
+    const hiddenItemsTotalDiff = hiddenItemsCount > 0 
+      ? detailedShortages.slice(maxItemsToShow).reduce((s, it) => s + it.diff, 0) 
+      : 0;
+
+    const shortageRowsHtml = itemsToShow.map(item => `
+      <tr>
+        <td style="padding: 3px 5px; font-family: monospace; font-weight: bold; color: #475569;">${item.code}</td>
+        <td style="padding: 3px 5px; font-weight: 500;">${item.name}</td>
+        <td style="padding: 3px 5px; text-align: center; font-family: monospace;">${item.expected}</td>
+        <td style="padding: 3px 5px; text-align: center; font-family: monospace;">${item.found}</td>
+        <td style="padding: 3px 5px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff}</td>
+        <td style="padding: 3px 5px; text-align: right; font-family: monospace;">R$ ${item.cost.toFixed(2)}</td>
+        <td style="padding: 3px 5px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
+      </tr>
+    `).join('');
+
+    const hiddenRowHtml = hiddenItemsCount > 0 ? `
+      <tr style="background: #f8fafc; font-style: italic; color: #64748b;">
+        <td colspan="4" style="padding: 3px 5px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
+        <td style="padding: 3px 5px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenItemsTotalDiff}</td>
+        <td style="padding: 3px 5px; text-align: right;">---</td>
+        <td style="padding: 3px 5px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenItemsTotalCost.toFixed(2)}</td>
+      </tr>
+    ` : '';
+
+    return `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Termo de Vale ${valeToPrint.id}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 6mm 8mm 6mm 8mm;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      max-height: 100vh;
+      overflow: hidden !important;
+      background: #ffffff;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .print-card {
+      width: 100%;
+      height: 100%;
+      max-height: 280mm;
+      padding: 4px 6px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-sizing: border-box;
+      page-break-inside: avoid;
+      page-break-after: avoid;
+      overflow: hidden;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 6px;
+      margin-bottom: 6px;
+    }
+    .company-title {
+      font-size: 15px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.02em;
+      color: #0f172a;
+    }
+    .company-sub {
+      font-size: 8.5px;
+      color: #475569;
+      font-family: monospace;
+      text-transform: uppercase;
+    }
+    .badge-vale {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 3px 8px;
+      text-align: right;
+    }
+    .title-banner {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      text-align: center;
+      padding: 5px 6px;
+      margin-bottom: 6px;
+    }
+    .title-banner h2 {
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #0f172a;
+    }
+    .title-banner span {
+      font-size: 8px;
+      color: #64748b;
+      font-weight: 600;
+      display: block;
+    }
+    .declaration {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-left: 3px solid #f59e0b;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      line-height: 1.4;
+      text-align: justify;
+      margin-bottom: 6px;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 9px;
+      margin-bottom: 6px;
+    }
+    .info-grid strong {
+      color: #0f172a;
+    }
+    .table-container {
+      margin-bottom: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8.5px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 3px 5px;
+    }
+    th {
+      background: #f1f5f9;
+      font-weight: bold;
+      text-transform: uppercase;
+      color: #334155;
+    }
+    .obs-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 8px;
+      color: #475569;
+      font-style: italic;
+      margin-bottom: 6px;
+    }
+    .legal-notice {
+      font-size: 7.5px;
+      color: #94a3b8;
+      text-align: justify;
+      line-height: 1.25;
+      margin-bottom: 10px;
+    }
+    .signatures {
+      display: grid;
+      grid-template-columns: repeat(${additionalColabs.length > 2 ? 4 : (additionalColabs.length > 0 ? 3 + additionalColabs.length : 3)}, 1fr);
+      gap: 5px 8px;
+      text-align: center;
+      padding-top: 6px;
+    }
+    .sig-line {
+      border-top: 1px solid #64748b;
+      padding-top: 3px;
+    }
+    .sig-name {
+      font-weight: bold;
+      font-size: 8px;
+      color: #0f172a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+    }
+    .sig-role {
+      font-size: 6.5px;
+      color: #64748b;
+      text-transform: uppercase;
+      font-family: monospace;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="print-card">
+    <div>
+      <!-- Header -->
+      <div class="header">
+        <div>
+          <div class="company-title">PAU BRASIL DISTRIBUIDORA LTDA</div>
+          <div class="company-sub">Logística de Retorno & Aferição Física • Unidade Guarabira/PB</div>
+          <div style="font-size: 8px; font-weight: bold; color: #b45309; text-transform: uppercase; margin-top: 2px;">
+            Documento Oficial de Termo de Responsabilidade e Desconto
+          </div>
+        </div>
+        <div class="badge-vale">
+          <div style="font-size: 7.5px; color: #64748b; font-weight: bold; text-transform: uppercase;">Vale Financeiro Nº</div>
+          <div style="font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626;">${valeToPrint.id}</div>
+          <div style="font-size: 7.5px; color: #475569; font-family: monospace;">Emissão: ${new Date(valeToPrint.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</div>
+        </div>
+      </div>
+
+      <!-- Title Banner -->
+      <div class="title-banner">
+        <h2>Autorização de Desconto em Folha de Pagamento</h2>
+        <span>Fundamentação Legal: Artigo 462, § 1º da Consolidação das Leis do Trabalho (CLT)</span>
+      </div>
+
+      <!-- Main Declaration -->
+      <div class="declaration">
+        Eu, <strong>${valeToPrint.colaboradorName}</strong>, registrado na função de <strong>${valeToPrint.colaboradorRole}</strong>,${additionalColabsStatement} autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a proceder com o desconto em folha de pagamento da importância líquida de <strong>R$ ${valeToPrint.valor.toFixed(2)}</strong> (${valeToPrint.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente a desvios físicos de estoque, faltas ou avarias constatadas no encerramento logístico do <strong>${valeToPrint.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${valeToPrint.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+      </div>
+
+      <!-- Info Grid -->
+      <div class="info-grid">
+        <div>
+          <div style="font-weight: bold; font-size: 8px; text-transform: uppercase; color: #64748b; margin-bottom: 2px;">Informações da Rota / Transporte</div>
+          <div><strong>Mapa de Carga:</strong> <span style="font-family: monospace; font-weight: bold;">${valeToPrint.routeMap}</span></div>
+          <div><strong>Placa do Veículo:</strong> <span style="font-family: monospace; text-transform: uppercase; font-weight: bold;">${vehiclePlate}</span></div>
+          <div><strong>Data da Viagem:</strong> ${arrivalDateFormatted}</div>
+          <div><strong>Volumes / Quantidade:</strong> <span style="font-weight: bold;">${totalQty !== null ? `${totalQty} volumes/itens` : 'Conforme laudo'}</span></div>
+        </div>
+        <div>
+          <div style="font-weight: bold; font-size: 8px; text-transform: uppercase; color: #64748b; margin-bottom: 2px;">Equipe da Operação & Aferição</div>
+          <div><strong>Responsável:</strong> ${valeToPrint.colaboradorName} (${valeToPrint.colaboradorRole}${valeToPrint.colaboradorValor ? ` - Cota: R$ ${valeToPrint.colaboradorValor.toFixed(2)}` : ''})</div>
+          ${additionalColabs.length > 0 ? `<div><strong>Ajudantes / Co-responsáveis:</strong> ${additionalColabs.map(c => `${c.name} (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</div>` : `<div><strong>Ajudante da Rota:</strong> ${helperName}</div>`}
+          <div><strong>Conferente de Pátio:</strong> ${conferenteName}</div>
+          <div><strong>Fiscal / Emissor:</strong> ${currentUser.name}</div>
+        </div>
+      </div>
+
+      <!-- Shortage Details -->
+      <div class="table-container">
+        <div style="font-size: 8px; font-weight: bold; text-transform: uppercase; color: #0f172a; margin-bottom: 3px;">
+          Demonstrativo de Itens em Falta / Desvios Constatados:
+        </div>
+        ${detailedShortages.length > 0 ? `
+          <table>
+            <thead>
+              <tr>
+                <th>Cód.</th>
+                <th>Descrição do Produto / Vasilhame</th>
+                <th style="text-align: center;">Faturado</th>
+                <th style="text-align: center;">Conferido</th>
+                <th style="text-align: center; color: #dc2626;">Falta</th>
+                <th style="text-align: right;">Custo Unit.</th>
+                <th style="text-align: right;">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${shortageRowsHtml}
+              ${hiddenRowHtml}
+              <tr style="background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
+                <td colspan="4" style="text-align: right; text-transform: uppercase; padding: 4px 6px;">Total do Desconto Autorizado:</td>
+                <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 4px 6px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
+                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 11px; font-weight: 900; color: #dc2626; padding: 4px 6px;">R$ ${valeToPrint.valor.toFixed(2)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : `
+          <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 8px; font-size: 9px;">
+            <div><strong>Descrição da Falta:</strong> ${valeToPrint.descricao}</div>
+            <div style="margin-top: 3px; font-weight: bold; color: #dc2626;">Valor Total Autorizado: R$ ${valeToPrint.valor.toFixed(2)}</div>
+          </div>
+        `}
+      </div>
+
+      ${valeToPrint.observacao ? `
+        <div class="obs-box">
+          <strong>Observações do Emissor:</strong> ${valeToPrint.observacao}
+        </div>
+      ` : ''}
+
+      <div class="legal-notice">
+        O presente termo decorre de procedimento de aferição física no retorno de rota e expressa a concordância do colaborador com a reposição do prejuízo constatado, em estrita conformidade com o Artigo 462, § 1º da CLT e com as normas regulamentares internas de guarda e responsabilidade patrimonial da Pau Brasil Distribuidora Ltda.
+      </div>
+    </div>
+
+    <!-- Signatures -->
+    <div class="signatures">
+      <div class="sig-line">
+        <span class="sig-name">${valeToPrint.colaboradorName}</span>
+        <span class="sig-role">${valeToPrint.colaboradorRole} (Principal)</span>
+      </div>
+      ${additionalColabs.map((c, i) => `
+        <div class="sig-line">
+          <span class="sig-name">${c.name}</span>
+          <span class="sig-role">${c.role} ${additionalColabs.length > 1 ? `(${i + 1}º)` : ''}</span>
+        </div>
+      `).join('')}
+      <div class="sig-line">
+        <span class="sig-name">${currentUser.name}</span>
+        <span class="sig-role">Fiscal de Logística</span>
+      </div>
+      <div class="sig-line">
+        <span class="sig-name">Elisson Minervino</span>
+        <span class="sig-role">Gestor de Logística</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `;
+  };
+
+  const handlePrintVale = (valeToPrint: Vale) => {
+    let iframe = document.getElementById('vale-print-iframe') as HTMLIFrameElement;
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'vale-print-iframe';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      document.body.appendChild(iframe);
+    }
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      window.print();
+      return;
+    }
+
+    const html = generatePrintableValeDocument(valeToPrint);
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    }, 250);
+  };
 
   // Vale Map mode: 'lista' (from maps with shortage) or 'manual' (type any map number)
   const [valeMapMode, setValeMapMode] = useState<'lista' | 'manual'>('lista');
@@ -1213,10 +1812,33 @@ export default function FiscalView({
       if (autoFill) {
         if (info.driverId) {
           setValeColaboradorId(info.driverId);
+          setValeColaboradorName(info.driverName || '');
+          setValeColaboradorRole('MOTORISTA');
         }
         if (info.hasShortage) {
           setValeValeValor(totalVal.toFixed(2));
           setValeDescricao(info.description);
+          const totalQty = itemDetails.reduce((sum, it) => sum + it.qty, 0);
+          setValeQuantidade(totalQty > 0 ? String(totalQty) : '');
+        }
+
+        // Pre-fill Helper 1 if present in audit session or route and calculate rateio
+        const matchedHelperId = matchingAudit.helperId || matchedRoute?.helperId;
+        const matchedHelper = drivers.find(d => d.id === matchedHelperId);
+        if (matchedHelper) {
+          setValeQuantidadeColaboradores(2);
+          const shares = calculateRateioShares(totalVal, 2);
+          setValeColaboradorValor(shares[0]);
+          setValeColaboradoresAdicionais([{
+            id: matchedHelper.id,
+            name: matchedHelper.name,
+            role: 'AJUDANTE',
+            valor: shares[1]
+          }]);
+        } else {
+          setValeQuantidadeColaboradores(1);
+          setValeColaboradorValor(totalVal > 0 ? totalVal : undefined);
+          setValeColaboradoresAdicionais([]);
         }
       }
       return info;
@@ -1242,6 +1864,25 @@ export default function FiscalView({
       setValeAssociatedInfo(info);
       if (autoFill && info.driverId) {
         setValeColaboradorId(info.driverId);
+        setValeColaboradorName(info.driverName || '');
+        setValeColaboradorRole('MOTORISTA');
+        const matchedHelperId = matchedRoute.helperId;
+        const matchedHelper = drivers.find(d => d.id === matchedHelperId);
+        if (matchedHelper) {
+          setValeQuantidadeColaboradores(2);
+          const shares = calculateRateioShares(0, 2);
+          setValeColaboradorValor(shares[0]);
+          setValeColaboradoresAdicionais([{
+            id: matchedHelper.id,
+            name: matchedHelper.name,
+            role: 'AJUDANTE',
+            valor: shares[1]
+          }]);
+        } else {
+          setValeQuantidadeColaboradores(1);
+          setValeColaboradorValor(undefined);
+          setValeColaboradoresAdicionais([]);
+        }
       }
       return info;
     }
@@ -8122,29 +8763,6 @@ export default function FiscalView({
                   </h3>
 
                   <div className="space-y-3">
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Selecionar Colaborador</label>
-                      <select
-                        value={valeColaboradorId}
-                        onChange={(e) => setValeColaboradorId(e.target.value)}
-                        className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition"
-                      >
-                        <option value="">Selecione o colaborador...</option>
-                        {/* Motoristas */}
-                        <optgroup label="Motoristas">
-                          {drivers.map(d => (
-                            <option key={d.id} value={d.id}>{d.name} (Motorista)</option>
-                          ))}
-                        </optgroup>
-                        {/* Conferentes / Outros */}
-                        <optgroup label="Outros Papéis">
-                          <option value="conferente_01">João Conferente (CONFERENTE)</option>
-                          <option value="conferente_02">Pedro Ajudante (CONFERENTE)</option>
-                          <option value="auxiliar_envio">Auxiliar de Envio de Sobras (AUXILIAR)</option>
-                        </optgroup>
-                      </select>
-                    </div>
-
                     {/* Seleção ou Inserção Manual de Mapa com Falta */}
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
@@ -8339,18 +8957,327 @@ export default function FiscalView({
                       </div>
                     )}
 
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Valor do Desconto (R$)</label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-2 text-xs font-bold text-slate-400">R$</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Valor do Desconto (R$) *</label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-2 text-xs font-bold text-slate-400">R$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="0,00"
+                            value={valeValeValor}
+                            onChange={(e) => handleEmissionValorChange(e.target.value)}
+                            className="w-full text-xs pl-8 pr-2 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono font-bold text-slate-900"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Qtd. Volumes / Itens</label>
                         <input
                           type="number"
-                          step="0.01"
-                          placeholder="0,00"
-                          value={valeValeValor}
-                          onChange={(e) => setValeValeValor(e.target.value)}
-                          className="w-full text-xs pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
+                          min="0"
+                          step="1"
+                          placeholder="Ex: 3"
+                          value={valeQuantidade}
+                          onChange={(e) => setValeQuantidade(e.target.value)}
+                          className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
                         />
+                      </div>
+                    </div>
+
+                    {/* Seção: Equipe Envolvida no Desvio & Rateio Automático */}
+                    <div className="space-y-2.5 pt-2.5 border-t border-slate-200">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-800 uppercase font-sans flex items-center gap-1.5">
+                            <Users className="h-3.5 w-3.5 text-amber-600" />
+                            <span>Quantidade de Colaboradores Envolvidos:</span>
+                          </label>
+                          <p className="text-[9px] text-slate-500">
+                            Quantas pessoas compartilham o desvio. Os campos e o rateio do valor abrem automaticamente.
+                          </p>
+                        </div>
+
+                        {/* Botoes rápidos de quantidade */}
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {[1, 2, 3, 4, 5, 6].map((num) => {
+                            const isSelected = valeQuantidadeColaboradores === num;
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                onClick={() => handleSetEmissionNumColaboradores(num)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-0.5 ${
+                                  isSelected
+                                    ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-400 font-black'
+                                    : 'bg-slate-100 border border-slate-300 text-slate-700 hover:bg-slate-200'
+                                }`}
+                              >
+                                <span>{num} {num === 1 ? 'Pessoa' : 'Pessoas'}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Banner Informativo de Rateio do Valor em Tempo Real */}
+                      {Number(valeValeValor) > 0 && (() => {
+                        const totalVal = Number(valeValeValor);
+                        const shares = calculateRateioShares(totalVal, valeQuantidadeColaboradores);
+                        const percent = (100 / valeQuantidadeColaboradores).toFixed(1);
+                        return (
+                          <div className="bg-amber-100/70 border border-amber-300 rounded-lg p-2 flex flex-wrap items-center justify-between gap-1 text-xxs text-amber-950 font-sans">
+                            <div className="flex items-center gap-1.5">
+                              <Calculator className="h-3.5 w-3.5 text-amber-700 shrink-0" />
+                              <div>
+                                <span className="font-bold">Rateio Automático: </span>
+                                <span className="font-mono font-black text-amber-900">
+                                  R$ {totalVal.toFixed(2)}
+                                </span>
+                                <span className="text-slate-600"> ÷ </span>
+                                <span className="font-bold">
+                                  {valeQuantidadeColaboradores} {valeQuantidadeColaboradores === 1 ? 'colaborador' : 'colaboradores'}
+                                </span>
+                                <span className="text-slate-600"> = </span>
+                                <span className="font-mono font-black text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-300">
+                                  R$ {shares[0].toFixed(2)}
+                                </span>
+                                <span className="text-[9.5px] text-slate-600 ml-1">
+                                  ({percent}% para cada)
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleSetEmissionNumColaboradores(valeQuantidadeColaboradores)}
+                              className="text-[9px] bg-amber-200/80 hover:bg-amber-300 text-amber-900 px-1.5 py-0.5 rounded border border-amber-400 font-bold cursor-pointer transition shadow-3xs"
+                              title="Recalcular divisão igualitária"
+                            >
+                              ↻ Recalcular Divisão
+                            </button>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Slots de Colaboradores: Abertos exatamente conforme a quantidade selecionada */}
+                      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                        {/* 1º Colaborador (Responsável Principal) */}
+                        {(() => {
+                          const totalVal = Number(valeValeValor) || 0;
+                          const shares = calculateRateioShares(totalVal, valeQuantidadeColaboradores);
+                          const colab1Cota = valeColaboradorValor !== undefined ? valeColaboradorValor : shares[0];
+                          return (
+                            <div className="p-2.5 rounded-lg border-2 border-amber-300 bg-white text-xxs transition-all shadow-3xs space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-[9.5px] uppercase tracking-wide flex items-center gap-1 text-slate-800">
+                                  <span>👤 1º Colaborador (Responsável Principal)</span>
+                                  <span className="bg-amber-100 text-amber-900 text-[8px] font-bold px-1 rounded">Principal</span>
+                                </span>
+                                <span className="text-emerald-800 text-[9px] font-mono font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-300">
+                                  Cota: R$ {colab1Cota.toFixed(2)}
+                                </span>
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="block text-[8px] font-bold text-slate-500 uppercase">Buscar Cadastrado</label>
+                                <select
+                                  value={valeColaboradorId}
+                                  onChange={(e) => {
+                                    const selectedId = e.target.value;
+                                    setValeColaboradorId(selectedId);
+                                    if (!selectedId) return;
+                                    const d = drivers.find(drv => drv.id === selectedId);
+                                    if (d) {
+                                      setValeColaboradorName(d.name);
+                                      setValeColaboradorRole(d.role === 'AJUDANTE' ? 'AJUDANTE' : 'MOTORISTA');
+                                    } else {
+                                      const u = (users || DEFAULT_USERS).find(usr => usr.id === selectedId);
+                                      if (u) {
+                                        setValeColaboradorName(u.name);
+                                        setValeColaboradorRole(u.role === 'conferente' ? 'CONFERENTE' : 'AUXILIAR');
+                                      }
+                                    }
+                                  }}
+                                  className="w-full text-xxs p-1.5 bg-slate-50 border border-slate-200 rounded font-medium"
+                                >
+                                  <option value="">Selecione da lista cadastrada...</option>
+                                  <optgroup label="Motoristas">
+                                    {drivers.filter(d => d.role === 'MOTORISTA').map(d => (
+                                      <option key={d.id} value={d.id}>{d.name} (Motorista)</option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Ajudantes Cadastrados">
+                                    {drivers.filter(d => d.role === 'AJUDANTE').map(d => (
+                                      <option key={d.id} value={d.id}>{d.name} (Ajudante)</option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Equipe Operacional">
+                                    {(users || DEFAULT_USERS).map(u => (
+                                      <option key={u.id} value={u.id}>{u.name} ({u.role.toUpperCase()})</option>
+                                    ))}
+                                  </optgroup>
+                                </select>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-1.5 pt-0.5">
+                                  <div className="sm:col-span-5">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Nome *</label>
+                                    <input
+                                      type="text"
+                                      placeholder="Nome do colaborador principal..."
+                                      value={valeColaboradorName}
+                                      onChange={(e) => setValeColaboradorName(e.target.value)}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                    />
+                                  </div>
+                                  <div className="sm:col-span-4">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Cargo / Função *</label>
+                                    <select
+                                      value={valeColaboradorRole}
+                                      onChange={(e) => setValeColaboradorRole(e.target.value)}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                    >
+                                      <option value="MOTORISTA">🚚 Motorista</option>
+                                      <option value="AJUDANTE">📦 Ajudante</option>
+                                      <option value="CONFERENTE">📋 Conferente</option>
+                                      <option value="AUXILIAR">⚙️ Auxiliar</option>
+                                      <option value="OUTRO">Outro</option>
+                                    </select>
+                                  </div>
+                                  <div className="sm:col-span-3">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Cota (R$)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={colab1Cota}
+                                      onChange={(e) => setValeColaboradorValor(e.target.value === '' ? undefined : Number(e.target.value))}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-emerald-800"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Colaboradores Adicionais (2º, 3º, etc. exatamente conforme a quantidade selecionada) */}
+                        {valeColaboradoresAdicionais.map((helper, idx) => {
+                          const helperNumber = idx + 2;
+                          const totalVal = Number(valeValeValor) || 0;
+                          const shares = calculateRateioShares(totalVal, valeQuantidadeColaboradores);
+                          const currentCota = helper.valor !== undefined ? helper.valor : shares[idx + 1];
+                          return (
+                            <div 
+                              key={helper.id || idx}
+                              className="p-2.5 rounded-lg border border-amber-300 bg-amber-50/60 text-xxs transition-all shadow-3xs space-y-1.5 animate-fade-in"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-[9.5px] uppercase tracking-wide flex items-center gap-1 text-slate-800">
+                                  <span>👤 {helperNumber}º Colaborador (Co-responsável)</span>
+                                  <span className="bg-amber-200/80 text-amber-900 text-[8px] font-bold px-1 rounded">Rateio Ativo</span>
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-emerald-800 text-[9px] font-mono font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-300">
+                                    Cota: R$ {currentCota.toFixed(2)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClearEmissionHelper(idx)}
+                                    className="text-red-500 hover:text-red-700 font-bold hover:underline cursor-pointer flex items-center gap-0.5 text-[8.5px]"
+                                    title={`Remover ${helperNumber}º Colaborador`}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                    <span>Remover</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="block text-[8px] font-bold text-slate-500 uppercase">Buscar Cadastrado</label>
+                                <select
+                                  value={helper?.id && drivers.some(d => d.id === helper.id) ? helper.id : ''}
+                                  onChange={(e) => {
+                                    const selectedId = e.target.value;
+                                    if (!selectedId) return;
+                                    const d = drivers.find(drv => drv.id === selectedId);
+                                    if (d) {
+                                      handleUpdateEmissionHelper(idx, {
+                                        id: d.id,
+                                        name: d.name,
+                                        role: d.role === 'MOTORISTA' ? 'MOTORISTA' : 'AJUDANTE'
+                                      });
+                                    } else {
+                                      const u = (users || DEFAULT_USERS).find(usr => usr.id === selectedId);
+                                      if (u) {
+                                        handleUpdateEmissionHelper(idx, {
+                                          id: u.id,
+                                          name: u.name,
+                                          role: u.role === 'conferente' ? 'CONFERENTE' : 'AUXILIAR'
+                                        });
+                                      }
+                                    }
+                                  }}
+                                  className="w-full text-xxs p-1.5 bg-white border border-slate-200 rounded font-medium"
+                                >
+                                  <option value="">Selecione da lista cadastrada...</option>
+                                  <optgroup label="Ajudantes Cadastrados">
+                                    {drivers.filter(d => d.role === 'AJUDANTE').map(d => (
+                                      <option key={d.id} value={d.id}>{d.name} (Ajudante)</option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Motoristas">
+                                    {drivers.filter(d => d.role === 'MOTORISTA').map(d => (
+                                      <option key={d.id} value={d.id}>{d.name} (Motorista)</option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Equipe Operacional">
+                                    {(users || DEFAULT_USERS).map(u => (
+                                      <option key={u.id} value={u.id}>{u.name} ({u.role.toUpperCase()})</option>
+                                    ))}
+                                  </optgroup>
+                                </select>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-1.5 pt-0.5">
+                                  <div className="sm:col-span-5">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Nome *</label>
+                                    <input
+                                      type="text"
+                                      placeholder={`Nome do ${helperNumber}º colaborador...`}
+                                      value={helper?.name || ''}
+                                      onChange={(e) => handleUpdateEmissionHelper(idx, { name: e.target.value })}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                    />
+                                  </div>
+                                  <div className="sm:col-span-4">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Cargo / Função *</label>
+                                    <select
+                                      value={helper?.role || 'AJUDANTE'}
+                                      onChange={(e) => handleUpdateEmissionHelper(idx, { role: e.target.value })}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                    >
+                                      <option value="AJUDANTE">📦 Ajudante</option>
+                                      <option value="MOTORISTA">🚚 Motorista</option>
+                                      <option value="CONFERENTE">📋 Conferente</option>
+                                      <option value="AUXILIAR">⚙️ Auxiliar</option>
+                                      <option value="OUTRO">Outro</option>
+                                    </select>
+                                  </div>
+                                  <div className="sm:col-span-3">
+                                    <label className="block text-[8px] font-bold text-slate-500 uppercase">Cota (R$)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={currentCota}
+                                      onChange={(e) => handleUpdateEmissionHelper(idx, { valor: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                      className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-emerald-800"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -8368,7 +9295,7 @@ export default function FiscalView({
                     <div className="space-y-1">
                       <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Observações Gerais</label>
                       <textarea
-                        rows={3}
+                        rows={2}
                         placeholder="Insira detalhes sobre as circunstâncias da falta ou processo de aferição..."
                         value={valeObservacao}
                         onChange={(e) => setValeObservacao(e.target.value)}
@@ -8379,10 +9306,28 @@ export default function FiscalView({
                     <button
                       type="button"
                       onClick={() => {
-                        if (!valeColaboradorId) {
-                          alert('Erro: Escolha o colaborador responsável.');
-                          return;
+                        let colabName = (valeColaboradorName || '').trim();
+                        let colabRole = valeColaboradorRole || 'MOTORISTA';
+
+                        if (!colabName) {
+                          if (!valeColaboradorId) {
+                            alert('Erro: Informe o nome do 1º colaborador responsável.');
+                            return;
+                          }
+                          const foundDriver = drivers.find(d => d.id === valeColaboradorId);
+                          if (foundDriver) {
+                            colabName = foundDriver.name;
+                          } else {
+                            const foundSysUser = (users || DEFAULT_USERS).find(u => u.id === valeColaboradorId);
+                            if (foundSysUser) {
+                              colabName = foundSysUser.name;
+                              colabRole = foundSysUser.role === 'conferente' ? 'CONFERENTE' : 'AUXILIAR';
+                            } else {
+                              colabName = 'Colaborador Responsável';
+                            }
+                          }
                         }
+
                         if (!valeValeValor || Number(valeValeValor) <= 0) {
                           alert('Erro: Insira um valor válido maior que zero.');
                           return;
@@ -8392,32 +9337,39 @@ export default function FiscalView({
                           return;
                         }
 
-                        // Obter nome do colaborador
-                        let colabName = '';
-                        let colabRole = 'MOTORISTA';
-                        const foundDriver = drivers.find(d => d.id === valeColaboradorId);
-                        if (foundDriver) {
-                          colabName = foundDriver.name;
-                        } else if (valeColaboradorId === 'conferente_01') {
-                          colabName = 'João Conferente';
-                          colabRole = 'CONFERENTE';
-                        } else if (valeColaboradorId === 'conferente_02') {
-                          colabName = 'Pedro Ajudante';
-                          colabRole = 'CONFERENTE';
-                        } else if (valeColaboradorId === 'auxiliar_envio') {
-                          colabName = 'Auxiliar de Envio de Sobras';
-                          colabRole = 'AUXILIAR';
-                        } else {
-                          colabName = 'Colaborador Avulso';
-                        }
+                        const validColabs = valeColaboradoresAdicionais
+                          .filter(c => c && c.name && c.name.trim().length > 0)
+                          .map(c => ({
+                            id: c.id || 'colab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+                            name: c.name.trim(),
+                            role: c.role || 'AJUDANTE',
+                            valor: c.valor && Number(c.valor) > 0 ? Number(c.valor) : undefined,
+                            cpf: c.cpf
+                          }));
+
+                        const totalVal = Number(valeValeValor);
+                        const totalColabs = 1 + validColabs.length;
+                        const shares = calculateRateioShares(totalVal, totalColabs);
+
+                        const colab1FinalValor = valeColaboradorValor !== undefined && valeColaboradorValor > 0
+                          ? valeColaboradorValor
+                          : shares[0];
+
+                        const finalAdicionais = validColabs.map((c, i) => ({
+                          ...c,
+                          valor: c.valor !== undefined && c.valor > 0 ? c.valor : shares[i + 1]
+                        }));
 
                         const novo: Vale = {
                           id: 'val_' + Date.now(),
                           routeMap: valeRouteMap || 'AVULSO',
-                          colaboradorId: valeColaboradorId,
+                          colaboradorId: valeColaboradorId || 'colab_principal',
                           colaboradorName: colabName,
                           colaboradorRole: colabRole,
-                          valor: Number(valeValeValor),
+                          colaboradorValor: colab1FinalValor,
+                          valor: totalVal,
+                          quantidade: valeQuantidade ? Number(valeQuantidade) : undefined,
+                          colaboradoresAdicionais: finalAdicionais.length > 0 ? finalAdicionais : undefined,
                           descricao: valeDescricao.trim(),
                           dataGeracao: new Date().toISOString().split('T')[0],
                           status: 'PENDENTE_ASSINATURA' as const,
@@ -8425,14 +9377,20 @@ export default function FiscalView({
                         };
 
                         onSaveVales([...vales, novo]);
-                        alert(`Vale emitido com sucesso para ${colabName}!`);
+                        setViewingVale(novo);
                         
                         // Limpar form
                         setValeColaboradorId('');
+                        setValeColaboradorName('');
+                        setValeColaboradorRole('MOTORISTA');
+                        setValeColaboradorValor(undefined);
+                        setValeQuantidadeColaboradores(1);
                         setValeRouteMap('');
                         setValeValeValor('');
+                        setValeQuantidade('');
                         setValeDescricao('');
                         setValeObservacao('');
+                        setValeColaboradoresAdicionais([]);
                         setValeAssociatedInfo(null);
                       }}
                       className="w-full bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs py-2.5 rounded-lg transition shadow-xs cursor-pointer text-center uppercase"
@@ -8533,10 +9491,24 @@ export default function FiscalView({
                             <tr key={vale.id} className="hover:bg-slate-50/50 transition">
                               <td className="py-3 px-3 font-medium">
                                 <span className="block font-bold text-slate-900">{vale.colaboradorName}</span>
-                                <span className="text-[9px] text-slate-400 font-mono block uppercase">{vale.colaboradorRole}</span>
+                                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                  <span className="text-[9px] text-slate-400 font-mono block uppercase">{vale.colaboradorRole}</span>
+                                  {vale.colaboradoresAdicionais && vale.colaboradoresAdicionais.length > 0 && (
+                                    <span className="bg-amber-100 text-amber-800 text-[8.5px] font-bold px-1.5 py-0.2 rounded border border-amber-200" title={vale.colaboradoresAdicionais.map(c => `${c.name} (${c.role})`).join(', ')}>
+                                      +{vale.colaboradoresAdicionais.length} co-responsável{vale.colaboradoresAdicionais.length > 1 ? 'is' : ''}
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="py-3 px-3">
-                                <span className="block text-slate-800 line-clamp-1">{vale.descricao}</span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-slate-800 font-medium line-clamp-1">{vale.descricao}</span>
+                                  {vale.quantidade !== undefined && vale.quantidade > 0 && (
+                                    <span className="bg-slate-100 text-slate-700 font-mono text-[9px] font-bold px-1.5 py-0.2 rounded border border-slate-200">
+                                      {vale.quantidade} vol.
+                                    </span>
+                                  )}
+                                </div>
                                 <span className="text-[10px] text-slate-400 block">Emitido: {new Date(vale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                               </td>
                               <td className="py-3 px-3 font-mono text-[10px]">
@@ -8566,6 +9538,27 @@ export default function FiscalView({
                                     title="Visualizar Termo de Autorização de Desconto"
                                   >
                                     <Eye className="h-3.5 w-3.5" />
+                                  </button>
+
+                                  {/* Botão de Editar Vale */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const count = 1 + (vale.colaboradoresAdicionais?.length || 0);
+                                      const shares = calculateRateioShares(Number(vale.valor) || 0, count);
+                                      setEditingVale({
+                                        ...vale,
+                                        colaboradorValor: vale.colaboradorValor !== undefined ? vale.colaboradorValor : shares[0],
+                                        colaboradoresAdicionais: (vale.colaboradoresAdicionais || []).map((c, i) => ({
+                                          ...c,
+                                          valor: c.valor !== undefined ? c.valor : shares[i + 1]
+                                        }))
+                                      });
+                                    }}
+                                    className="p-1 text-amber-600 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 rounded cursor-pointer transition"
+                                    title="Editar Vale (Alterar quantidade, valor, colaboradores ou descrição)"
+                                  >
+                                    <Edit3 className="h-3.5 w-3.5" />
                                   </button>
                                   {vale.status === 'PENDENTE_ASSINATURA' && (
                                     <button
@@ -8796,152 +9789,692 @@ export default function FiscalView({
                       </div>
 
                       {/* Printable Receipt Sheet */}
-                      <div className="p-8 space-y-6 flex-1 text-slate-800" id="print-area">
+                      <div className="p-5 space-y-3.5 flex-1 text-slate-800 bg-white" id="print-area">
                         {/* Logo & Timbre */}
-                        <div className="flex justify-between items-start border-b border-slate-300 pb-4">
+                        <div className="flex justify-between items-start border-b-2 border-slate-900 pb-2.5">
                           <div>
-                            <span className="font-sans font-black text-lg text-slate-900 uppercase tracking-tight block">PAU BRASIL DISTRIBUIDORA LTDA</span>
-                            <span className="text-[10px] text-slate-500 block uppercase font-mono tracking-wider">Logística de Retorno & Aferição Física • PAU BRASIL GUARABIRA</span>
-                            <span className="text-[10px] text-amber-600 block font-bold uppercase mt-0.5">SISTEMA ATIVO DEFINTIVO</span>
+                            <span className="font-sans font-black text-base text-slate-900 uppercase tracking-tight block">PAU BRASIL DISTRIBUIDORA LTDA</span>
+                            <span className="text-[9px] text-slate-500 block uppercase font-mono tracking-wider">Logística de Retorno & Aferição Física • Unidade Guarabira/PB</span>
+                            <span className="text-[9px] text-amber-700 block font-bold uppercase mt-0.5">Termo Oficial de Autorização de Desconto em Folha</span>
                           </div>
-                          <div className="bg-slate-100 px-3 py-1.5 rounded border border-slate-200 text-right">
-                            <span className="text-[9px] text-slate-400 block uppercase font-bold">VALE FINANCEIRO Nº</span>
-                            <span className="font-mono text-sm font-black text-red-600">{viewingVale.id}</span>
+                          <div className="bg-slate-50 px-3 py-1.5 rounded border border-slate-200 text-right">
+                            <span className="text-[8px] text-slate-400 block uppercase font-bold">VALE FINANCEIRO Nº</span>
+                            <span className="font-mono text-sm font-black text-red-600 block">{viewingVale.id}</span>
+                            <span className="text-[8px] text-slate-500 font-mono block">Emissão: {new Date(viewingVale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                           </div>
                         </div>
 
-                        {/* Title */}
-                        <div className="text-center space-y-1 py-1">
-                          <h4 className="font-sans font-black text-sm uppercase tracking-wider text-slate-950">AUTORIZAÇÃO DE DESCONTO EM FOLHA DE PAGAMENTO</h4>
-                          <span className="text-xxs font-mono text-slate-400 font-bold block">Data de Emissão: {new Date(viewingVale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                        {/* Title Banner */}
+                        <div className="text-center py-1 bg-slate-50 border border-slate-200 rounded">
+                          <h4 className="font-sans font-black text-xs uppercase tracking-wider text-slate-900">AUTORIZAÇÃO DE DESCONTO EM FOLHA DE PAGAMENTO</h4>
+                          <span className="text-[8px] font-mono text-slate-500 font-semibold block">Fundamentação Legal: Artigo 462, § 1º da CLT</span>
                         </div>
 
                         {/* Main Statement */}
-                        <p className="text-xs leading-relaxed text-justify">
-                          Eu, <strong>{viewingVale.colaboradorName}</strong>, inscrito sob o papel de <strong>{viewingVale.colaboradorRole}</strong>, autorizo expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em minha folha de pagamento, de acordo com o Artigo 462, § 1º da CLT, a importância líquida de <strong>R$ {viewingVale.valor.toFixed(2)}</strong> ({viewingVale.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados na conferência de retorno logístico do <strong>{viewingVale.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingVale.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+                        <p className="text-xs leading-relaxed text-justify bg-amber-50/40 p-2.5 rounded border border-amber-200/60">
+                          Eu, <strong>{viewingVale.colaboradorName}</strong>, registrado sob o papel de <strong>{viewingVale.colaboradorRole}</strong>
+                          {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 && (
+                            <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingVale.colaboradoresAdicionais.map((c, i) => (
+                              <strong key={i}> {c.name} ({c.role}{c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})</strong>
+                            ))}</span>
+                          )}, autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em folha de pagamento a importância líquida de <strong>R$ {viewingVale.valor.toFixed(2)}</strong> ({viewingVale.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no retorno do <strong>{viewingVale.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingVale.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
                         </p>
 
                         {/* Informações sobre a Rota e Equipe (Colaboradores Envolvidos) */}
-                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-y-3 gap-x-6 text-xs">
-                          <div>
-                            <span className="text-slate-400 text-[10px] font-bold uppercase block">Informações da Rota / Transporte</span>
-                            <div className="mt-1 space-y-1">
-                              <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.2 rounded font-bold">{viewingVale.routeMap}</span></div>
-                              <div><strong>Placa do Veículo:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.2 rounded font-bold uppercase">{vehiclePlate}</span></div>
-                              <div><strong>Data da Viagem:</strong> <span className="text-slate-700">{arrivalDateFormatted}</span></div>
-                            </div>
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-4 text-xs">
+                          <div className="space-y-1">
+                            <span className="text-slate-400 text-[9px] font-bold uppercase block">Informações da Rota / Transporte</span>
+                            <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.2 rounded font-bold">{viewingVale.routeMap}</span></div>
+                            <div><strong>Placa do Veículo:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.2 rounded font-bold uppercase">{vehiclePlate}</span></div>
+                            <div><strong>Data da Viagem:</strong> <span className="text-slate-700">{arrivalDateFormatted}</span></div>
+                            <div><strong>Volumes / Quantidade:</strong> <span className="font-bold text-slate-900">{viewingVale.quantidade !== undefined ? `${viewingVale.quantidade} volumes/itens` : (detailedShortages.length > 0 ? `${detailedShortages.reduce((s, d) => s + d.diff, 0)} volumes/itens` : 'Conforme laudo')}</span></div>
                           </div>
-                          <div>
-                            <span className="text-slate-400 text-[10px] font-bold uppercase block">Colaboradores Envolvidos na Viagem & Aferição</span>
-                            <div className="mt-1 space-y-1">
-                              <div><strong>Motorista Responsável:</strong> <span className="font-semibold text-slate-900">{viewingVale.colaboradorName}</span></div>
+                          <div className="space-y-1">
+                            <span className="text-slate-400 text-[9px] font-bold uppercase block">Colaboradores da Operação & Aferição</span>
+                            <div><strong>Responsável Principal:</strong> <span className="font-semibold text-slate-900">{viewingVale.colaboradorName} ({viewingVale.colaboradorRole}{viewingVale.colaboradorValor ? ` - Cota: R$ ${viewingVale.colaboradorValor.toFixed(2)}` : ''})</span></div>
+                            {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? (
+                              <div><strong>Co-responsáveis:</strong> <span className="text-slate-700">{viewingVale.colaboradoresAdicionais.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</span></div>
+                            ) : (
                               <div><strong>Ajudante de Rota:</strong> <span className="text-slate-700">{helperName}</span></div>
-                              <div><strong>Conferente de Pátio (Físico):</strong> <span className="text-slate-700">{conferenteName}</span></div>
-                              <div><strong>Fiscal de Logística (Aferidor):</strong> <span className="font-semibold text-slate-900">{currentUser.name}</span></div>
-                            </div>
+                            )}
+                            <div><strong>Conferente de Pátio:</strong> <span className="text-slate-700">{conferenteName}</span></div>
+                            <div><strong>Fiscal de Logística:</strong> <span className="font-semibold text-slate-900">{currentUser.name}</span></div>
                           </div>
                         </div>
 
                         {/* Detail Table of Involved Assets & Shortages */}
-                        <div className="space-y-2">
-                          <span className="text-slate-900 font-bold text-[10px] uppercase tracking-wider block">Ativos com Divergência de Inventário (Sobras/Faltas de P.A e A.G):</span>
+                        <div className="space-y-1.5">
+                          <span className="text-slate-900 font-bold text-[9px] uppercase tracking-wider block">Divergências de Inventário Constatadas (Faltas de P.A / A.G):</span>
                           
                           {detailedShortages.length > 0 ? (
-                            <div className="border border-slate-250 rounded-lg overflow-x-auto text-xxs font-sans shadow-xs">
+                            <div className="border border-slate-250 rounded overflow-hidden text-xxs font-sans shadow-2xs">
                               <table className="w-full text-left border-collapse">
-                                <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[9px] border-b border-slate-250">
+                                <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[8.5px] border-b border-slate-250">
                                   <tr>
-                                    <th className="p-2">Cód.</th>
-                                    <th className="p-2">Descrição do Ativo / Produto</th>
-                                    <th className="p-2 text-center">Faturado</th>
-                                    <th className="p-2 text-center">Conferido</th>
-                                    <th className="p-2 text-center text-red-600">Diferença (Falta)</th>
-                                    <th className="p-2 text-right">Custo Unit.</th>
-                                    <th className="p-2 text-right">Subtotal</th>
+                                    <th className="py-1 px-2">Cód.</th>
+                                    <th className="py-1 px-2">Descrição</th>
+                                    <th className="py-1 px-2 text-center">Faturado</th>
+                                    <th className="py-1 px-2 text-center">Conferido</th>
+                                    <th className="py-1 px-2 text-center text-red-600">Falta</th>
+                                    <th className="py-1 px-2 text-right">Unit.</th>
+                                    <th className="py-1 px-2 text-right">Subtotal</th>
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-200 text-slate-800">
-                                  {detailedShortages.map(item => (
+                                <tbody className="divide-y divide-slate-200 text-slate-800 text-[9px]">
+                                  {detailedShortages.slice(0, 4).map(item => (
                                     <tr key={item.code} className="hover:bg-slate-50">
-                                      <td className="p-2 font-mono font-bold text-slate-600">{item.code}</td>
-                                      <td className="p-2 font-medium">{item.name}</td>
-                                      <td className="p-2 text-center font-mono">{item.expected} SKU</td>
-                                      <td className="p-2 text-center font-mono">{item.found} SKU</td>
-                                      <td className="p-2 text-center font-mono text-red-600 font-bold">-{item.diff} SKU</td>
-                                      <td className="p-2 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
-                                      <td className="p-2 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
+                                      <td className="py-1 px-2 font-mono font-bold text-slate-600">{item.code}</td>
+                                      <td className="py-1 px-2 font-medium truncate max-w-[200px]">{item.name}</td>
+                                      <td className="py-1 px-2 text-center font-mono">{item.expected}</td>
+                                      <td className="py-1 px-2 text-center font-mono">{item.found}</td>
+                                      <td className="py-1 px-2 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
+                                      <td className="py-1 px-2 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
+                                      <td className="py-1 px-2 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
                                     </tr>
                                   ))}
-                                  <tr className="bg-slate-50 font-bold text-slate-900 text-[10px] border-t border-slate-250">
-                                    <td colSpan={4} className="p-2.5 text-right uppercase">Total Descontado:</td>
-                                    <td className="p-2.5 text-center font-mono text-red-600">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} SKU</td>
-                                    <td colSpan={2} className="p-2.5 text-right font-mono font-black text-red-600 text-xs">R$ {viewingVale.valor.toFixed(2)}</td>
+                                  {detailedShortages.length > 4 && (
+                                    <tr className="bg-slate-50 text-[8.5px] italic text-slate-500">
+                                      <td colSpan={4} className="py-1 px-2">+ {detailedShortages.length - 4} outros itens detalhados no sistema de conferência</td>
+                                      <td className="py-1 px-2 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(4).reduce((s, d) => s + d.diff, 0)}</td>
+                                      <td className="py-1 px-2 text-right">---</td>
+                                      <td className="py-1 px-2 text-right font-mono font-bold">R$ {detailedShortages.slice(4).reduce((s, d) => s + d.totalCost, 0).toFixed(2)}</td>
+                                    </tr>
+                                  )}
+                                  <tr className="bg-slate-100 font-bold text-slate-900 text-[9.5px] border-t-2 border-slate-300">
+                                    <td colSpan={4} className="py-1.5 px-2 text-right uppercase">Total Descontado:</td>
+                                    <td className="py-1.5 px-2 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
+                                    <td colSpan={2} className="py-1.5 px-2 text-right font-mono font-black text-red-600 text-xs">R$ {viewingVale.valor.toFixed(2)}</td>
                                   </tr>
                                 </tbody>
                               </table>
                             </div>
                           ) : (
-                            <div className="border border-slate-300 rounded-lg p-3 text-[11px] text-slate-700 space-y-1.5 bg-slate-50 leading-relaxed">
-                              <div><strong>Detalhamento dos Itens / Avarias:</strong></div>
-                              <div className="font-semibold text-slate-900 font-mono bg-white border border-slate-200 px-2 py-1.5 rounded">{viewingVale.descricao}</div>
-                              <div className="text-[10px] text-slate-500 font-mono">Valor Total de Autorização de Desconto de R$ {viewingVale.valor.toFixed(2)}</div>
+                            <div className="border border-slate-300 rounded p-2 text-xs text-slate-700 space-y-1 bg-slate-50 leading-relaxed">
+                              <div><strong>Detalhamento dos Itens / Avarias:</strong> <span className="font-semibold text-slate-900">{viewingVale.descricao}</span></div>
+                              <div className="text-[10px] text-slate-500 font-mono">Valor Total de Desconto: <strong>R$ {viewingVale.valor.toFixed(2)}</strong></div>
                             </div>
                           )}
                         </div>
 
                         {viewingVale.observacao && (
-                          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[10px] italic text-slate-600 font-sans">
-                            <strong>Observações e Notas do Emissor:</strong> {viewingVale.observacao}
+                          <div className="p-2 bg-slate-50 border border-slate-200 rounded text-[9px] italic text-slate-600 font-sans">
+                            <strong>Observações e Notas:</strong> {viewingVale.observacao}
                           </div>
                         )}
 
-                        <p className="text-[9px] text-slate-400 leading-relaxed text-justify font-sans">
-                          O desconto acima autorizado está respaldado pelas normas regulamentares internas de integridade patrimonial da Pau Brasil Distribuidora e fundamentado legalmente por ato de desvio de inventário ou avaria em trânsito de vasilhames ou mercadorias.
+                        <p className="text-[8px] text-slate-400 leading-tight text-justify font-sans">
+                          O desconto acima autorizado decorre de procedimento de aferição física no retorno de rota e expressa a concordância do colaborador com a reposição do prejuízo constatado, em estrita conformidade com o Artigo 462, § 1º da CLT e com as normas regulamentares internas de guarda e responsabilidade patrimonial da Pau Brasil Distribuidora Ltda.
                         </p>
 
                         {/* Signatures */}
-                        <div className="grid grid-cols-3 gap-6 pt-10 text-center text-[10px]">
+                        <div className={`grid ${viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-3'} gap-4 pt-5 text-center text-[9px]`}>
                           <div className="space-y-1">
-                            <div className="border-b border-slate-300 mx-auto w-11/12 pt-4" />
+                            <div className="border-b border-slate-400 mx-auto w-11/12" />
                             <span className="font-bold text-slate-900 block truncate">{viewingVale.colaboradorName}</span>
-                            <span className="text-[8px] text-slate-400 block uppercase font-mono">Assinatura do Responsável</span>
+                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono">{viewingVale.colaboradorRole} (Principal)</span>
                           </div>
+                          {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.map((c, i) => (
+                            <div key={i} className="space-y-1">
+                              <div className="border-b border-slate-400 mx-auto w-11/12" />
+                              <span className="font-bold text-slate-900 block truncate">{c.name}</span>
+                              <span className="text-[7.5px] text-slate-400 block uppercase font-mono">
+                                {c.role} {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 1 ? `(${i + 1}º Ajudante)` : ''}
+                              </span>
+                            </div>
+                          ))}
                           <div className="space-y-1">
-                            <div className="border-b border-slate-300 mx-auto w-11/12 pt-4" />
+                            <div className="border-b border-slate-400 mx-auto w-11/12" />
                             <span className="font-bold text-slate-900 block truncate">{currentUser.name}</span>
-                            <span className="text-[8px] text-slate-400 block uppercase font-mono font-bold">Aferidor - Fiscal de Logística</span>
+                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono font-bold">Fiscal de Logística</span>
                           </div>
                           <div className="space-y-1">
-                            <div className="border-b border-slate-300 mx-auto w-11/12 pt-4" />
+                            <div className="border-b border-slate-400 mx-auto w-11/12" />
                             <span className="font-bold text-slate-900 block truncate">Elisson Minervino</span>
-                            <span className="text-[8px] text-slate-400 block uppercase font-mono font-bold">Gestor de Logística</span>
+                            <span className="text-[7.5px] text-slate-400 block uppercase font-mono font-bold">Gestor de Logística</span>
                           </div>
                         </div>
                       </div>
 
-                      {/* Print buttons */}
-                      <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end space-x-2">
+                      {/* Modal Footer buttons */}
+                      <div className="p-3.5 border-t border-slate-100 bg-slate-50 flex flex-wrap justify-between items-center gap-2">
                         <button
                           type="button"
                           onClick={() => {
-                            window.print();
+                            const count = 1 + (viewingVale.colaboradoresAdicionais?.length || 0);
+                            const shares = calculateRateioShares(Number(viewingVale.valor) || 0, count);
+                            setEditingVale({
+                              ...viewingVale,
+                              colaboradorValor: viewingVale.colaboradorValor !== undefined ? viewingVale.colaboradorValor : shares[0],
+                              colaboradoresAdicionais: (viewingVale.colaboradoresAdicionais || []).map((c, i) => ({
+                                ...c,
+                                valor: c.valor !== undefined ? c.valor : shares[i + 1]
+                              }))
+                            });
                           }}
-                          className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs py-2 px-4 rounded-lg cursor-pointer transition shadow-xs font-bold"
+                          className="bg-amber-100 hover:bg-amber-200 text-amber-950 font-bold text-xs py-2 px-3.5 rounded-lg cursor-pointer transition shadow-xs flex items-center gap-1.5"
                         >
-                          Imprimir / Salvar PDF
+                          <Edit3 className="h-3.5 w-3.5 text-amber-700" />
+                          <span>Editar Este Vale</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setViewingVale(null)}
-                          className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-extrabold text-xs py-2 px-4 rounded-lg cursor-pointer transition"
-                        >
-                          Fechar
-                        </button>
+
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => handlePrintVale(viewingVale)}
+                            className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs py-2 px-4 rounded-lg cursor-pointer transition shadow-xs font-bold flex items-center gap-1.5"
+                          >
+                            <FileText className="h-3.5 w-3.5" />
+                            <span>Imprimir / Salvar PDF (1 Página)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setViewingVale(null)}
+                            className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-extrabold text-xs py-2 px-4 rounded-lg cursor-pointer transition"
+                          >
+                            Fechar
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
                 );
               })()}
+
+              {/* Modal de Edição de Vale Emitido */}
+              {editingVale && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[92vh] overflow-y-auto p-6 space-y-4">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                      <div className="flex items-center space-x-2">
+                        <Edit3 className="h-5 w-5 text-amber-600" />
+                        <div>
+                          <h4 className="font-sans font-black text-sm text-slate-900 uppercase tracking-wide">
+                            Editar Vale de Desconto #{editingVale.id}
+                          </h4>
+                          <p className="text-[10px] text-slate-400">
+                            Modifique quantidades, valores, informações de mapa ou adicione colaboradores co-responsáveis.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditingVale(null)}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <XCircle className="h-5 w-5" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-4 text-xs">
+                      {/* Linha 1: Status, Rota/Mapa e Data */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase">Status do Vale</label>
+                          <select
+                            value={editingVale.status}
+                            onChange={(e) => setEditingVale({ ...editingVale, status: e.target.value as any })}
+                            className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg font-bold"
+                          >
+                            <option value="PENDENTE_ASSINATURA">Pendente Assinatura</option>
+                            <option value="ASSINADO">Termo Assinado</option>
+                            <option value="COMPENSADO">Compensado Financeiro</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase">Mapa / Rota</label>
+                          <input
+                            type="text"
+                            value={editingVale.routeMap || ''}
+                            onChange={(e) => setEditingVale({ ...editingVale, routeMap: e.target.value.toUpperCase() })}
+                            placeholder="Ex: 108, ROTA-04"
+                            className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg font-mono uppercase font-bold"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase">Data de Emissão</label>
+                          <input
+                            type="date"
+                            value={editingVale.dataGeracao}
+                            onChange={(e) => setEditingVale({ ...editingVale, dataGeracao: e.target.value })}
+                            className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Linha 2: Quantidade e Valor */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-amber-50/50 p-3 rounded-xl border border-amber-200">
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase">
+                            Valor Total do Desconto (R$) *
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-2 text-xs font-bold text-slate-400">R$</span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={editingVale.valor}
+                              onChange={(e) => handleEditingValorChange(Number(e.target.value))}
+                              className="w-full text-xs pl-8 pr-3 py-2 bg-white border border-amber-300 rounded-lg font-mono font-bold text-slate-900"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase">
+                            Quantidade de Volumes / Itens em Falta
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="Ex: 3 volumes"
+                            value={editingVale.quantidade ?? ''}
+                            onChange={(e) => setEditingVale({ ...editingVale, quantidade: e.target.value ? Number(e.target.value) : undefined })}
+                            className="w-full text-xs p-2 bg-white border border-amber-300 rounded-lg font-mono font-bold text-slate-900"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Seção: Equipe Envolvida no Vale & Rateio Automático */}
+                      <div className="space-y-2.5 pt-2.5 border-t border-slate-200">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                          <div>
+                            <label className="text-[10px] font-bold text-slate-800 uppercase font-sans flex items-center gap-1.5">
+                              <Users className="h-3.5 w-3.5 text-amber-600" />
+                              <span>Quantidade de Colaboradores Envolvidos:</span>
+                            </label>
+                            <p className="text-[9px] text-slate-500">
+                              Quantas pessoas compartilham o desvio. Os campos e o rateio do valor abrem automaticamente.
+                            </p>
+                          </div>
+
+                          {/* Botoes rápidos de quantidade */}
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {[1, 2, 3, 4, 5, 6].map((num) => {
+                              const currentCount = 1 + (editingVale.colaboradoresAdicionais || []).length;
+                              const isSelected = currentCount === num;
+                              return (
+                                <button
+                                  key={num}
+                                  type="button"
+                                  onClick={() => handleSetEditingNumColaboradores(num)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-0.5 ${
+                                    isSelected
+                                      ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-400 font-black'
+                                      : 'bg-slate-100 border border-slate-300 text-slate-700 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  <span>{num} {num === 1 ? 'Pessoa' : 'Pessoas'}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Banner Informativo de Rateio do Valor em Tempo Real */}
+                        {Number(editingVale.valor) > 0 && (() => {
+                          const totalVal = Number(editingVale.valor);
+                          const currentCount = 1 + (editingVale.colaboradoresAdicionais || []).length;
+                          const shares = calculateRateioShares(totalVal, currentCount);
+                          const percent = (100 / currentCount).toFixed(1);
+                          return (
+                            <div className="bg-amber-100/70 border border-amber-300 rounded-lg p-2 flex flex-wrap items-center justify-between gap-1 text-xxs text-amber-950 font-sans">
+                              <div className="flex items-center gap-1.5">
+                                <Calculator className="h-3.5 w-3.5 text-amber-700 shrink-0" />
+                                <div>
+                                  <span className="font-bold">Rateio Automático: </span>
+                                  <span className="font-mono font-black text-amber-900">
+                                    R$ {totalVal.toFixed(2)}
+                                  </span>
+                                  <span className="text-slate-600"> ÷ </span>
+                                  <span className="font-bold">
+                                    {currentCount} {currentCount === 1 ? 'colaborador' : 'colaboradores'}
+                                  </span>
+                                  <span className="text-slate-600"> = </span>
+                                  <span className="font-mono font-black text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-300">
+                                    R$ {shares[0].toFixed(2)}
+                                  </span>
+                                  <span className="text-[9.5px] text-slate-600 ml-1">
+                                    ({percent}% para cada)
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleSetEditingNumColaboradores(currentCount)}
+                                className="text-[9px] bg-amber-200/80 hover:bg-amber-300 text-amber-900 px-1.5 py-0.5 rounded border border-amber-400 font-bold cursor-pointer transition shadow-3xs"
+                                title="Recalcular divisão igualitária"
+                              >
+                                ↻ Recalcular Divisão
+                              </button>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Slots de Colaboradores: Abertos exatamente conforme a quantidade selecionada */}
+                        <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                          {/* 1º Colaborador (Responsável Principal) */}
+                          {(() => {
+                            const totalVal = Number(editingVale.valor) || 0;
+                            const currentCount = 1 + (editingVale.colaboradoresAdicionais || []).length;
+                            const shares = calculateRateioShares(totalVal, currentCount);
+                            const colab1Cota = editingVale.colaboradorValor !== undefined ? editingVale.colaboradorValor : shares[0];
+                            return (
+                              <div className="p-2.5 rounded-lg border-2 border-amber-300 bg-white text-xxs transition-all shadow-3xs space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-[9.5px] uppercase tracking-wide flex items-center gap-1 text-slate-800">
+                                    <span>👤 1º Colaborador (Responsável Principal)</span>
+                                    <span className="bg-amber-100 text-amber-900 text-[8px] font-bold px-1 rounded">Principal</span>
+                                  </span>
+                                  <span className="text-emerald-800 text-[9px] font-mono font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-300">
+                                    Cota: R$ {colab1Cota.toFixed(2)}
+                                  </span>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="block text-[8px] font-bold text-slate-500 uppercase">Buscar Cadastrado</label>
+                                  <select
+                                    value={editingVale.colaboradorId && (drivers.some(d => d.id === editingVale.colaboradorId) || (users || DEFAULT_USERS).some(u => u.id === editingVale.colaboradorId)) ? editingVale.colaboradorId : ''}
+                                    onChange={(e) => {
+                                      const id = e.target.value;
+                                      if (!id) return;
+                                      const d = drivers.find(drv => drv.id === id);
+                                      if (d) {
+                                        setEditingVale({
+                                          ...editingVale,
+                                          colaboradorId: d.id,
+                                          colaboradorName: d.name,
+                                          colaboradorRole: d.role === 'AJUDANTE' ? 'AJUDANTE' : 'MOTORISTA'
+                                        });
+                                      } else {
+                                        const u = (users || DEFAULT_USERS).find(usr => usr.id === id);
+                                        if (u) {
+                                          setEditingVale({
+                                            ...editingVale,
+                                            colaboradorId: u.id,
+                                            colaboradorName: u.name,
+                                            colaboradorRole: u.role === 'conferente' ? 'CONFERENTE' : 'AUXILIAR'
+                                          });
+                                        }
+                                      }
+                                    }}
+                                    className="w-full text-xxs p-1.5 bg-slate-50 border border-slate-200 rounded font-medium"
+                                  >
+                                    <option value="">Selecione da lista cadastrada...</option>
+                                    <optgroup label="Motoristas">
+                                      {drivers.filter(d => d.role === 'MOTORISTA').map(d => (
+                                        <option key={d.id} value={d.id}>{d.name} (Motorista)</option>
+                                      ))}
+                                    </optgroup>
+                                    <optgroup label="Ajudantes Cadastrados">
+                                      {drivers.filter(d => d.role === 'AJUDANTE').map(d => (
+                                        <option key={d.id} value={d.id}>{d.name} (Ajudante)</option>
+                                      ))}
+                                    </optgroup>
+                                    <optgroup label="Equipe Operacional">
+                                      {(users || DEFAULT_USERS).map(u => (
+                                        <option key={u.id} value={u.id}>{u.name} ({u.role.toUpperCase()})</option>
+                                      ))}
+                                    </optgroup>
+                                  </select>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-1.5 pt-0.5">
+                                    <div className="sm:col-span-5">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Nome *</label>
+                                      <input
+                                        type="text"
+                                        placeholder="Nome do colaborador principal..."
+                                        value={editingVale.colaboradorName}
+                                        onChange={(e) => setEditingVale({ ...editingVale, colaboradorName: e.target.value })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                      />
+                                    </div>
+                                    <div className="sm:col-span-4">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Cargo / Função *</label>
+                                      <select
+                                        value={editingVale.colaboradorRole}
+                                        onChange={(e) => setEditingVale({ ...editingVale, colaboradorRole: e.target.value })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                      >
+                                        <option value="MOTORISTA">🚚 Motorista</option>
+                                        <option value="AJUDANTE">📦 Ajudante</option>
+                                        <option value="CONFERENTE">📋 Conferente</option>
+                                        <option value="AUXILIAR">⚙️ Auxiliar</option>
+                                        <option value="OUTRO">Outro</option>
+                                      </select>
+                                    </div>
+                                    <div className="sm:col-span-3">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Cota (R$)</label>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={colab1Cota}
+                                        onChange={(e) => setEditingVale({ ...editingVale, colaboradorValor: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-emerald-800"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Colaboradores Adicionais (2º, 3º, etc. exatamente conforme a quantidade selecionada) */}
+                          {(editingVale.colaboradoresAdicionais || []).map((helper, idx) => {
+                            const helperNumber = idx + 2;
+                            const totalVal = Number(editingVale.valor) || 0;
+                            const currentCount = 1 + (editingVale.colaboradoresAdicionais || []).length;
+                            const shares = calculateRateioShares(totalVal, currentCount);
+                            const currentCota = helper.valor !== undefined ? helper.valor : shares[idx + 1];
+                            return (
+                              <div
+                                key={helper.id || idx}
+                                className="p-2.5 rounded-lg border border-amber-300 bg-amber-50/60 text-xxs transition-all shadow-3xs space-y-1.5 animate-fade-in"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-[9.5px] uppercase tracking-wide flex items-center gap-1 text-slate-800">
+                                    <span>👤 {helperNumber}º Colaborador (Co-responsável)</span>
+                                    <span className="bg-amber-200/80 text-amber-900 text-[8px] font-bold px-1 rounded">Rateio Ativo</span>
+                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-emerald-800 text-[9px] font-mono font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-300">
+                                      Cota: R$ {currentCota.toFixed(2)}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleClearEditingHelper(idx)}
+                                      className="text-red-500 hover:text-red-700 font-bold hover:underline cursor-pointer flex items-center gap-0.5 text-[8.5px]"
+                                      title={`Remover ${helperNumber}º Colaborador`}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                      <span>Remover</span>
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="block text-[8px] font-bold text-slate-500 uppercase">Buscar Cadastrado</label>
+                                  <select
+                                    value={helper?.id && drivers.some(d => d.id === helper.id) ? helper.id : ''}
+                                    onChange={(e) => {
+                                      const selectedId = e.target.value;
+                                      if (!selectedId) return;
+                                      const d = drivers.find(drv => drv.id === selectedId);
+                                      if (d) {
+                                        handleUpdateEditingHelper(idx, {
+                                          id: d.id,
+                                          name: d.name,
+                                          role: d.role === 'MOTORISTA' ? 'MOTORISTA' : 'AJUDANTE'
+                                        });
+                                      } else {
+                                        const u = (users || DEFAULT_USERS).find(usr => usr.id === selectedId);
+                                        if (u) {
+                                          handleUpdateEditingHelper(idx, {
+                                            id: u.id,
+                                            name: u.name,
+                                            role: u.role === 'conferente' ? 'CONFERENTE' : 'AUXILIAR'
+                                          });
+                                        }
+                                      }
+                                    }}
+                                    className="w-full text-xxs p-1.5 bg-white border border-slate-200 rounded font-medium"
+                                  >
+                                    <option value="">Selecione da lista cadastrada...</option>
+                                    <optgroup label="Ajudantes Cadastrados">
+                                      {drivers.filter(d => d.role === 'AJUDANTE').map(d => (
+                                        <option key={d.id} value={d.id}>{d.name} (Ajudante)</option>
+                                      ))}
+                                    </optgroup>
+                                    <optgroup label="Motoristas">
+                                      {drivers.filter(d => d.role === 'MOTORISTA').map(d => (
+                                        <option key={d.id} value={d.id}>{d.name} (Motorista)</option>
+                                      ))}
+                                    </optgroup>
+                                    <optgroup label="Equipe Operacional">
+                                      {(users || DEFAULT_USERS).map(u => (
+                                        <option key={u.id} value={u.id}>{u.name} ({u.role.toUpperCase()})</option>
+                                      ))}
+                                    </optgroup>
+                                  </select>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-1.5 pt-0.5">
+                                    <div className="sm:col-span-5">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Nome *</label>
+                                      <input
+                                        type="text"
+                                        placeholder={`Nome do ${helperNumber}º colaborador...`}
+                                        value={helper?.name || ''}
+                                        onChange={(e) => handleUpdateEditingHelper(idx, { name: e.target.value })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                      />
+                                    </div>
+                                    <div className="sm:col-span-4">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Cargo / Função *</label>
+                                      <select
+                                        value={helper?.role || 'AJUDANTE'}
+                                        onChange={(e) => handleUpdateEditingHelper(idx, { role: e.target.value })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-bold text-slate-900"
+                                      >
+                                        <option value="AJUDANTE">📦 Ajudante</option>
+                                        <option value="MOTORISTA">🚚 Motorista</option>
+                                        <option value="CONFERENTE">📋 Conferente</option>
+                                        <option value="AUXILIAR">⚙️ Auxiliar</option>
+                                        <option value="OUTRO">Outro</option>
+                                      </select>
+                                    </div>
+                                    <div className="sm:col-span-3">
+                                      <label className="block text-[8px] font-bold text-slate-500 uppercase">Cota (R$)</label>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={currentCota}
+                                        onChange={(e) => handleUpdateEditingHelper(idx, { valor: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                        className="w-full text-xxs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-emerald-800"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Linha 5: Descrição e Observação */}
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase">Motivo / Descrição da Falta *</label>
+                        <input
+                          type="text"
+                          value={editingVale.descricao}
+                          onChange={(e) => setEditingVale({ ...editingVale, descricao: e.target.value })}
+                          className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase">Observações Gerais</label>
+                        <textarea
+                          rows={2}
+                          value={editingVale.observacao || ''}
+                          onChange={(e) => setEditingVale({ ...editingVale, observacao: e.target.value })}
+                          className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg leading-normal"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-100 flex justify-end space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingVale(null)}
+                        className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs py-2 px-4 rounded-lg cursor-pointer transition"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!editingVale.colaboradorName.trim()) {
+                            alert('Erro: O nome do colaborador principal não pode ficar vazio.');
+                            return;
+                          }
+                          if (!editingVale.valor || editingVale.valor <= 0) {
+                            alert('Erro: O valor do vale deve ser maior que zero.');
+                            return;
+                          }
+                          if (!editingVale.descricao.trim()) {
+                            alert('Erro: A descrição da falta não pode ficar vazia.');
+                            return;
+                          }
+
+                          const validColabs = (editingVale.colaboradoresAdicionais || [])
+                            .filter(c => c && c.name && c.name.trim().length > 0)
+                            .map(c => ({
+                              id: c.id || 'colab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+                              name: c.name.trim(),
+                              role: c.role || 'AJUDANTE',
+                              valor: c.valor && Number(c.valor) > 0 ? Number(c.valor) : undefined,
+                              cpf: c.cpf
+                            }));
+
+                          const totalColabs = 1 + validColabs.length;
+                          const totalVal = Number(editingVale.valor) || 0;
+                          const shares = calculateRateioShares(totalVal, totalColabs);
+
+                          const colab1FinalValor = editingVale.colaboradorValor !== undefined && editingVale.colaboradorValor > 0
+                            ? editingVale.colaboradorValor
+                            : shares[0];
+
+                          const finalAdicionais = validColabs.map((c, i) => ({
+                            ...c,
+                            valor: c.valor !== undefined && c.valor > 0 ? c.valor : shares[i + 1]
+                          }));
+
+                          const sanitizedVale: Vale = {
+                            ...editingVale,
+                            colaboradorValor: colab1FinalValor,
+                            colaboradoresAdicionais: finalAdicionais.length > 0 ? finalAdicionais : undefined
+                          };
+
+                          const updated = vales.map(v => v.id === sanitizedVale.id ? sanitizedVale : v);
+                          onSaveVales(updated);
+
+                          if (viewingVale && viewingVale.id === sanitizedVale.id) {
+                            setViewingVale(sanitizedVale);
+                          }
+
+                          setEditingVale(null);
+                          alert('Vale de desconto atualizado com sucesso!');
+                        }}
+                        className="bg-amber-600 hover:bg-amber-700 text-white font-black text-xs py-2 px-5 rounded-lg cursor-pointer transition shadow-xs uppercase"
+                      >
+                        Salvar Alterações do Vale
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -1452,6 +1452,7 @@ export default function App() {
         {(currentUser.role === 'auxiliar_logistica' || currentUser.role === 'financeiro' || currentUser.role === 'gestor') && (activeTab === 'reconciliacao' || activeTab === 'historico' || activeTab === 'divergencias' || activeTab === 'mapas_importados' || activeTab === 'sincronizador' || activeTab === 'vales_view' || activeTab === 'pasta_evidencias') && (
           <FiscalView
             currentUser={currentUser}
+            users={users}
             drivers={drivers}
             onSaveDrivers={handleSaveDrivers}
             vehicles={vehicles}
@@ -1493,6 +1494,7 @@ export default function App() {
         {currentUser.role === 'monitoramento' && (activeTab === 'historico' || activeTab === 'divergencias') && (
           <FiscalView
             currentUser={currentUser}
+            users={users}
             drivers={drivers}
             onSaveDrivers={handleSaveDrivers}
             vehicles={vehicles}
@@ -1746,6 +1748,7 @@ export default function App() {
           ) : (
             <FiscalView
               currentUser={currentUser}
+              users={users}
               drivers={drivers}
               onSaveDrivers={handleSaveDrivers}
               vehicles={vehicles}

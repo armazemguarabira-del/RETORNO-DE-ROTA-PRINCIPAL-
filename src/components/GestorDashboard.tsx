@@ -4854,6 +4854,7 @@ export default function GestorDashboard({
 
                 {(() => {
                   const valesByColab = vales.reduce((acc, v) => {
+                    const principalQuota = v.colaboradorValor !== undefined ? v.colaboradorValor : (v.colaboradoresAdicionais && v.colaboradoresAdicionais.length > 0 ? v.valor / (1 + v.colaboradoresAdicionais.length) : v.valor);
                     if (!acc[v.colaboradorId]) {
                       acc[v.colaboradorId] = {
                         id: v.colaboradorId,
@@ -4867,10 +4868,36 @@ export default function GestorDashboard({
                       };
                     }
                     acc[v.colaboradorId].totalVales += 1;
-                    acc[v.colaboradorId].totalAmount += v.valor;
-                    if (v.status === 'PENDENTE_ASSINATURA') acc[v.colaboradorId].pendingAmount += v.valor;
-                    else if (v.status === 'ASSINADO') acc[v.colaboradorId].signedAmount += v.valor;
-                    else if (v.status === 'COMPENSADO') acc[v.colaboradorId].compensatedAmount += v.valor;
+                    acc[v.colaboradorId].totalAmount += principalQuota;
+                    if (v.status === 'PENDENTE_ASSINATURA') acc[v.colaboradorId].pendingAmount += principalQuota;
+                    else if (v.status === 'ASSINADO') acc[v.colaboradorId].signedAmount += principalQuota;
+                    else if (v.status === 'COMPENSADO') acc[v.colaboradorId].compensatedAmount += principalQuota;
+
+                    if (v.colaboradoresAdicionais && v.colaboradoresAdicionais.length > 0) {
+                      v.colaboradoresAdicionais.forEach(helper => {
+                        if (!helper.name) return;
+                        const helperId = helper.id || helper.name;
+                        const helperQuota = helper.valor !== undefined ? helper.valor : (v.valor / (1 + v.colaboradoresAdicionais!.length));
+                        if (!acc[helperId]) {
+                          acc[helperId] = {
+                            id: helperId,
+                            name: helper.name,
+                            role: helper.role || 'AJUDANTE',
+                            totalVales: 0,
+                            totalAmount: 0,
+                            pendingAmount: 0,
+                            signedAmount: 0,
+                            compensatedAmount: 0
+                          };
+                        }
+                        acc[helperId].totalVales += 1;
+                        acc[helperId].totalAmount += helperQuota;
+                        if (v.status === 'PENDENTE_ASSINATURA') acc[helperId].pendingAmount += helperQuota;
+                        else if (v.status === 'ASSINADO') acc[helperId].signedAmount += helperQuota;
+                        else if (v.status === 'COMPENSADO') acc[helperId].compensatedAmount += helperQuota;
+                      });
+                    }
+
                     return acc;
                   }, {} as Record<string, any>);
 
@@ -10081,7 +10108,11 @@ export default function GestorDashboard({
 
                 {/* Content */}
                 <p className="text-justify leading-relaxed">
-                  Eu, <strong>{viewingValeDetails.colaboradorName}</strong>, registrado no papel de <strong>{viewingValeDetails.colaboradorRole}</strong>, autorizo expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em minha folha de pagamento, em conformidade com o Artigo 462, § 1º da CLT, a importância líquida de <strong>R$ {viewingValeDetails.valor.toFixed(2)}</strong> ({viewingValeDetails.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no fechamento logístico do <strong>{viewingValeDetails.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingValeDetails.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+                  Eu, <strong>{viewingValeDetails.colaboradorName}</strong>, registrado no papel de <strong>{viewingValeDetails.colaboradorRole}</strong>,
+                  {viewingValeDetails.colaboradoresAdicionais && viewingValeDetails.colaboradoresAdicionais.length > 0 && (
+                    <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingValeDetails.colaboradoresAdicionais.map(c => `<strong>${c.name}</strong> (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')},</span>
+                  )}
+                  {' '}autorizo expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em minha folha de pagamento, em conformidade com o Artigo 462, § 1º da CLT, a importância líquida de <strong>R$ {viewingValeDetails.valor.toFixed(2)}</strong> ({viewingValeDetails.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no fechamento logístico do <strong>{viewingValeDetails.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingValeDetails.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
                 </p>
 
                 {/* Route/Team Info */}
@@ -10091,6 +10122,9 @@ export default function GestorDashboard({
                     <div className="space-y-1">
                       <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-slate-50 border px-1 py-0.2 rounded font-bold">{viewingValeDetails.routeMap}</span></div>
                       <div><strong>Data de Geração:</strong> <span className="font-mono">{new Date(viewingValeDetails.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span></div>
+                      {viewingValeDetails.quantidade !== undefined && (
+                        <div><strong>Volumes / Quantidade:</strong> <span className="font-semibold text-slate-900">{viewingValeDetails.quantidade} volumes/itens</span></div>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -10098,6 +10132,16 @@ export default function GestorDashboard({
                     <div className="space-y-1">
                       <div><strong>Colaborador Principal:</strong> <span className="font-semibold text-slate-900">{viewingValeDetails.colaboradorName}</span></div>
                       <div><strong>Cargo do Responsável:</strong> <span className="text-slate-700 uppercase font-mono text-[10px]">{viewingValeDetails.colaboradorRole}</span></div>
+                      {viewingValeDetails.colaboradoresAdicionais && viewingValeDetails.colaboradoresAdicionais.length > 0 && (
+                        <div className="pt-1 border-t border-slate-100">
+                          <strong>Co-responsáveis:</strong>
+                          <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+                            {viewingValeDetails.colaboradoresAdicionais.map((c, i) => (
+                              <li key={i}>{c.name} ({c.role}){c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -10128,12 +10172,21 @@ export default function GestorDashboard({
                 )}
 
                 {/* Mock Signatures Visual Layout */}
-                <div className="grid grid-cols-2 gap-8 pt-8 text-center text-[10px] leading-relaxed">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pt-8 text-center text-[10px] leading-relaxed">
                   <div className="space-y-1">
                     <div className="border-b border-slate-300 mx-auto w-10/12 pt-4" />
                     <span className="font-bold text-slate-900 block truncate">{viewingValeDetails.colaboradorName}</span>
-                    <span className="text-[8px] text-slate-400 block uppercase font-mono">Assinatura do Colaborador</span>
+                    <span className="text-[8px] text-slate-400 block uppercase font-mono">{viewingValeDetails.colaboradorRole} (Principal)</span>
                   </div>
+                  {viewingValeDetails.colaboradoresAdicionais?.map((c, i) => (
+                    <div key={i} className="space-y-1">
+                      <div className="border-b border-slate-300 mx-auto w-10/12 pt-4" />
+                      <span className="font-bold text-slate-900 block truncate">{c.name}</span>
+                      <span className="text-[8px] text-slate-400 block uppercase font-mono">
+                        {c.role} {viewingValeDetails.colaboradoresAdicionais && viewingValeDetails.colaboradoresAdicionais.length > 1 ? `(${i + 1}º)` : ''}
+                      </span>
+                    </div>
+                  ))}
                   <div className="space-y-1">
                     <div className="border-b border-slate-300 mx-auto w-10/12 pt-4" />
                     <span className="font-bold text-slate-900 block truncate">Gestão Pau Brasil</span>
