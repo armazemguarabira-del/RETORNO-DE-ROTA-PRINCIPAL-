@@ -1064,7 +1064,10 @@ export default function FiscalView({
       // Must have surplus items (PA or AG)
       const hasProductSurplus = (audit.items || []).some(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-        return phys > (i.fiscalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        return (phys + comodato - recolha) > fisc;
       });
       const hasAssetSurplus = (audit.assets || []).some(a => {
         const idLower = (a.assetId || '').toLowerCase();
@@ -1073,7 +1076,10 @@ export default function FiscalView({
         if (isChapatex) return false;
 
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-        return phys > (a.fiscalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        return (phys + comodato - recolha) > fisc;
       });
 
       if (!hasProductSurplus && !hasAssetSurplus) return false;
@@ -1286,21 +1292,26 @@ export default function FiscalView({
           ? (associatedAudit.conferenteId === 'conferente_01' ? 'João Conferente' : associatedAudit.conferenteId === 'conferente_02' ? 'Pedro Ajudante' : associatedAudit.conferenteId) 
           : 'Conferente de Pátio');
 
-    const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; diff: number; cost: number; totalCost: number }> = [];
+    const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; comodato: number; recolha: number; diff: number; cost: number; totalCost: number }> = [];
 
     if (associatedAudit) {
       associatedAudit.items.forEach(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
         const fisc = i.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           detailedShortages.push({
             code: i.productCode,
             name: i.productDescription || 'Produto',
             expected: fisc,
             found: phys,
-            diff: diff,
+            comodato,
+            recolha,
+            diff,
             cost: unitCost,
             totalCost: diff * unitCost
           });
@@ -1308,17 +1319,27 @@ export default function FiscalView({
       });
 
       associatedAudit.assets.forEach(a => {
+        const idLower = (a.assetId || '').toLowerCase();
+        const nameUpper = (a.assetName || '').toUpperCase();
+        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+        if (isChapatex) return;
+
         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
         const fisc = a.fiscalQty ?? 0;
-        if (phys < fisc) {
-          const diff = fisc - phys;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
           const unitCost = a.cost ?? 18.0;
           detailedShortages.push({
             code: a.assetId,
             name: a.assetName || 'Ativo',
             expected: fisc,
             found: phys,
-            diff: diff,
+            comodato,
+            recolha,
+            diff,
             cost: unitCost,
             totalCost: diff * unitCost
           });
@@ -1358,6 +1379,7 @@ export default function FiscalView({
         <td style="padding: 7px 9px; font-weight: 600;">${item.name}</td>
         <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.expected}</td>
         <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.found}</td>
+        <td style="padding: 7px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #d97706;">${item.comodato > 0 ? item.comodato : '-'}</td>
         <td style="padding: 7px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff}</td>
         <td style="padding: 7px 9px; text-align: right; font-family: monospace;">R$ ${item.cost.toFixed(2)}</td>
         <td style="padding: 7px 9px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
@@ -1366,7 +1388,7 @@ export default function FiscalView({
 
     const hiddenRowHtml = hiddenItemsCount > 0 ? `
       <tr style="background: #f8fafc; font-style: italic; color: #64748b;">
-        <td colspan="4" style="padding: 6px 9px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
+        <td colspan="5" style="padding: 6px 9px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
         <td style="padding: 6px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenItemsTotalDiff}</td>
         <td style="padding: 6px 9px; text-align: right;">---</td>
         <td style="padding: 6px 9px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenItemsTotalCost.toFixed(2)}</td>
@@ -1696,6 +1718,7 @@ export default function FiscalView({
                 <th>Descrição do Produto / Vasilhame</th>
                 <th style="text-align: center;">Faturado</th>
                 <th style="text-align: center;">Conferido</th>
+                <th style="text-align: center; color: #d97706;">Comodato</th>
                 <th style="text-align: center; color: #dc2626;">Falta</th>
                 <th style="text-align: right;">Custo Unit.</th>
                 <th style="text-align: right;">Subtotal</th>
@@ -1705,7 +1728,7 @@ export default function FiscalView({
               ${shortageRowsHtml}
               ${hiddenRowHtml}
               <tr style="background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
-                <td colspan="4" style="text-align: right; text-transform: uppercase; padding: 7px 9px;">Total do Desconto Autorizado:</td>
+                <td colspan="5" style="text-align: right; text-transform: uppercase; padding: 7px 9px;">Total do Desconto Autorizado:</td>
                 <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 7px 9px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
                 <td colspan="2" style="text-align: right; font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626; padding: 7px 9px;">R$ ${valeToPrint.valor.toFixed(2)}</td>
               </tr>
@@ -1813,6 +1836,7 @@ export default function FiscalView({
     found: boolean;
     hasShortage: boolean;
     map: string;
+    auditId?: string;
     driverName?: string;
     driverId?: string;
     plate?: string;
@@ -1855,7 +1879,8 @@ export default function FiscalView({
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
-          parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
+          const comodatoText = comodato > 0 ? ` (${comodato} em comodato deduzido)` : '';
+          parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}${comodatoText}`);
           itemDetails.push({
             name: i.productDescription || `Produto ${i.productCode}`,
             qty: diff,
@@ -1882,7 +1907,8 @@ export default function FiscalView({
           const unitCost = a.cost ?? 18.0;
           const subtotal = diff * unitCost;
           totalVal += subtotal;
-          parts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}`);
+          const comodatoText = comodato > 0 ? ` (${comodato} em comodato deduzido)` : '';
+          parts.push(`Falta de ${diff}x ${a.assetName || 'Ativo'}${comodatoText}`);
           itemDetails.push({
             name: a.assetName || (a as any).assetCode || a.assetId,
             qty: diff,
@@ -1901,6 +1927,7 @@ export default function FiscalView({
 
       const info = {
         found: true,
+        auditId: matchingAudit.id,
         hasShortage: totalVal > 0 || itemDetails.length > 0,
         map: matchingAudit.routeMap || raw,
         driverName,
@@ -5022,7 +5049,9 @@ export default function FiscalView({
     session.items.forEach(item => {
       const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
       const fiscal = item.fiscalQty ?? 0;
-      const diff = physical - fiscal;
+      const comodato = item.comodatoQty ?? 0;
+      const recolha = item.recolhaQty ?? 0;
+      const diff = physical - fiscal + comodato - recolha;
       if (diff < 0) {
         missingCount += Math.abs(diff);
         missingCost += Math.abs(diff) * item.cost;
@@ -5094,12 +5123,14 @@ export default function FiscalView({
       // Sheet 2: Produtos Acabados (PA)
       if (audit.items && audit.items.length > 0) {
         const paRows: (string | number)[][] = [
-          ['Código SKU', 'Descrição do Produto', 'Contagem Física', 'Saldo Fiscal', 'Diferença', 'Status', 'Preço Unitário (R$)', 'Impacto Financeiro (R$)']
+          ['Código SKU', 'Descrição do Produto', 'Contagem Física', 'Saldo Fiscal', 'Comodato', 'Recolha', 'Diferença', 'Status', 'Preço Unitário (R$)', 'Impacto Financeiro (R$)']
         ];
         audit.items.forEach(item => {
           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fisc = item.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           const unitPrice = getSkuClosedPrice(item.productCode, item.cost || 45.0);
           const impact = diff * unitPrice;
           paRows.push([
@@ -5107,6 +5138,8 @@ export default function FiscalView({
             item.productDescription || '',
             phys,
             fisc,
+            comodato,
+            recolha,
             diff,
             diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'),
             unitPrice,
@@ -5120,19 +5153,23 @@ export default function FiscalView({
       // Sheet 3: Ativos de Giro (AG)
       if (audit.assets && audit.assets.length > 0) {
         const agRows: (string | number)[][] = [
-          ['Código Ativo', 'Descrição do Ativo', 'Contagem Física', 'Saldo Fiscal', 'Diferença', 'Status']
+          ['Código Ativo', 'Descrição do Ativo', 'Contagem Física', 'Saldo Fiscal', 'Comodato', 'Recolha', 'Diferença', 'Status']
         ];
         audit.assets.forEach(asset => {
           const code = getAssetCode(asset.assetId, asset.assetName);
           const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
           const fisc = asset.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = asset.comodatoQty ?? 0;
+          const recolha = asset.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           agRows.push([
             code,
             asset.assetName,
             phys,
             fisc,
+            comodato,
+            recolha,
             diff,
             isChapatex ? 'ISENTO' : (diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'))
           ]);
@@ -5259,7 +5296,9 @@ export default function FiscalView({
         audit.items?.forEach(item => {
           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fisc = item.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           const unitPrice = getSkuClosedPrice(item.productCode, item.cost || 45.0);
           paData.push([
             audit.routeMap,
@@ -5282,7 +5321,9 @@ export default function FiscalView({
           const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
           const fisc = asset.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = asset.comodatoQty ?? 0;
+          const recolha = asset.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           agData.push([
             audit.routeMap,
             audit.plate,
@@ -5629,13 +5670,17 @@ export default function FiscalView({
         itemsPA: (audit.items || []).map(item => {
           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
           const fisc = item.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = item.comodatoQty ?? 0;
+          const recolha = item.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           const unitPrice = getSkuClosedPrice(item.productCode, item.cost || 45.0);
           return {
             productCode: item.productCode,
             productDescription: item.productDescription || '',
             physicalQty: phys,
             fiscalQty: fisc,
+            comodatoQty: comodato,
+            recolhaQty: recolha,
             difference: diff,
             status: diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'),
             unitPriceBRL: unitPrice,
@@ -5647,12 +5692,16 @@ export default function FiscalView({
           const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
           const fisc = asset.fiscalQty ?? 0;
-          const diff = phys - fisc;
+          const comodato = asset.comodatoQty ?? 0;
+          const recolha = asset.recolhaQty ?? 0;
+          const diff = (phys + comodato - recolha) - fisc;
           return {
             assetCode: code,
             assetName: asset.assetName,
             physicalQty: phys,
             fiscalQty: fisc,
+            comodatoQty: comodato,
+            recolhaQty: recolha,
             difference: diff,
             status: isChapatex ? 'ISENTO' : (diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'))
           };
@@ -5745,13 +5794,17 @@ export default function FiscalView({
           itemsPA: (audit.items || []).map(item => {
             const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
             const fisc = item.fiscalQty ?? 0;
-            const diff = phys - fisc;
+            const comodato = item.comodatoQty ?? 0;
+            const recolha = item.recolhaQty ?? 0;
+            const diff = (phys + comodato - recolha) - fisc;
             const unitPrice = getSkuClosedPrice(item.productCode, item.cost || 45.0);
             return {
               productCode: item.productCode,
               productDescription: item.productDescription || '',
               physicalQty: phys,
               fiscalQty: fisc,
+              comodatoQty: comodato,
+              recolhaQty: recolha,
               difference: diff,
               status: diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'),
               unitPriceBRL: unitPrice,
@@ -5763,12 +5816,16 @@ export default function FiscalView({
             const isChapatex = code === '899599' || (asset.assetName || '').toLowerCase().includes('chapatex');
             const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
             const fisc = asset.fiscalQty ?? 0;
-            const diff = phys - fisc;
+            const comodato = asset.comodatoQty ?? 0;
+            const recolha = asset.recolhaQty ?? 0;
+            const diff = (phys + comodato - recolha) - fisc;
             return {
               assetCode: code,
               assetName: asset.assetName,
               physicalQty: phys,
               fiscalQty: fisc,
+              comodatoQty: comodato,
+              recolhaQty: recolha,
               difference: diff,
               status: isChapatex ? 'ISENTO' : (diff === 0 ? 'OK' : (diff < 0 ? 'FALTA' : 'SOBRA'))
             };
@@ -9465,8 +9522,14 @@ export default function FiscalView({
                           valor: c.valor !== undefined && c.valor > 0 ? c.valor : shares[i + 1]
                         }));
 
+                        const matchedAuditForNew = (audits || []).find(a => 
+                          (valeAssociatedInfo?.auditId && a.id === valeAssociatedInfo.auditId) ||
+                          (valeRouteMap && (a.routeMap || '').trim().toUpperCase() === valeRouteMap.trim().toUpperCase())
+                        );
+
                         const novo: Vale = {
                           id: 'val_' + Date.now(),
+                          auditId: valeAssociatedInfo?.auditId || matchedAuditForNew?.id,
                           routeMap: valeRouteMap || 'AVULSO',
                           colaboradorId: valeColaboradorId || 'colab_principal',
                           colaboradorName: colabName,
@@ -9836,21 +9899,26 @@ export default function FiscalView({
                       : 'N/A');
 
                 // Calculate detailed shortages/deficits for this audit (PA/AG)
-                const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; diff: number; cost: number; totalCost: number }> = [];
+                const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; comodato: number; recolha: number; diff: number; cost: number; totalCost: number }> = [];
 
                 if (associatedAudit) {
                   associatedAudit.items.forEach(i => {
-                    const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                    const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
                     const fisc = i.fiscalQty ?? 0;
-                    if (phys < fisc) {
-                      const diff = fisc - phys;
+                    const comodato = i.comodatoQty ?? 0;
+                    const recolha = i.recolhaQty ?? 0;
+                    const netDiff = (phys + comodato - recolha) - fisc;
+                    if (netDiff < 0) {
+                      const diff = Math.abs(netDiff);
                       const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
                       detailedShortages.push({
                         code: i.productCode,
                         name: i.productDescription || 'Produto Sem Descrição',
                         expected: fisc,
                         found: phys,
-                        diff: diff,
+                        comodato,
+                        recolha,
+                        diff,
                         cost: unitCost,
                         totalCost: diff * unitCost
                       });
@@ -9858,17 +9926,27 @@ export default function FiscalView({
                   });
 
                   associatedAudit.assets.forEach(a => {
-                    const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                    const idLower = (a.assetId || '').toLowerCase();
+                    const nameUpper = (a.assetName || '').toUpperCase();
+                    const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
+                    if (isChapatex) return;
+
+                    const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
                     const fisc = a.fiscalQty ?? 0;
-                    if (phys < fisc) {
-                      const diff = fisc - phys;
+                    const comodato = a.comodatoQty ?? 0;
+                    const recolha = a.recolhaQty ?? 0;
+                    const netDiff = (phys + comodato - recolha) - fisc;
+                    if (netDiff < 0) {
+                      const diff = Math.abs(netDiff);
                       const unitCost = a.cost ?? 18.0;
                       detailedShortages.push({
                         code: a.assetId,
                         name: a.assetName || 'Ativo Sem Descrição',
                         expected: fisc,
                         found: phys,
-                        diff: diff,
+                        comodato,
+                        recolha,
+                        diff,
                         cost: unitCost,
                         totalCost: diff * unitCost
                       });
@@ -9960,6 +10038,7 @@ export default function FiscalView({
                                     <th className="py-2 px-3">Descrição</th>
                                     <th className="py-2 px-3 text-center">Faturado</th>
                                     <th className="py-2 px-3 text-center">Conferido</th>
+                                    <th className="py-2 px-3 text-center text-amber-600">Comodato</th>
                                     <th className="py-2 px-3 text-center text-red-600">Falta</th>
                                     <th className="py-2 px-3 text-right">Unit.</th>
                                     <th className="py-2 px-3 text-right">Subtotal</th>
@@ -9969,9 +10048,10 @@ export default function FiscalView({
                                   {detailedShortages.slice(0, 5).map(item => (
                                     <tr key={item.code} className="hover:bg-slate-50">
                                       <td className="py-2 px-3 font-mono font-bold text-slate-600">{item.code}</td>
-                                      <td className="py-2 px-3 font-medium truncate max-w-[220px]">{item.name}</td>
+                                      <td className="py-2 px-3 font-medium truncate max-w-[200px]">{item.name}</td>
                                       <td className="py-2 px-3 text-center font-mono">{item.expected}</td>
                                       <td className="py-2 px-3 text-center font-mono">{item.found}</td>
+                                      <td className="py-2 px-3 text-center font-mono font-bold text-amber-600">{item.comodato > 0 ? item.comodato : '-'}</td>
                                       <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
                                       <td className="py-2 px-3 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
                                       <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
@@ -9979,14 +10059,14 @@ export default function FiscalView({
                                   ))}
                                   {detailedShortages.length > 5 && (
                                     <tr className="bg-slate-50 text-[10px] italic text-slate-500">
-                                      <td colSpan={4} className="py-2 px-3">+ {detailedShortages.length - 5} outros itens detalhados no sistema de conferência</td>
+                                      <td colSpan={5} className="py-2 px-3">+ {detailedShortages.length - 5} outros itens detalhados no sistema de conferência</td>
                                       <td className="py-2 px-3 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(5).reduce((s, d) => s + d.diff, 0)}</td>
                                       <td className="py-2 px-3 text-right">---</td>
                                       <td className="py-2 px-3 text-right font-mono font-bold">R$ {detailedShortages.slice(5).reduce((s, d) => s + d.totalCost, 0).toFixed(2)}</td>
                                     </tr>
                                   )}
                                   <tr className="bg-slate-100 font-bold text-slate-900 text-xs border-t-2 border-slate-300">
-                                    <td colSpan={4} className="py-2 px-3 text-right uppercase">Total Descontado:</td>
+                                    <td colSpan={5} className="py-2 px-3 text-right uppercase">Total Descontado:</td>
                                     <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
                                     <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-red-600 text-sm">R$ {viewingVale.valor.toFixed(2)}</td>
                                   </tr>
@@ -13185,7 +13265,10 @@ export default function FiscalView({
                 const driverName = drivers.find(d => d.id === audit.driverId)?.name || audit.driverId;
                 const surplusProds = audit.items.filter(i => {
                   const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                  return phys > (i.fiscalQty ?? 0);
+                  const fisc = i.fiscalQty ?? 0;
+                  const comodato = i.comodatoQty ?? 0;
+                  const recolha = i.recolhaQty ?? 0;
+                  return (phys + comodato - recolha) > fisc;
                 });
                 const surplusAssets = audit.assets.filter(a => {
                   const idLower = (a.assetId || '').toLowerCase();
@@ -13194,7 +13277,10 @@ export default function FiscalView({
                   if (isChapatex) return false;
 
                   const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                  return phys > (a.fiscalQty ?? 0);
+                  const fisc = a.fiscalQty ?? 0;
+                  const comodato = a.comodatoQty ?? 0;
+                  const recolha = a.recolhaQty ?? 0;
+                  return (phys + comodato - recolha) > fisc;
                 });
 
                 const isReprovingThis = reprovingAuditId === audit.id;
@@ -13229,7 +13315,11 @@ export default function FiscalView({
                       </div>
                       <div className="space-y-1">
                         {surplusProds.map(p => {
-                          const diff = (p.rePhysicalQty !== undefined ? p.rePhysicalQty : p.physicalQty) - (p.fiscalQty ?? 0);
+                          const phys = p.rePhysicalQty !== undefined ? p.rePhysicalQty : p.physicalQty;
+                          const fisc = p.fiscalQty ?? 0;
+                          const comodato = p.comodatoQty ?? 0;
+                          const recolha = p.recolhaQty ?? 0;
+                          const diff = (phys + comodato - recolha) - fisc;
                           return (
                             <div key={p.productCode} className="flex justify-between text-xs text-slate-800 font-medium">
                               <span>
@@ -13241,7 +13331,11 @@ export default function FiscalView({
                           );
                         })}
                         {surplusAssets.map(a => {
-                          const diff = (a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty) - (a.fiscalQty ?? 0);
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          const diff = (phys + comodato - recolha) - fisc;
                           return (
                             <div key={a.assetId} className="flex justify-between text-xs text-slate-800 font-medium">
                               <span>
