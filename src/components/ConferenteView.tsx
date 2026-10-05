@@ -464,25 +464,25 @@ export default function ConferenteView({
     const rawValUpper = val.trim().toUpperCase();
     if (!rawValUpper) return null;
 
-    const removeAccents = (str: string) => str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-    const normalizeId = (id: string) => id.toUpperCase().replace(/^G/, '').replace(/^0+/, '').trim();
-    const toNumericOnly = (str: string) => str.replace(/\D/g, '').replace(/^0+/, '');
+    const removeAccents = (str: string) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const normalizeId = (id: string) => (id || '').toUpperCase().replace(/^G/, '').replace(/^0+/, '').trim();
+    const toNumericOnly = (str: string) => (str || '').replace(/\D/g, '').replace(/^0+/, '');
 
     // 1. Numeric-only match (e.g. "1053" matches "G1053" or "1053")
     const inputNumeric = toNumericOnly(rawValUpper);
     if (inputNumeric) {
-      const foundByNumeric = drivers.find(d => toNumericOnly(d.id) === inputNumeric || (d.cpf && toNumericOnly(d.cpf) === inputNumeric));
+      const foundByNumeric = (drivers || []).find(d => d && (toNumericOnly(d.id || '') === inputNumeric || (d.cpf && toNumericOnly(d.cpf) === inputNumeric)));
       if (foundByNumeric) return foundByNumeric;
     }
 
     // 2. Exact match on ID
-    let found = drivers.find(d => d.id.toUpperCase() === rawValUpper);
+    let found = (drivers || []).find(d => d && (d.id || '').toUpperCase() === rawValUpper);
     if (found) return found;
 
     // 3. Normalize ID match (remove leading G and zeros)
     const cleanVal = rawValUpper.replace(/^G/, '').replace(/^0+/, '').trim();
     if (cleanVal) {
-      found = drivers.find(d => normalizeId(d.id) === cleanVal);
+      found = (drivers || []).find(d => d && normalizeId(d.id || '') === cleanVal);
       if (found) return found;
     }
 
@@ -492,9 +492,10 @@ export default function ConferenteView({
       for (const seq of digitSequences) {
         const cleanSeq = seq.replace(/^0+/, '');
         if (cleanSeq) {
-          found = drivers.find(d => {
-            const dbCleanId = normalizeId(d.id);
-            const dbNumericOnly = toNumericOnly(d.id);
+          found = (drivers || []).find(d => {
+            if (!d) return false;
+            const dbCleanId = normalizeId(d.id || '');
+            const dbNumericOnly = toNumericOnly(d.id || '');
             return dbCleanId === cleanSeq || dbNumericOnly === cleanSeq;
           });
           if (found) return found;
@@ -504,11 +505,12 @@ export default function ConferenteView({
 
     // 5. Exact name match with accent stripping
     const normalizedVal = removeAccents(rawValUpper);
-    found = drivers.find(d => removeAccents(d.name.toUpperCase()) === normalizedVal);
+    found = (drivers || []).find(d => d && d.name && removeAccents((d.name || '').toUpperCase()) === normalizedVal);
     if (found) return found;
 
     // 6. Partial name match (contains)
-    found = drivers.find(d => {
+    found = (drivers || []).find(d => {
+      if (!d || !d.name) return false;
       const dbName = removeAccents(d.name.toUpperCase());
       return dbName.includes(normalizedVal) || normalizedVal.includes(dbName);
     });
@@ -517,7 +519,8 @@ export default function ConferenteView({
     // 7. Token-based match (e.g. "ADELSON ARAUJO" matches "ADELSON SANTOS DE ARAUJO")
     const valTokens = normalizedVal.split(/\s+/).filter(t => t.length > 2);
     if (valTokens.length >= 2) {
-      found = drivers.find(d => {
+      found = (drivers || []).find(d => {
+        if (!d || !d.name) return false;
         const dbTokens = removeAccents(d.name.toUpperCase()).split(/\s+/);
         const matchCount = valTokens.filter(vt => dbTokens.includes(vt)).length;
         return matchCount >= Math.min(2, valTokens.length);
@@ -2253,14 +2256,16 @@ export default function ConferenteView({
 
     // 1. Process imported routes
     (importedRoutes || []).forEach(route => {
-      const routeMapUpper = route.routeMap.toUpperCase();
-      const routeMapNorm = normalizeMapCode(route.routeMap).toUpperCase();
+      if (!route) return;
+      const routeMapUpper = (route.routeMap || '').toUpperCase();
+      const routeMapNorm = normalizeMapCode(route.routeMap || '').toUpperCase();
 
-      const matchingAudit = audits.find(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        if (aNorm === routeMapNorm || a.routeMap.toUpperCase() === routeMapUpper) return true;
+      const matchingAudit = (audits || []).find(a => {
+        if (!a) return false;
+        const aNorm = normalizeMapCode(a.routeMap || '').toUpperCase();
+        if (aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper) return true;
         if (a.unifiedMaps) {
-          return a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === routeMapNorm || m.toUpperCase() === routeMapUpper);
+          return a.unifiedMaps.some(m => normalizeMapCode(m || '').toUpperCase() === routeMapNorm || (m || '').toUpperCase() === routeMapUpper);
         }
         return false;
       });
@@ -2274,7 +2279,7 @@ export default function ConferenteView({
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(route.routeMap) || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Only include routes that are truly open/pending for physical count
       if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {
@@ -2335,8 +2340,9 @@ export default function ConferenteView({
 
     // 2. Add any audit that has reopeningRequested === true or is active, but wasn't added yet
     (audits || []).forEach(audit => {
-      const auditMapUpper = audit.routeMap.toUpperCase();
-      const auditMapNorm = normalizeMapCode(audit.routeMap).toUpperCase();
+      if (!audit) return;
+      const auditMapUpper = (audit.routeMap || '').toUpperCase();
+      const auditMapNorm = normalizeMapCode(audit.routeMap || '').toUpperCase();
       const isReopeningReq = audit.reopeningRequested === true;
       const isClosedAudit = (audit.status as string) === 'fechado' || audit.status === 'finalizado_ok' || audit.status === 'finalizado_divergente' || (audit as any).pdfDownloaded === true || (audit as any).surplusFlowStatus === 'BAIXADO';
       const isAuditActive = (audit.status === 'em_aberto' || audit.status === 'reconferencia') && !isClosedAudit;
@@ -2354,7 +2360,7 @@ export default function ConferenteView({
           effectiveStatus = 'conferindo';
         }
 
-        const matchingRoute = (importedRoutes || []).find(r => r.routeMap.toUpperCase() === auditMapUpper);
+        const matchingRoute = (importedRoutes || []).find(r => r && (r.routeMap || '').toUpperCase() === auditMapUpper);
         const isRouteBlitz = audit.isBlitz || matchingRoute?.isBlitz || false;
 
         // Status de descarregamento estritamente condicionado ao registro do empilhador
@@ -2430,28 +2436,34 @@ export default function ConferenteView({
   }, [audits]);
 
   const filteredProducts = useMemo(() => {
-    return products
-      .filter(p => 
-        p.description.toLowerCase().includes(productSearch.toLowerCase()) ||
-        p.code.includes(productSearch)
-      )
+    const searchLower = (productSearch || '').toLowerCase().trim();
+    return (products || [])
+      .filter(p => {
+        if (!p) return false;
+        const desc = (p.description || (p as any).productDescription || (p as any).name || '').toLowerCase();
+        const code = (p.code || (p as any).productCode || '').toString().toLowerCase();
+        return desc.includes(searchLower) || code.includes(searchLower);
+      })
       .sort((a, b) => {
-        const countA = productUsageCounts[a.code] || 0;
-        const countB = productUsageCounts[b.code] || 0;
+        const countA = (a?.code && productUsageCounts[a.code]) || 0;
+        const countB = (b?.code && productUsageCounts[b.code]) || 0;
         return countB - countA;
       })
       .slice(0, 5);
   }, [products, productSearch, productUsageCounts]);
 
   const filteredExchangeProducts = useMemo(() => {
-    return products
-      .filter(p => 
-        p.description.toLowerCase().includes(exchangeSearch.toLowerCase()) ||
-        p.code.includes(exchangeSearch)
-      )
+    const searchLower = (exchangeSearch || '').toLowerCase().trim();
+    return (products || [])
+      .filter(p => {
+        if (!p) return false;
+        const desc = (p.description || (p as any).productDescription || (p as any).name || '').toLowerCase();
+        const code = (p.code || (p as any).productCode || '').toString().toLowerCase();
+        return desc.includes(searchLower) || code.includes(searchLower);
+      })
       .sort((a, b) => {
-        const countA = productUsageCounts[a.code] || 0;
-        const countB = productUsageCounts[b.code] || 0;
+        const countA = (a?.code && productUsageCounts[a.code]) || 0;
+        const countB = (b?.code && productUsageCounts[b.code]) || 0;
         return countB - countA;
       })
       .slice(0, 5);

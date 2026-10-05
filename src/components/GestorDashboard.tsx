@@ -10,6 +10,7 @@ import { triggerGlobalDatabaseSwitch } from '../utils/databaseScheduler';
 import ExportDataView from './ExportDataView';
 import EfdHistogramaDashboard from './EfdHistogramaDashboard';
 import { EFD_REAL_RECORDS_160 } from '../efdRecords160';
+import { isAuditFirstPassAccurate, getAuditAccuracyRate } from '../utils/auditAccuracy';
 // @ts-ignore
 import mammoth from 'mammoth';
 
@@ -887,61 +888,16 @@ export default function GestorDashboard({
   const [newDrvCpf, setNewDrvCpf] = useState('');
   const [editingTempDriverId, setEditingTempDriverId] = useState('');
 
-  // Function to calculate accuracy rate based on recheck history
+  // Function to calculate accuracy rate based on recheck history (Regra DPO: 1ª contagem inalterada = 100%)
   const calculateAuditAccuracy = (audit: AuditSession): number => {
-    if (!audit) return 100;
-    // A recheck occurred if the audit went through "reconferencia" state or has any rePhysicalQty set
-    const hasReconf = (audit.history || []).some(h => 
-      h.action.toLowerCase().includes('reconferência') || 
-      h.action.toLowerCase().includes('recontagem')
-    ) || (audit.items || []).some(i => i.rePhysicalQty !== undefined) || (audit.assets || []).some(a => a.rePhysicalQty !== undefined);
-
-    if (!hasReconf) {
-      return 100; // If no recheck was requested, conferente's initial count is considered 100% correct
-    }
-
-    let totalConferente = 0;
-    let qtyDivergente = 0;
-    let changedAny = false;
-
-    (audit.items || []).forEach(item => {
-      const initial = item.physicalQty;
-      const final = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-      totalConferente += final;
-      const diff = Math.abs(final - initial);
-      qtyDivergente += diff;
-      if (diff > 0) {
-        changedAny = true;
-      }
-    });
-
-    (audit.assets || []).forEach(asset => {
-      const initial = asset.physicalQty;
-      const final = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-      totalConferente += final;
-      const diff = Math.abs(final - initial);
-      qtyDivergente += diff;
-      if (diff > 0) {
-        changedAny = true;
-      }
-    });
-
-    if (!changedAny) {
-      return 100; // If nothing changed during recheck, accuracy is 100%
-    }
-
-    if (totalConferente === 0) {
-      return qtyDivergente === 0 ? 100 : 0;
-    }
-
-    return Math.max(0, (1 - qtyDivergente / totalConferente) * 100);
+    return getAuditAccuracyRate(audit);
   };
 
   // Calculate high-level stats for manager dashboard
-  const finishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente');
+  const finishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || a.isEstimated);
   const totalAuditsCount = finishedAudits.length;
   
-  const okAuditsCount = finishedAudits.filter(a => a.status === 'finalizado_ok').length;
+  const okAuditsCount = finishedAudits.filter(a => a.status === 'finalizado_ok' || a.isEstimated).length;
   const matchRate = totalAuditsCount > 0 ? (finishedAudits.reduce((sum, a) => sum + calculateAuditAccuracy(a), 0) / totalAuditsCount) : 100;
 
   // Average physical audit duration in minutes
@@ -964,15 +920,12 @@ export default function GestorDashboard({
     ? `${Math.floor(avgSeconds / 60)}m ${avgSeconds % 60}s` 
     : 'N/A';
 
-  // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem)
-  const allFinishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado');
-  const firstPassAuditsOk = allFinishedAudits.filter(a => {
-    const hasRecount = ((a as any).recountCount && (a as any).recountCount > 0) || (a.history && a.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
-    return !hasRecount && a.status === 'finalizado_ok';
-  });
+  // 1. Acuracidade Real da 1ª Conferência (Regra DPO: 1ª contagem vale se permanecer inalterada mesmo após recontagem, independente de sobras/faltas)
+  const allFinishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado' || a.isEstimated);
+  const firstPassAuditsOk = allFinishedAudits.filter(a => isAuditFirstPassAccurate(a));
   const firstPassAccuracyPct = allFinishedAudits.length > 0
     ? (firstPassAuditsOk.length / allFinishedAudits.length) * 100
-    : 99.4;
+    : 100.0;
 
   // 2. Tempo Real de Conferência Física (Medição Real das Aferições)
   const timedAudits = audits.filter(a => {
@@ -1758,9 +1711,9 @@ export default function GestorDashboard({
       confProductivity[key].count += 1;
       confProductivity[key].totalSeconds += seconds;
       confProductivity[key].totalAccuracySum += calculateAuditAccuracy(audit);
-      if (audit.status === 'finalizado_ok') {
+      if (isAuditFirstPassAccurate(audit)) {
         confProductivity[key].okCount += 1;
-      } else if (audit.status === 'finalizado_divergente') {
+      } else {
         confProductivity[key].divergentCount += 1;
       }
     }
@@ -1821,7 +1774,7 @@ export default function GestorDashboard({
     });
 
     audits.forEach(audit => {
-      if (audit.status !== 'finalizado_ok' && audit.status !== 'finalizado_divergente' && (audit.status as string) !== 'fechado') {
+      if (audit.status !== 'finalizado_ok' && audit.status !== 'finalizado_divergente' && (audit.status as string) !== 'fechado' && !audit.isEstimated) {
         return;
       }
       const rawId = audit.conferenteId || 'usr_1782481995449';
@@ -1829,14 +1782,18 @@ export default function GestorDashboard({
       conf.totalAudits += 1;
 
       const hasRecount = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
-        (audit.history && audit.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
+        (audit.history && audit.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura'))) ||
+        (audit.items && audit.items.some(i => i.rePhysicalQty !== undefined)) ||
+        (audit.assets && audit.assets.some(a => a.rePhysicalQty !== undefined));
       if (hasRecount) {
         conf.recountCount += 1;
       }
 
-      if (audit.status === 'finalizado_ok' && !hasRecount) {
+      // Regra DPO: 1ª contagem vale se permanecer inalterada mesmo após recontagem, independente de sobras/faltas
+      const accurate = isAuditFirstPassAccurate(audit);
+      if (accurate) {
         conf.firstPassOkCount += 1;
-      } else if (audit.status === 'finalizado_divergente') {
+      } else {
         conf.divergentCount += 1;
       }
 
@@ -4853,13 +4810,18 @@ export default function GestorDashboard({
                 </div>
 
                 {(() => {
-                  const valesByColab = vales.reduce((acc, v) => {
-                    const principalQuota = v.colaboradorValor !== undefined ? v.colaboradorValor : (v.colaboradoresAdicionais && v.colaboradoresAdicionais.length > 0 ? v.valor / (1 + v.colaboradoresAdicionais.length) : v.valor);
-                    if (!acc[v.colaboradorId]) {
-                      acc[v.colaboradorId] = {
-                        id: v.colaboradorId,
-                        name: v.colaboradorName,
-                        role: v.colaboradorRole,
+                  const valesByColab = (vales || []).reduce((acc, v) => {
+                    if (!v) return acc;
+                    const rawValor = Number(v.valor) || 0;
+                    const principalQuota = v.colaboradorValor !== undefined && v.colaboradorValor !== null
+                      ? Number(v.colaboradorValor) || 0
+                      : (v.colaboradoresAdicionais && v.colaboradoresAdicionais.length > 0 ? rawValor / (1 + v.colaboradoresAdicionais.length) : rawValor);
+                    const colabId = v.colaboradorId || v.colaboradorName || 'indefinido';
+                    if (!acc[colabId]) {
+                      acc[colabId] = {
+                        id: colabId,
+                        name: v.colaboradorName || 'Colaborador',
+                        role: v.colaboradorRole || 'MOTORISTA',
                         totalVales: 0,
                         totalAmount: 0,
                         pendingAmount: 0,
@@ -4867,17 +4829,19 @@ export default function GestorDashboard({
                         compensatedAmount: 0
                       };
                     }
-                    acc[v.colaboradorId].totalVales += 1;
-                    acc[v.colaboradorId].totalAmount += principalQuota;
-                    if (v.status === 'PENDENTE_ASSINATURA') acc[v.colaboradorId].pendingAmount += principalQuota;
-                    else if (v.status === 'ASSINADO') acc[v.colaboradorId].signedAmount += principalQuota;
-                    else if (v.status === 'COMPENSADO') acc[v.colaboradorId].compensatedAmount += principalQuota;
+                    acc[colabId].totalVales += 1;
+                    acc[colabId].totalAmount += principalQuota;
+                    if (v.status === 'PENDENTE_ASSINATURA') acc[colabId].pendingAmount += principalQuota;
+                    else if (v.status === 'ASSINADO') acc[colabId].signedAmount += principalQuota;
+                    else if (v.status === 'COMPENSADO') acc[colabId].compensatedAmount += principalQuota;
 
                     if (v.colaboradoresAdicionais && v.colaboradoresAdicionais.length > 0) {
                       v.colaboradoresAdicionais.forEach(helper => {
-                        if (!helper.name) return;
+                        if (!helper || !helper.name) return;
                         const helperId = helper.id || helper.name;
-                        const helperQuota = helper.valor !== undefined ? helper.valor : (v.valor / (1 + v.colaboradoresAdicionais!.length));
+                        const helperQuota = helper.valor !== undefined && helper.valor !== null
+                          ? Number(helper.valor) || 0
+                          : (rawValor / (1 + v.colaboradoresAdicionais!.length));
                         if (!acc[helperId]) {
                           acc[helperId] = {
                             id: helperId,
@@ -4914,7 +4878,8 @@ export default function GestorDashboard({
                   return (
                     <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
                       {sortedColabs.map((col, idx) => {
-                        const isHighRisk = col.totalAmount > 350;
+                        const isHighRisk = (col.totalAmount || 0) > 350;
+                        const safeTotal = col.totalAmount || 0;
                         return (
                           <div key={col.id + idx} className={`p-3 rounded-lg border bg-white flex flex-col space-y-1.5 transition ${isHighRisk ? 'border-red-200' : 'border-slate-200'}`}>
                             <div className="flex justify-between items-start">
@@ -4923,7 +4888,7 @@ export default function GestorDashboard({
                                 <span className="text-[9px] font-mono text-slate-400 uppercase block">{col.role} • {col.totalVales} {col.totalVales === 1 ? 'vale' : 'vales'}</span>
                               </div>
                               <span className="font-mono font-bold text-xs text-slate-900">
-                                R$ {col.totalAmount.toFixed(2)}
+                                R$ {(col.totalAmount || 0).toFixed(2)}
                               </span>
                             </div>
 
@@ -4931,18 +4896,18 @@ export default function GestorDashboard({
                             <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden flex">
                               <div 
                                 className="bg-amber-400 h-full" 
-                                style={{ width: `${(col.pendingAmount / col.totalAmount) * 100}%` }}
-                                title={`Pendente: R$ ${col.pendingAmount.toFixed(2)}`}
+                                style={{ width: `${safeTotal > 0 ? ((col.pendingAmount || 0) / safeTotal) * 100 : 0}%` }}
+                                title={`Pendente: R$ ${(col.pendingAmount || 0).toFixed(2)}`}
                               />
                               <div 
                                 className="bg-blue-400 h-full" 
-                                style={{ width: `${(col.signedAmount / col.totalAmount) * 100}%` }}
-                                title={`Assinado: R$ ${col.signedAmount.toFixed(2)}`}
+                                style={{ width: `${safeTotal > 0 ? ((col.signedAmount || 0) / safeTotal) * 100 : 0}%` }}
+                                title={`Assinado: R$ ${(col.signedAmount || 0).toFixed(2)}`}
                               />
                               <div 
                                 className="bg-emerald-400 h-full" 
-                                style={{ width: `${(col.compensatedAmount / col.totalAmount) * 100}%` }}
-                                title={`Compensado: R$ ${col.compensatedAmount.toFixed(2)}`}
+                                style={{ width: `${safeTotal > 0 ? ((col.compensatedAmount || 0) / safeTotal) * 100 : 0}%` }}
+                                title={`Compensado: R$ ${(col.compensatedAmount || 0).toFixed(2)}`}
                               />
                             </div>
 
@@ -5071,7 +5036,7 @@ export default function GestorDashboard({
                                   </span>
                                 </td>
                                 <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
-                                  R$ {vale.valor.toFixed(2)}
+                                  R$ {Number(vale.valor || 0).toFixed(2)}
                                 </td>
                                 <td className="py-3 px-3 text-center">
                                   <span className={`inline-block px-2 py-0.5 text-[8px] font-black uppercase rounded-full ${
@@ -5120,7 +5085,7 @@ export default function GestorDashboard({
                                         onClick={() => {
                                           requestConfirm(
                                             'Confirmar Compensação',
-                                            `Tem certeza de que deseja faturar e marcar este vale de R$ ${vale.valor.toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
+                                            `Tem certeza de que deseja faturar e marcar este vale de R$ ${Number(vale.valor || 0).toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
                                             () => {
                                               const updated = vales.map(v => v.id === vale.id ? { ...v, status: 'COMPENSADO' as const } : v);
                                               onSaveVales(updated);
@@ -5224,7 +5189,7 @@ export default function GestorDashboard({
                         {EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length} veículos
                       </span>
                       <span className="text-xxs text-slate-400 mt-1 block font-mono">
-                        {((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1)}% do volume total
+                        {EFD_REAL_RECORDS_160.length > 0 ? ((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D0').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1) : '0.0'}% do volume total
                       </span>
                     </div>
                     <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
@@ -5233,7 +5198,7 @@ export default function GestorDashboard({
                         {EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length} veículos
                       </span>
                       <span className="text-xxs text-slate-400 mt-1 block font-mono">
-                        {((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1)}% D+1 regulamentado
+                        {EFD_REAL_RECORDS_160.length > 0 ? ((EFD_REAL_RECORDS_160.filter(r => r.cycle === 'D1').length / EFD_REAL_RECORDS_160.length) * 100).toFixed(1) : '0.0'}% D+1 regulamentado
                       </span>
                     </div>
                     <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
@@ -5395,7 +5360,7 @@ export default function GestorDashboard({
                   <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-xs font-extrabold text-indigo-900 bg-indigo-200 px-2 py-0.5 rounded">CICLO D0</span>
-                      <span className="font-mono text-xs font-black text-indigo-700">{((d0 / total) * 100).toFixed(1)}%</span>
+                      <span className="font-mono text-xs font-black text-indigo-700">{total > 0 ? ((d0 / total) * 100).toFixed(1) : '0.0'}%</span>
                     </div>
                     <span className="text-2xl font-black text-slate-900 block font-mono">{d0} veículos</span>
                     <p className="text-[11px] text-slate-600 leading-tight">Retorno no mesmo dia da rota (Descarregamento imediato).</p>
@@ -5409,7 +5374,7 @@ export default function GestorDashboard({
                   <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/50 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-xs font-extrabold text-blue-900 bg-blue-200 px-2 py-0.5 rounded">CICLO D1</span>
-                      <span className="font-mono text-xs font-black text-blue-700">{((d1 / total) * 100).toFixed(1)}%</span>
+                      <span className="font-mono text-xs font-black text-blue-700">{total > 0 ? ((d1 / total) * 100).toFixed(1) : '0.0'}%</span>
                     </div>
                     <span className="text-2xl font-black text-slate-900 block font-mono">{d1} veículos</span>
                     <p className="text-[11px] text-slate-600 leading-tight">Retorno D+1 com pernoite regulamentado ou descarga matutina.</p>
@@ -5423,7 +5388,7 @@ export default function GestorDashboard({
                   <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/50 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-xs font-extrabold text-amber-900 bg-amber-200 px-2 py-0.5 rounded">CICLO D2</span>
-                      <span className="font-mono text-xs font-black text-amber-700">{((d2 / total) * 100).toFixed(1)}%</span>
+                      <span className="font-mono text-xs font-black text-amber-700">{total > 0 ? ((d2 / total) * 100).toFixed(1) : '0.0'}%</span>
                     </div>
                     <span className="text-2xl font-black text-slate-900 block font-mono">{d2} veículos</span>
                     <p className="text-[11px] text-slate-600 leading-tight">Rotas interior com pernoite duplo autorizado.</p>
@@ -5437,7 +5402,7 @@ export default function GestorDashboard({
                   <div className="p-4 rounded-xl border border-orange-200 bg-orange-50/50 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-xs font-extrabold text-orange-900 bg-orange-200 px-2 py-0.5 rounded">CICLO D3</span>
-                      <span className="font-mono text-xs font-black text-orange-700">{((d3 / total) * 100).toFixed(1)}%</span>
+                      <span className="font-mono text-xs font-black text-orange-700">{total > 0 ? ((d3 / total) * 100).toFixed(1) : '0.0'}%</span>
                     </div>
                     <span className="text-2xl font-black text-slate-900 block font-mono">{d3} veículos</span>
                     <p className="text-[11px] text-slate-600 leading-tight">Rotas de longa distância com pernoite estendido.</p>
@@ -7418,7 +7383,7 @@ export default function GestorDashboard({
                         <h4 className="font-sans font-bold text-sm text-slate-900 uppercase">Vales de Desconto Gerados</h4>
                       </div>
                       <span className="text-xxs bg-red-100 text-red-800 px-2 py-0.5 rounded font-black font-mono">
-                        Pendente: R$ {vales.filter(v => v.status === 'PENDENTE_ASSINATURA' && !v.acknowledgedByGestor).reduce((s, v) => s + v.valor, 0).toFixed(2)}
+                        Pendente: R$ {vales.filter(v => v.status === 'PENDENTE_ASSINATURA' && !v.acknowledgedByGestor).reduce((s, v) => s + (Number(v.valor) || 0), 0).toFixed(2)}
                       </span>
                     </div>
                     <p className="text-xxs text-slate-500">
@@ -7473,7 +7438,7 @@ export default function GestorDashboard({
                                   <span className="text-[9px] text-slate-400 font-mono uppercase block">{vale.colaboradorRole}</span>
                                 </div>
                                 <span className="font-mono font-bold text-red-600 bg-white border border-slate-200 px-2 py-0.5 rounded text-xxs">
-                                  R$ {vale.valor.toFixed(2)}
+                                  R$ {Number(vale.valor || 0).toFixed(2)}
                                 </span>
                               </div>
 
@@ -7516,7 +7481,7 @@ export default function GestorDashboard({
                                       onClick={() => {
                                         requestConfirm(
                                           'Confirmar Compensação',
-                                          `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${vale.valor.toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
+                                          `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${Number(vale.valor || 0).toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
                                           () => {
                                             const updated = vales.map(v => v.id === vale.id ? { ...v, status: 'COMPENSADO' as const } : v);
                                             onSaveVales(updated);
@@ -10110,9 +10075,9 @@ export default function GestorDashboard({
                 <p className="text-justify leading-relaxed">
                   Eu, <strong>{viewingValeDetails.colaboradorName}</strong>, registrado no papel de <strong>{viewingValeDetails.colaboradorRole}</strong>,
                   {viewingValeDetails.colaboradoresAdicionais && viewingValeDetails.colaboradoresAdicionais.length > 0 && (
-                    <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingValeDetails.colaboradoresAdicionais.map(c => `<strong>${c.name}</strong> (${c.role}${c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')},</span>
+                    <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingValeDetails.colaboradoresAdicionais.map(c => `<strong>${c.name}</strong> (${c.role}${c.valor !== undefined && c.valor !== null ? ` - R$ ${Number(c.valor || 0).toFixed(2)}` : ''})`).join(', ')},</span>
                   )}
-                  {' '}autorizo expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em minha folha de pagamento, em conformidade com o Artigo 462, § 1º da CLT, a importância líquida de <strong>R$ {viewingValeDetails.valor.toFixed(2)}</strong> ({viewingValeDetails.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no fechamento logístico do <strong>{viewingValeDetails.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingValeDetails.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+                  {' '}autorizo expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em minha folha de pagamento, em conformidade com o Artigo 462, § 1º da CLT, a importância líquida de <strong>R$ {Number(viewingValeDetails.valor || 0).toFixed(2)}</strong> ({Number(viewingValeDetails.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no fechamento logístico do <strong>{viewingValeDetails.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingValeDetails.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
                 </p>
 
                 {/* Route/Team Info */}
@@ -10137,7 +10102,7 @@ export default function GestorDashboard({
                           <strong>Co-responsáveis:</strong>
                           <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
                             {viewingValeDetails.colaboradoresAdicionais.map((c, i) => (
-                              <li key={i}>{c.name} ({c.role}){c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''}</li>
+                              <li key={i}>{c.name} ({c.role}){c.valor !== undefined && c.valor !== null ? ` - R$ ${Number(c.valor || 0).toFixed(2)}` : ''}</li>
                             ))}
                           </ul>
                         </div>
@@ -10235,7 +10200,7 @@ export default function GestorDashboard({
                     onClick={() => {
                       requestConfirm(
                         'Confirmar Compensação',
-                        `Tem certeza de que deseja faturar e marcar este vale de R$ ${viewingValeDetails.valor.toFixed(2)} para ${viewingValeDetails.colaboradorName} como COMPENSADO?`,
+                        `Tem certeza de que deseja faturar e marcar este vale de R$ ${Number(viewingValeDetails.valor || 0).toFixed(2)} para ${viewingValeDetails.colaboradorName} como COMPENSADO?`,
                         () => {
                           const updated = vales.map(v => v.id === viewingValeDetails.id ? { ...v, status: 'COMPENSADO' as const } : v);
                           onSaveVales(updated);

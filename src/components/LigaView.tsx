@@ -26,7 +26,12 @@ import {
   Image as ImageIcon,
   Video,
   Smartphone,
-  RefreshCw
+  RefreshCw,
+  Printer,
+  FileSpreadsheet,
+  Download,
+  ChevronLeft,
+  ArrowUpDown
 } from 'lucide-react';
 import { 
   User, 
@@ -39,6 +44,7 @@ import {
   BlitzRefugoEntry,
   ZeroBreakDeclaration
 } from '../types';
+import { isAuditFirstPassAccurate } from '../utils/auditAccuracy';
 
 interface LigaViewProps {
   currentUser: User;
@@ -74,45 +80,80 @@ export default function LigaView({
   zeroBreakDeclarations: propZeroBreakDeclarations,
   onSaveLigaData
 }: LigaViewProps) {
+  // Calendário oficial com todos os 12 meses do ano e seus dias
+  const ALL_CALENDAR_MONTHS = [
+    { num: 1, key: '01', name: 'Janeiro', short: 'Jan' },
+    { num: 2, key: '02', name: 'Fevereiro', short: 'Fev' },
+    { num: 3, key: '03', name: 'Março', short: 'Mar' },
+    { num: 4, key: '04', name: 'Abril', short: 'Abr' },
+    { num: 5, key: '05', name: 'Maio', short: 'Mai' },
+    { num: 6, key: '06', name: 'Junho', short: 'Jun' },
+    { num: 7, key: '07', name: 'Julho', short: 'Jul' },
+    { num: 8, key: '08', name: 'Agosto', short: 'Ago' },
+    { num: 9, key: '09', name: 'Setembro', short: 'Set' },
+    { num: 10, key: '10', name: 'Outubro', short: 'Out' },
+    { num: 11, key: '11', name: 'Novembro', short: 'Nov' },
+    { num: 12, key: '12', name: 'Dezembro', short: 'Dez' }
+  ];
+
   // Current date strings (Local and ISO)
   const todayStr = useMemo(() => {
     const d = new Date();
     return d.toISOString().split('T')[0];
   }, []);
 
-  // Real months available in data
-  const availableMonths = useMemo(() => {
-    const set = new Set<string>();
-    // Always include current month
-    const curYearMonth = todayStr.substring(0, 7); // e.g. "2026-09"
-    set.add(curYearMonth);
+  const currentYearNum = parseInt(todayStr.substring(0, 4), 10) || 2026;
+  const currentMonthNum = parseInt(todayStr.substring(5, 7), 10) || 10;
 
-    // From audits
+  // Estado de Ano e Mês Selecionado (contendo todos os meses do ano)
+  const [selectedYear, setSelectedYear] = useState<number>(currentYearNum);
+  const [selectedMonthNum, setSelectedMonthNum] = useState<number>(currentMonthNum);
+  const [daySortOrder, setDaySortOrder] = useState<'desc' | 'asc'>('desc');
+  const [selectedDayFilter, setSelectedDayFilter] = useState<number | null>(null);
+
+  // Modal de Exportação do Relatório de Pontos do Dia
+  const [showDailyExportModal, setShowDailyExportModal] = useState<boolean>(false);
+  const [exportDate, setExportDate] = useState<string>(todayStr);
+  const [exportModalRoleTab, setExportModalRoleTab] = useState<'todos' | 'conferente' | 'empilhador'>('todos');
+
+  // Modal para Selecionar Mês do Ano com todos os 12 meses
+  const [showMonthPickerModal, setShowMonthPickerModal] = useState<boolean>(false);
+
+  const selectedMonth = `${selectedYear}-${String(selectedMonthNum).padStart(2, '0')}`;
+
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    years.add(currentYearNum);
+    years.add(currentYearNum - 1);
+    years.add(currentYearNum + 1);
     (audits || []).forEach(a => {
-      if (a.arrivalDate && a.arrivalDate.length >= 7) {
-        set.add(a.arrivalDate.substring(0, 7));
+      if (a.arrivalDate && a.arrivalDate.length >= 4) {
+        const y = parseInt(a.arrivalDate.substring(0, 4), 10);
+        if (!isNaN(y)) years.add(y);
       }
     });
+    return Array.from(years).sort();
+  }, [currentYearNum, audits]);
 
-    // From imported routes
-    (importedRoutes || []).forEach(r => {
-      if (r.routeDate && r.routeDate.length >= 7) {
-        set.add(r.routeDate.substring(0, 7));
-      }
-    });
+  // Quantidade exata de dias dentro do mês selecionado (considera anos bissextos)
+  const daysInSelectedMonth = useMemo(() => {
+    return new Date(selectedYear, selectedMonthNum, 0).getDate();
+  }, [selectedYear, selectedMonthNum]);
 
-    // Also include standard operations months
-    set.add('2026-08');
-    set.add('2026-07');
-    set.add('2026-02');
+  // Permite compatibilidade caso setSelectedMonth('YYYY-MM') seja chamado
+  const setSelectedMonth = (ym: string) => {
+    if (!ym) return;
+    const [y, m] = ym.split('-');
+    if (y && m) {
+      setSelectedYear(parseInt(y, 10));
+      setSelectedMonthNum(parseInt(m, 10));
+      setSelectedDayFilter(null);
+    }
+  };
 
-    // Sort descending (most recent first)
-    return Array.from(set).sort().reverse();
-  }, [audits, importedRoutes, todayStr]);
-
-  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
-    return todayStr.substring(0, 7);
-  });
+  const availableMonths = useMemo(() => {
+    return ALL_CALENDAR_MONTHS.map(m => `${selectedYear}-${m.key}`);
+  }, [selectedYear]);
 
   // Gestor collaborator selector state
   const isGestorOrAdmin = currentUser.role === 'gestor' || currentUser.role === 'financeiro' || currentUser.role === 'auxiliar_logistica';
@@ -644,39 +685,20 @@ export default function LigaView({
       const avgTimePassed = dayAudits.length > 0 && avgDurationMinutes <= 15.0;
 
       // 2. Acuracidade na 1ª contagem (>= 95%):
-      // "seguindo o fluxo de recontagem não interfere na meta, mas se ele recontar o mesmo mapa pela segunda vez e a quantidade mudar ele perde performance"
+      // Critério DPO Ambev: A 1ª contagem vale 100% se permanecer inalterada mesmo após recontagem, independente de sobras e faltas fiscais.
       let correctFirstCounts = 0;
       let totalAssessed = 0;
 
       dayAudits.forEach(a => {
         totalAssessed++;
-        let hasQuantityShiftOnRecount = false;
-
-        // Check items
-        if (a.items) {
-          a.items.forEach(item => {
-            if (item.rePhysicalQty !== undefined && item.physicalQty !== item.rePhysicalQty) {
-              hasQuantityShiftOnRecount = true;
-            }
-          });
-        }
-        // Check assets
-        if (a.assets) {
-          a.assets.forEach(asset => {
-            if (asset.rePhysicalQty !== undefined && asset.physicalQty !== asset.rePhysicalQty) {
-              hasQuantityShiftOnRecount = true;
-            }
-          });
-        }
-
-        if (!hasQuantityShiftOnRecount && (a.status === 'finalizado_ok' || a.status === 'conferido_fisico' || a.status === 'reconferencia')) {
+        if (isAuditFirstPassAccurate(a)) {
           correctFirstCounts++;
         }
       });
 
       const accuracyRate = totalAssessed > 0 
         ? Number(((correctFirstCounts / totalAssessed) * 100).toFixed(1)) 
-        : (dayAudits.length > 0 ? 98.2 : 0);
+        : (dayAudits.length > 0 ? 100.0 : 0);
 
       const accuracyPassed = dayAudits.length > 0 && accuracyRate >= 95.0;
 
@@ -786,26 +808,46 @@ export default function LigaView({
     return calculateDailyMetrics(todayStr, activeSubjectUser);
   }, [todayStr, activeSubjectUser, audits, importedRoutes, carregamentos, zeroBreakDeclarations, safetyReports, fiveSEntries, blitzEntries]);
 
-  // Monthly breakdown for active subject user
+  // Monthly breakdown for active subject user - Contém TODOS os dias do mês selecionado
   const monthlyHistory = useMemo(() => {
-    // Generate dates in selectedMonth
-    const [yearStr, monthStr] = selectedMonth.split('-');
-    const year = parseInt(yearStr, 10);
-    const month = parseInt(monthStr, 10);
-    const daysInMonth = new Date(year, month, 0).getDate();
+    const list: Array<ReturnType<typeof calculateDailyMetrics> & {
+      dayNum: number;
+      dayOfWeek: string;
+      isFuture: boolean;
+      isToday: boolean;
+    }> = [];
 
-    const history: ReturnType<typeof calculateDailyMetrics>[] = [];
+    const dayNames = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
 
-    for (let day = daysInMonth; day >= 1; day--) {
-      const dateStr = `${yearStr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      // Only include if date is today or past
-      if (dateStr <= todayStr) {
-        history.push(calculateDailyMetrics(dateStr, activeSubjectUser));
-      }
+    for (let day = 1; day <= daysInSelectedMonth; day++) {
+      const dateStr = `${selectedYear}-${String(selectedMonthNum).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const dObj = new Date(dateStr + 'T12:00:00');
+      const dayOfWeek = dayNames[dObj.getDay()] || '';
+      const isFuture = dateStr > todayStr;
+      const isToday = dateStr === todayStr;
+
+      const metrics = calculateDailyMetrics(dateStr, activeSubjectUser);
+
+      list.push({
+        ...metrics,
+        dayNum: day,
+        dayOfWeek,
+        isFuture,
+        isToday
+      });
     }
 
-    return history;
-  }, [selectedMonth, todayStr, activeSubjectUser, audits, importedRoutes, carregamentos, zeroBreakDeclarations, safetyReports, fiveSEntries, blitzEntries]);
+    if (daySortOrder === 'desc') {
+      return [...list].reverse();
+    }
+    return list;
+  }, [selectedYear, selectedMonthNum, daysInSelectedMonth, daySortOrder, todayStr, activeSubjectUser, audits, importedRoutes, carregamentos, zeroBreakDeclarations, safetyReports, fiveSEntries, blitzEntries]);
+
+  // Dias filtrados para exibição
+  const displayedDays = useMemo(() => {
+    if (selectedDayFilter === null) return monthlyHistory;
+    return monthlyHistory.filter(d => d.dayNum === selectedDayFilter);
+  }, [monthlyHistory, selectedDayFilter]);
 
   // Accumulated monthly summary
   const monthlySummary = useMemo(() => {
@@ -813,13 +855,15 @@ export default function LigaView({
     let daysWithFullGoal = 0;
     let totalDaysAssessed = 0;
 
-    monthlyHistory.forEach(day => {
+    const evaluatedDays = monthlyHistory.filter(day => !day.isFuture);
+
+    evaluatedDays.forEach(day => {
       accumulatedPoints += day.totalPoints;
       if (day.allGoalsMet) daysWithFullGoal++;
       if (day.totalPoints > 0) totalDaysAssessed++;
     });
 
-    const maxPossiblePoints = monthlyHistory.length * 6;
+    const maxPossiblePoints = Math.max(1, evaluatedDays.length) * 6;
     const adherenceRate = maxPossiblePoints > 0 ? ((accumulatedPoints / maxPossiblePoints) * 100).toFixed(1) : '0';
 
     return {
@@ -830,6 +874,349 @@ export default function LigaView({
       adherenceRate
     };
   }, [monthlyHistory]);
+
+  // Dados consolidados para o Relatório Diário de Pontos (Todos os colaboradores da data)
+  const dailyReportData = useMemo(() => {
+    const conferenteUsers = users.filter(u => u.role === 'conferente' || (u.role === 'gestor' && u.name.includes('GLADSON')));
+    const empilhadorUsers = users.filter(u => u.role === 'empilhador');
+
+    const conferentesMetrics = conferenteUsers.map(u => ({
+      user: u,
+      metrics: calculateDailyMetrics(exportDate, u)
+    }));
+
+    const empilhadoresMetrics = empilhadorUsers.map(u => ({
+      user: u,
+      metrics: calculateDailyMetrics(exportDate, u)
+    }));
+
+    const allColabs = [...conferentesMetrics, ...empilhadoresMetrics];
+    const totalCollaborators = allColabs.length;
+    const totalPointsSum = allColabs.reduce((acc, item) => acc + item.metrics.totalPoints, 0);
+    const avgPoints = totalCollaborators > 0 ? (totalPointsSum / totalCollaborators).toFixed(1) : '0.0';
+    const fullGoalCount = allColabs.filter(item => item.metrics.allGoalsMet).length;
+    const generalAdherence = totalCollaborators > 0 ? (((fullGoalCount) / totalCollaborators) * 100).toFixed(1) : '0.0';
+
+    return {
+      date: exportDate,
+      conferentesMetrics,
+      empilhadoresMetrics,
+      totalCollaborators,
+      avgPoints,
+      fullGoalCount,
+      generalAdherence
+    };
+  }, [exportDate, users, audits, importedRoutes, carregamentos, zeroBreakDeclarations, safetyReports, fiveSEntries, blitzEntries]);
+
+  // Handler para imprimir relatório diário formatado em A4
+  const handlePrintDailyPointsReport = (targetDate: string = exportDate) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert("Por favor, autorize popups para imprimir o relatório diário de pontos.");
+      return;
+    }
+
+    const [y, m, d] = targetDate.split('-');
+    const dateFormatted = `${d}/${m}/${y}`;
+    const dateObj = new Date(targetDate + 'T12:00:00');
+    const dayNames = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+    const weekday = dayNames[dateObj.getDay()] || '';
+
+    const conferenteUsers = users.filter(u => u.role === 'conferente' || (u.role === 'gestor' && u.name.includes('GLADSON')));
+    const empilhadorUsers = users.filter(u => u.role === 'empilhador');
+
+    const conferentesRowsHtml = conferenteUsers.map((u, idx) => {
+      const m = calculateDailyMetrics(targetDate, u);
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 11px;">
+          <td style="padding: 6px 8px; font-weight: bold; text-align: center;">${idx + 1}º</td>
+          <td style="padding: 6px 8px;">
+            <div style="font-weight: bold; color: #0f172a;">${u.name}</div>
+            <div style="font-size: 9px; color: #64748b; font-family: monospace;">Login: @${u.username || u.id}</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${m.avgTimePassed ? '#047857' : '#64748b'};">${m.avgDurationMinutes} min</span>
+            <div style="font-size: 9px; color: ${m.avgTimePassed ? '#059669' : '#94a3b8'};">(${m.avgTimePoints}/2 pts)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${m.accuracyPassed ? '#047857' : '#64748b'};">${m.accuracyRate}%</span>
+            <div style="font-size: 9px; color: ${m.accuracyPassed ? '#059669' : '#94a3b8'};">(${m.accuracyPoints}/2 pts)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${m.blitzPassed ? '#047857' : '#64748b'};">${m.dayBlitzCount} veíc.</span>
+            <div style="font-size: 9px; color: ${m.blitzPassed ? '#059669' : '#94a3b8'};">(${m.blitzPoints}/1 pt)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${m.fiveSPassed ? '#047857' : '#64748b'};">${m.fiveSPassed ? 'Conforme' : 'Pendente'}</span>
+            <div style="font-size: 9px; color: ${m.fiveSPassed ? '#059669' : '#94a3b8'};">(${m.fiveSPoints}/1 pt)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center; font-weight: 900; font-size: 13px; color: ${m.totalPoints === 6 ? '#047857' : m.totalPoints >= 4 ? '#b45309' : '#64748b'};">
+            ${m.totalPoints} / 6
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: ${m.totalPoints === 6 ? '#dcfce7; color: #166534;' : m.totalPoints > 0 ? '#fef3c7; color: #92400e;' : '#f1f5f9; color: #475569;'}">
+              ${m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'}
+            </span>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const empilhadoresRowsHtml = empilhadorUsers.map((u, idx) => {
+      const m = calculateDailyMetrics(targetDate, u);
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 11px;">
+          <td style="padding: 6px 8px; font-weight: bold; text-align: center;">${idx + 1}º</td>
+          <td style="padding: 6px 8px;">
+            <div style="font-weight: bold; color: #0f172a;">${u.name}</div>
+            <div style="font-size: 9px; color: #64748b; font-family: monospace;">Matrícula: @${u.username || u.id}</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${(m as any).efdPassed ? '#047857' : '#64748b'};">${(m as any).efdPassed ? '≤ 22:00 OK' : 'Não Atend.'}</span>
+            <div style="font-size: 9px; color: ${(m as any).efdPassed ? '#059669' : '#94a3b8'};">(${(m as any).efdPoints || 0}/2 pts)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${(m as any).zeroBreaksPassed ? '#047857' : '#64748b'};">${(m as any).zeroBreaksPassed ? 'Zero Quebras' : 'Com Quebra'}</span>
+            <div style="font-size: 9px; color: ${(m as any).zeroBreaksPassed ? '#059669' : '#94a3b8'};">(${(m as any).zeroBreakPoints || 0}/2 pts)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${(m as any).safetyPassed ? '#047857' : '#64748b'};">${(m as any).safetyReportsCountToday || 0} Relato</span>
+            <div style="font-size: 9px; color: ${(m as any).safetyPassed ? '#059669' : '#94a3b8'};">(${(m as any).safetyPoints || 0}/1 pt)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-weight: bold; color: ${m.fiveSPassed ? '#047857' : '#64748b'};">${m.fiveSPassed ? 'Conforme' : 'Pendente'}</span>
+            <div style="font-size: 9px; color: ${m.fiveSPassed ? '#059669' : '#94a3b8'};">(${m.fiveSPoints}/1 pt)</div>
+          </td>
+          <td style="padding: 6px 8px; text-align: center; font-weight: 900; font-size: 13px; color: ${m.totalPoints === 6 ? '#047857' : m.totalPoints >= 4 ? '#b45309' : '#64748b'};">
+            ${m.totalPoints} / 6
+          </td>
+          <td style="padding: 6px 8px; text-align: center;">
+            <span style="font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: ${m.totalPoints === 6 ? '#dcfce7; color: #166534;' : m.totalPoints > 0 ? '#fef3c7; color: #92400e;' : '#f1f5f9; color: #475569;'}">
+              ${m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'}
+            </span>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const totalCols = conferenteUsers.length + empilhadorUsers.length;
+    const allColabs = [
+      ...conferenteUsers.map(u => calculateDailyMetrics(targetDate, u)),
+      ...empilhadorUsers.map(u => calculateDailyMetrics(targetDate, u))
+    ];
+    const totalPtsSum = allColabs.reduce((acc, c) => acc + c.totalPoints, 0);
+    const avgPts = totalCols > 0 ? (totalPtsSum / totalCols).toFixed(1) : '0.0';
+    const totalFullGoals = allColabs.filter(c => c.allGoalsMet).length;
+    const avgAdherence = totalCols > 0 ? ((totalFullGoals / totalCols) * 100).toFixed(1) : '0.0';
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Relatório Diário de Pontos DPO - ${dateFormatted}</title>
+          <style>
+            @page { size: A4 landscape; margin: 10mm; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #0f172a; margin: 0; padding: 0; background: #fff; }
+            .header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-end; }
+            .title-area h1 { font-size: 16px; margin: 0; text-transform: uppercase; font-weight: 900; color: #0f172a; }
+            .title-area h2 { font-size: 12px; margin: 2px 0 0 0; color: #475569; font-weight: 700; text-transform: uppercase; }
+            .meta-box { text-align: right; font-size: 11px; }
+            .kpi-row { display: flex; gap: 10px; margin-bottom: 14px; }
+            .kpi-card { flex: 1; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #f8fafc; }
+            .kpi-title { font-size: 9px; font-weight: 800; text-transform: uppercase; color: #64748b; }
+            .kpi-val { font-size: 18px; font-weight: 900; color: #0f172a; margin-top: 2px; }
+            .sec-title { font-size: 11px; font-weight: 900; text-transform: uppercase; margin: 12px 0 6px 0; color: #1e293b; border-left: 3px solid #2563eb; padding-left: 6px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+            th { background: #f1f5f9; color: #334155; font-size: 10px; font-weight: 800; text-transform: uppercase; padding: 6px 8px; border: 1px solid #cbd5e1; }
+            td { border: 1px solid #e2e8f0; }
+            .dpo-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 8px 10px; font-size: 10px; color: #1e3a8a; line-height: 1.4; margin-top: 10px; }
+            .signatures { display: flex; justify-content: space-between; margin-top: 28px; gap: 40px; page-break-inside: avoid; }
+            .sig-block { flex: 1; text-align: center; border-top: 1px solid #0f172a; padding-top: 6px; font-size: 11px; }
+            .sig-role { font-size: 9px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title-area">
+              <div style="font-size: 10px; font-weight: 900; color: #2563eb; letter-spacing: 0.5px;">PAU BRASIL DISTRIBUIDORA LTDA • CDD GUARABIRA</div>
+              <h1>Relatório Diário de Pontuação e Conformidade Operacional</h1>
+              <h2>Liga Operacional DPO Ambev • Metas Diárias (6 Pontos)</h2>
+            </div>
+            <div class="meta-box">
+              <div style="font-size: 12px; font-weight: 900; color: #0f172a;">${dateFormatted} (${weekday})</div>
+              <div style="color: #64748b; font-size: 10px;">Emitido em: ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi-card">
+              <div class="kpi-title">Total de Colaboradores</div>
+              <div class="kpi-val">${totalCols} avaliados</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-title">Média de Pontos da Equipe</div>
+              <div class="kpi-val" style="color: #2563eb;">${avgPts} <span style="font-size: 11px; color: #64748b;">/ 6.0 pts</span></div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-title">Aderência Geral da Operação</div>
+              <div class="kpi-val" style="color: #059669;">${avgAdherence}%</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-title">Metas 100% Batidas (6/6 pts)</div>
+              <div class="kpi-val" style="color: #166534;">${totalFullGoals} de ${totalCols} colaboradores</div>
+            </div>
+          </div>
+
+          <div class="sec-title">1. Desempenho Diário dos Conferentes e Auditores de Docas</div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 32px;">Pos</th>
+                <th>Conferente</th>
+                <th>Meta 1: Produtividade (≤15m)</th>
+                <th>Meta 2: Acuracidade 1ª (≥95%)</th>
+                <th>Meta 3: Blitz Refugo (2 Carros)</th>
+                <th>Meta 4: 5S Posto</th>
+                <th style="width: 75px;">Pontos</th>
+                <th style="width: 95px;">Status DPO</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${conferentesRowsHtml}
+            </tbody>
+          </table>
+
+          <div class="sec-title">2. Desempenho Diário dos Operadores de Empilhadeira</div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 32px;">Pos</th>
+                <th>Operador de Empilhadeira</th>
+                <th>Meta 1: EFD (≤22:00)</th>
+                <th>Meta 2: Qualidade (0 Quebras)</th>
+                <th>Meta 3: Segurança (Relato)</th>
+                <th>Meta 4: 5S Equipamento</th>
+                <th style="width: 75px;">Pontos</th>
+                <th style="width: 95px;">Status DPO</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${empilhadoresRowsHtml}
+            </tbody>
+          </table>
+
+          <div class="dpo-notice">
+            <strong>Critério de Acuracidade de 1ª Conferência (Norma DPO Ambev):</strong>
+            A 1ª contagem física do conferente é computada em 100% caso permaneça inalterada mesmo após solicitação de recontagem (confirmação dos itens e quantidades físicas originais). Divergências contra faturamento fiscal (sobras/faltas) não penalizam a acuracidade de contagem da equipe se a conferência física for mantida e confirmada nas docas.
+          </div>
+
+          <div class="signatures">
+            <div class="sig-block">
+              <strong>${currentUser.name}</strong>
+              <div class="sig-role">Fiscal / Aferidor de Logística</div>
+            </div>
+            <div class="sig-block">
+              <strong>Elisson Minervino / Marcos Guilherme</strong>
+              <div class="sig-role">Gestão de Logística • CDD Guarabira</div>
+            </div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  // Handler para download de arquivo CSV/Excel do relatório diário
+  const handleDownloadDailyPointsCsv = (targetDate: string = exportDate) => {
+    const [y, m, d] = targetDate.split('-');
+    const dateFormatted = `${d}/${m}/${y}`;
+
+    const conferenteUsers = users.filter(u => u.role === 'conferente' || (u.role === 'gestor' && u.name.includes('GLADSON')));
+    const empilhadorUsers = users.filter(u => u.role === 'empilhador');
+
+    const headers = [
+      'Data',
+      'Matrícula/Login',
+      'Colaborador',
+      'Função',
+      'Meta 1 (Produtividade/EFD)',
+      'Meta 1 Pontos',
+      'Meta 2 (Acuracidade/Zero Quebras)',
+      'Meta 2 Pontos',
+      'Meta 3 (Blitz/Segurança)',
+      'Meta 3 Pontos',
+      'Meta 4 (5S)',
+      'Meta 4 Pontos',
+      'Total Pontos',
+      'Aderência %',
+      'Status DPO'
+    ];
+
+    const rows: string[][] = [];
+
+    conferenteUsers.forEach(u => {
+      const m = calculateDailyMetrics(targetDate, u);
+      rows.push([
+        dateFormatted,
+        u.username || u.id,
+        u.name,
+        'CONFERENTE',
+        `${m.avgDurationMinutes} min`,
+        `${m.avgTimePoints}`,
+        `${m.accuracyRate}%`,
+        `${m.accuracyPoints}`,
+        `${m.dayBlitzCount} veic.`,
+        `${m.blitzPoints}`,
+        m.fiveSPassed ? 'CONFORME' : 'PENDENTE',
+        `${m.fiveSPoints}`,
+        `${m.totalPoints}`,
+        `${((m.totalPoints / 6) * 100).toFixed(0)}%`,
+        m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'
+      ]);
+    });
+
+    empilhadorUsers.forEach(u => {
+      const m = calculateDailyMetrics(targetDate, u);
+      rows.push([
+        dateFormatted,
+        u.username || u.id,
+        u.name,
+        'EMPILHADOR',
+        (m as any).efdPassed ? 'PONTUAL (≤22h)' : 'NÃO ATENDIDO',
+        `${(m as any).efdPoints || 0}`,
+        (m as any).zeroBreaksPassed ? 'ZERO QUEBRAS' : 'COM QUEBRA',
+        `${(m as any).zeroBreakPoints || 0}`,
+        `${(m as any).safetyReportsCountToday || 0} RELATOS`,
+        `${(m as any).safetyPoints || 0}`,
+        m.fiveSPassed ? 'CONFORME' : 'PENDENTE',
+        `${m.fiveSPoints}`,
+        `${m.totalPoints}`,
+        `${((m.totalPoints / 6) * 100).toFixed(0)}%`,
+        m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'
+      ]);
+    });
+
+    const csvContent = '\uFEFF' + [
+      headers.join(';'),
+      ...rows.map(r => r.map(val => `"${String(val).replace(/"/g, '""')}"`).join(';'))
+    ].join('\r\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `relatorio_pontos_liga_dpo_${targetDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   // GESTOR LEADERBOARD (ranking of all collaborators)
   const gestorLeaderboard = useMemo(() => {
@@ -1062,6 +1449,34 @@ export default function LigaView({
                 <span className="text-emerald-400">{todayMetrics.totalPoints}/6 Pts Hoje</span>
               </div>
             </div>
+          </div>
+
+          {/* Botões de Ação Rápida no Topo */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setExportDate(todayStr);
+                setShowDailyExportModal(true);
+              }}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs px-3.5 py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer active:scale-95"
+              id="btn_exportar_relatorio_pontos_topo"
+              title="Exportar Relatório Diário de Pontos DPO (CSV e Impressão A4)"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Exportar Relatório de Pontos</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowMonthPickerModal(true)}
+              className="bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs px-3.5 py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer active:scale-95"
+              id="btn_selecionar_mes_topo"
+              title="Selecionar Mês do Ano e verificar todos os dias com metas DPO"
+            >
+              <Calendar className="h-4 w-4" />
+              <span>Selecionar Mês do Ano</span>
+            </button>
           </div>
         </div>
 
@@ -1645,34 +2060,112 @@ export default function LigaView({
       {/* ------------------------------------------------------------- */}
       {/* 4. GUIA DE MESES REAL (SEM MOCK) E RESUMO MENSAL */}
       {/* ------------------------------------------------------------- */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
           <div>
-            <h2 className="text-sm md:text-base font-black uppercase tracking-wider text-slate-900 flex items-center space-x-2">
-              <Calendar className="h-4 w-4 text-blue-600" />
-              <span>Guia de Meses & Histórico Diário</span>
-            </h2>
-            <p className="text-xs text-slate-500">
-              {isGestorOrAdmin ? `Histórico de metas de ${activeSubjectUser.name}` : 'Visualização exclusiva dos seus atingimentos de metas'}
-            </p>
+            <div className="flex items-center space-x-2">
+              <span className="p-2 bg-blue-100 text-blue-700 rounded-xl">
+                <Calendar className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 className="text-base md:text-lg font-black uppercase tracking-wider text-slate-900 flex items-center space-x-2">
+                  <span>Guia de Meses & Histórico Diário DPO</span>
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {isGestorOrAdmin 
+                    ? `Histórico de metas de ${activeSubjectUser.name} • ${daysInSelectedMonth} dias em ${ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.name} de ${selectedYear}`
+                    : `Seus atingimentos diários de metas • ${daysInSelectedMonth} dias em ${ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.name} de ${selectedYear}`}
+                </p>
+              </div>
+            </div>
           </div>
 
-          {/* Real Months Tab Selector */}
-          <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
-            {availableMonths.map(ym => (
-              <button
-                key={ym}
-                type="button"
-                onClick={() => setSelectedMonth(ym)}
-                className={`px-3 py-1.5 text-xs font-extrabold rounded-lg transition-all cursor-pointer ${
-                  selectedMonth === ym
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'
-                }`}
+          {/* Action buttons: Year, Select Month, Export Daily Points Report */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Year Selector */}
+            <div className="flex items-center space-x-1.5 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+              <span className="text-xxs font-black uppercase text-slate-500">Ano:</span>
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  setSelectedYear(parseInt(e.target.value, 10));
+                  setSelectedDayFilter(null);
+                }}
+                className="bg-white text-xs font-black text-slate-800 border border-slate-300 rounded-lg px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs"
               >
-                {formatMonthLabel(ym)}
-              </button>
-            ))}
+                {availableYears.map(yr => (
+                  <option key={yr} value={yr}>{yr}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Button to open Month Selector */}
+            <button
+              type="button"
+              onClick={() => setShowMonthPickerModal(true)}
+              className="px-3.5 py-2 text-xs font-black text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+              id="btn_abrir_seletor_mes_ano"
+              title="Abrir painel com todos os 12 meses do ano e seus respectivos dias"
+            >
+              <Calendar className="h-4 w-4" />
+              <span>Selecionar Mês ({ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.short}/{selectedYear})</span>
+            </button>
+
+            {/* Button to Export Daily Points Report */}
+            <button
+              type="button"
+              onClick={() => {
+                setExportDate(todayStr);
+                setShowDailyExportModal(true);
+              }}
+              className="px-3.5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+              id="btn_exportar_relatorio_pontos_secao"
+              title="Exportar Relatório Diário de Pontos DPO em CSV ou Impressão A4"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Exportar Relatório do Dia</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 12 Months Tabs Navigation Strip (Todos os meses do ano) */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xxs font-black uppercase tracking-wider text-slate-500 flex items-center space-x-1">
+              <span>Meses do Ano de {selectedYear}:</span>
+              <span className="text-slate-400 font-normal">({ALL_CALENDAR_MONTHS.length} meses disponíveis)</span>
+            </span>
+            <span className="text-xxs font-bold text-blue-600">
+              Mês Selecionado: {ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.name} ({daysInSelectedMonth} dias)
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-1.5 p-1.5 bg-slate-100 rounded-xl border border-slate-200">
+            {ALL_CALENDAR_MONTHS.map(m => {
+              const isSelected = selectedMonthNum === m.num;
+              const daysInThisMonth = new Date(selectedYear, m.num, 0).getDate();
+              return (
+                <button
+                  key={m.num}
+                  type="button"
+                  onClick={() => {
+                    setSelectedMonthNum(m.num);
+                    setSelectedDayFilter(null);
+                  }}
+                  className={`px-2 py-2 text-xs rounded-lg transition-all text-center cursor-pointer flex flex-col items-center justify-center ${
+                    isSelected
+                      ? 'bg-blue-600 text-white font-black shadow-md ring-2 ring-blue-400 scale-[1.02]'
+                      : 'text-slate-700 hover:bg-white hover:text-blue-600 font-bold bg-slate-50/70 border border-slate-200/60'
+                  }`}
+                  title={`${m.name} de ${selectedYear} (${daysInThisMonth} dias)`}
+                >
+                  <span className="text-xs uppercase">{m.short}</span>
+                  <span className={`text-[10px] font-mono mt-0.5 ${isSelected ? 'text-blue-100' : 'text-slate-400'}`}>
+                    {daysInThisMonth}d
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -1683,7 +2176,7 @@ export default function LigaView({
             <div className="text-lg md:text-2xl font-black text-blue-600 mt-0.5">
               {monthlySummary.accumulatedPoints} <span className="text-xs text-slate-400">/ {monthlySummary.maxPossiblePoints}</span>
             </div>
-            <div className="text-xxs font-bold text-slate-500 mt-0.5">Mês de {formatMonthLabel(selectedMonth)}</div>
+            <div className="text-xxs font-bold text-slate-500 mt-0.5">Mês de {ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.name} ({selectedYear})</div>
           </div>
 
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
@@ -1711,6 +2204,82 @@ export default function LigaView({
           </div>
         </div>
 
+        {/* Days of Month Filter & Controls Bar */}
+        <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-black uppercase text-slate-800">
+                Dias de {ALL_CALENDAR_MONTHS.find(m => m.num === selectedMonthNum)?.name} de {selectedYear}:
+              </span>
+              <span className="text-xs font-bold text-slate-500">
+                {displayedDays.length} {displayedDays.length === 1 ? 'dia exibido' : 'dias exibidos'} (Total de {daysInSelectedMonth} dias no mês)
+              </span>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              {/* Sort Order Toggle */}
+              <button
+                type="button"
+                onClick={() => setDaySortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
+                className="px-2.5 py-1 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg flex items-center space-x-1 cursor-pointer transition shadow-2xs"
+                title="Alternar ordem de exibição dos dias do mês"
+              >
+                <ArrowUpDown className="h-3.5 w-3.5 text-slate-500" />
+                <span>{daySortOrder === 'desc' ? `Decrescente (${daysInSelectedMonth} → 1)` : `Crescente (1 → ${daysInSelectedMonth})`}</span>
+              </button>
+
+              {/* Reset Day Filter */}
+              {selectedDayFilter !== null && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedDayFilter(null)}
+                  className="px-2.5 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer transition"
+                >
+                  Ver Todos os {daysInSelectedMonth} Dias
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Quick day buttons (1 to daysInSelectedMonth) */}
+          <div className="flex flex-wrap gap-1 items-center max-h-24 overflow-y-auto pr-1">
+            <button
+              type="button"
+              onClick={() => setSelectedDayFilter(null)}
+              className={`px-2 py-1 text-xs rounded-md transition cursor-pointer font-bold ${
+                selectedDayFilter === null
+                  ? 'bg-slate-900 text-white shadow-2xs'
+                  : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+              }`}
+            >
+              Todos ({daysInSelectedMonth})
+            </button>
+            {Array.from({ length: daysInSelectedMonth }, (_, i) => i + 1).map(dayNum => {
+              const dayStr = `${selectedYear}-${String(selectedMonthNum).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+              const isToday = dayStr === todayStr;
+              const isSelected = selectedDayFilter === dayNum;
+              return (
+                <button
+                  key={dayNum}
+                  type="button"
+                  onClick={() => setSelectedDayFilter(dayNum)}
+                  className={`px-2 py-1 text-xs rounded-md transition cursor-pointer font-bold relative ${
+                    isSelected
+                      ? 'bg-blue-600 text-white shadow-2xs'
+                      : isToday
+                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                        : 'bg-white text-slate-700 hover:bg-slate-200 border border-slate-200'
+                  }`}
+                  title={`Ver apenas o dia ${String(dayNum).padStart(2, '0')}/${String(selectedMonthNum).padStart(2, '0')}`}
+                >
+                  {String(dayNum).padStart(2, '0')}
+                  {isToday && <span className="absolute -top-1 -right-1 w-2 h-2 bg-amber-500 rounded-full" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* ------------------------------------------------------------- */}
         {/* 5. HISTORICAL DAYS TABLE FOR THIS COLLABORATOR ONLY */}
         {/* ------------------------------------------------------------- */}
@@ -1733,10 +2302,11 @@ export default function LigaView({
                 </th>
                 <th className="py-3 px-3 text-center">Pontos do Dia</th>
                 <th className="py-3 px-3 text-center">Status DPO</th>
+                <th className="py-3 px-3 text-center">Relatório Diário</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white font-medium">
-              {monthlyHistory.map(day => {
+              {displayedDays.map(day => {
                 const isDayToday = day.date === todayStr;
                 return (
                   <tr key={day.date} className={`hover:bg-slate-50 transition ${isDayToday ? 'bg-amber-50/40 font-bold' : ''}`}>
@@ -1745,6 +2315,7 @@ export default function LigaView({
                         {new Date(day.date + 'T00:00:00').toLocaleDateString('pt-BR')}
                         {isDayToday && <span className="ml-1.5 text-[9px] bg-amber-500 text-slate-950 px-1.5 py-0.2 rounded font-black uppercase">Hoje</span>}
                       </div>
+                      <div className="text-[10px] text-slate-400 capitalize">{day.dayOfWeek}</div>
                     </td>
 
                     {/* Meta 1 */}
@@ -1882,6 +2453,22 @@ export default function LigaView({
                           Sem Pontos
                         </span>
                       )}
+                    </td>
+
+                    {/* Action: Export Daily Points Report for this specific day */}
+                    <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExportDate(day.date);
+                          setShowDailyExportModal(true);
+                        }}
+                        className="inline-flex items-center space-x-1 px-2.5 py-1 text-xs font-black text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition shadow-2xs cursor-pointer active:scale-95"
+                        title={`Exportar relatório de pontos do dia ${new Date(day.date + 'T00:00:00').toLocaleDateString('pt-BR')}`}
+                      >
+                        <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                        <span>Exportar Dia</span>
+                      </button>
                     </td>
                   </tr>
                 );
@@ -2544,6 +3131,522 @@ export default function LigaView({
             <div className="rounded-xl overflow-hidden bg-slate-900 flex items-center justify-center max-h-[75vh]">
               <img src={viewingPhotoUrl} alt="Foto Auditada" className="max-h-[75vh] w-auto object-contain" />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL 5: SELETOR DE MÊS DO ANO COM TODOS OS MESES E SEUS DIAS */}
+      {/* ------------------------------------------------------------- */}
+      {showMonthPickerModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" onClick={() => setShowMonthPickerModal(false)}>
+          <div className="max-w-2xl w-full bg-white rounded-2xl overflow-hidden shadow-2xl p-6 space-y-5 border border-slate-200" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                  <Calendar className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-slate-900 uppercase tracking-wider">
+                    Selecionar Mês do Ano
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Selecione qualquer mês para inspecionar todos os seus dias com pontuações DPO
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMonthPickerModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Seletor de Ano */}
+            <div className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <span className="text-xs font-black uppercase text-slate-600 flex items-center space-x-1.5">
+                <span>Ano Selecionado:</span>
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedYear(prev => prev - 1)}
+                  className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+                  title="Ano anterior"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <select
+                  value={selectedYear}
+                  onChange={(e) => {
+                    setSelectedYear(parseInt(e.target.value, 10));
+                    setSelectedDayFilter(null);
+                  }}
+                  className="bg-white text-xs font-black text-slate-900 border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs"
+                >
+                  {availableYears.map(yr => (
+                    <option key={yr} value={yr}>{yr}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setSelectedYear(prev => prev + 1)}
+                  className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+                  title="Próximo ano"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Grid dos 12 Meses do Ano */}
+            <div>
+              <div className="text-xxs font-black uppercase tracking-wider text-slate-400 mb-2">
+                Todos os 12 Meses do Calendário ({selectedYear}):
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                {ALL_CALENDAR_MONTHS.map(m => {
+                  const isSelected = selectedMonthNum === m.num;
+                  const daysInThisMonth = new Date(selectedYear, m.num, 0).getDate();
+                  return (
+                    <button
+                      key={m.num}
+                      type="button"
+                      onClick={() => {
+                        setSelectedMonthNum(m.num);
+                        setSelectedDayFilter(null);
+                        setShowMonthPickerModal(false);
+                      }}
+                      className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-md ring-2 ring-blue-300 scale-[1.02]'
+                          : 'bg-white text-slate-800 border-slate-200 hover:border-blue-300 hover:bg-blue-50/50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={`text-[10px] font-mono font-bold ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
+                          Mês {m.key}
+                        </span>
+                        {isSelected && (
+                          <span className="text-[9px] bg-white text-blue-700 px-1.5 py-0.2 rounded-full font-black uppercase">
+                            Ativo
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-black text-sm mt-1">
+                        {m.name}
+                      </div>
+                      <div className={`text-xxs font-bold mt-1 ${isSelected ? 'text-blue-100' : 'text-slate-500'}`}>
+                        Contém {daysInThisMonth} dias
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowMonthPickerModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL 6: EXPORTAÇÃO E VISUALIZAÇÃO DO RELATÓRIO DE PONTOS DO DIA */}
+      {/* ------------------------------------------------------------- */}
+      {showDailyExportModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 z-50 animate-fade-in" onClick={() => setShowDailyExportModal(false)}>
+          <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200" onClick={(e) => e.stopPropagation()}>
+            
+            {/* Modal Header */}
+            <div className="bg-slate-900 text-white p-4 sm:p-5 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/40">
+                  <FileSpreadsheet className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-wider text-emerald-400">
+                    PAU BRASIL DISTRIBUIDORA • CDD GUARABIRA
+                  </div>
+                  <h2 className="text-base sm:text-lg font-black tracking-tight">
+                    Relatório Diário de Pontuação DPO (6 Pontos)
+                  </h2>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDailyExportModal(false)}
+                  className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Date Selector & Action Bar */}
+            <div className="bg-slate-50 border-b border-slate-200 p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-black uppercase text-slate-700 flex items-center space-x-1">
+                  <Calendar className="h-4 w-4 text-blue-600" />
+                  <span>Data do Relatório:</span>
+                </span>
+                <input
+                  type="date"
+                  value={exportDate}
+                  onChange={(e) => setExportDate(e.target.value)}
+                  className="bg-white text-xs font-black text-slate-900 border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs cursor-pointer"
+                />
+
+                <div className="flex items-center space-x-1">
+                  <button
+                    type="button"
+                    onClick={() => setExportDate(todayStr)}
+                    className={`px-2.5 py-1 text-xs rounded-md font-bold transition cursor-pointer ${
+                      exportDate === todayStr ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-200 border border-slate-300'
+                    }`}
+                  >
+                    Hoje
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(exportDate + 'T12:00:00');
+                      d.setDate(d.getDate() - 1);
+                      setExportDate(d.toISOString().substring(0, 10));
+                    }}
+                    className="px-2 py-1 text-xs bg-white text-slate-700 hover:bg-slate-200 border border-slate-300 rounded-md font-bold transition cursor-pointer"
+                    title="Dia anterior"
+                  >
+                    ◀ Anterior
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(exportDate + 'T12:00:00');
+                      d.setDate(d.getDate() + 1);
+                      setExportDate(d.toISOString().substring(0, 10));
+                    }}
+                    className="px-2 py-1 text-xs bg-white text-slate-700 hover:bg-slate-200 border border-slate-300 rounded-md font-bold transition cursor-pointer"
+                    title="Próximo dia"
+                  >
+                    Próximo ▶
+                  </button>
+                </div>
+              </div>
+
+              {/* Action Buttons: CSV & Print */}
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadDailyPointsCsv(exportDate)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                  title="Baixar planilha formatada para Excel (CSV com acentuação UTF-8)"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>Baixar Planilha CSV</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePrintDailyPointsReport(exportDate)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                  title="Imprimir relatório oficial em formato paisagem A4"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>Imprimir / Salvar PDF</span>
+                </button>
+              </div>
+            </div>
+
+            {/* KPI Cards for the Selected Day */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 sm:p-4 bg-slate-100/70 border-b border-slate-200 shrink-0">
+              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="text-xxs uppercase font-black text-slate-400">Total de Colaboradores</div>
+                <div className="text-lg sm:text-xl font-black text-slate-900 mt-0.5">
+                  {dailyReportData.totalCollaborators} <span className="text-xs text-slate-400 font-bold">avaliados</span>
+                </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="text-xxs uppercase font-black text-slate-400">Média Geral de Pontos</div>
+                <div className="text-lg sm:text-xl font-black text-blue-600 mt-0.5">
+                  {dailyReportData.avgPoints} <span className="text-xs text-slate-400 font-bold">/ 6.0 pts</span>
+                </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="text-xxs uppercase font-black text-slate-400">Metas 100% Batidas</div>
+                <div className="text-lg sm:text-xl font-black text-emerald-600 mt-0.5">
+                  {dailyReportData.fullGoalCount} <span className="text-xs text-slate-400 font-bold">de {dailyReportData.totalCollaborators}</span>
+                </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="text-xxs uppercase font-black text-slate-400">Aderência Geral DPO</div>
+                <div className="text-lg sm:text-xl font-black text-indigo-600 mt-0.5">
+                  {dailyReportData.generalAdherence}%
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Tabs inside Modal */}
+            <div className="px-4 pt-3 flex items-center justify-between border-b border-slate-100 shrink-0">
+              <div className="flex space-x-1">
+                <button
+                  type="button"
+                  onClick={() => setExportModalRoleTab('todos')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-t-lg transition border-b-2 cursor-pointer ${
+                    exportModalRoleTab === 'todos'
+                      ? 'border-blue-600 text-blue-600 bg-blue-50/50'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  Todos ({dailyReportData.totalCollaborators})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportModalRoleTab('conferente')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-t-lg transition border-b-2 cursor-pointer ${
+                    exportModalRoleTab === 'conferente'
+                      ? 'border-blue-600 text-blue-600 bg-blue-50/50'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  Conferentes ({dailyReportData.conferentesMetrics.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportModalRoleTab('empilhador')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-t-lg transition border-b-2 cursor-pointer ${
+                    exportModalRoleTab === 'empilhador'
+                      ? 'border-blue-600 text-blue-600 bg-blue-50/50'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  Empilhadores ({dailyReportData.empilhadoresMetrics.length})
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-400 hidden sm:block">
+                Data selecionada: <strong className="text-slate-700">{new Date(exportDate + 'T12:00:00').toLocaleDateString('pt-BR')}</strong>
+              </div>
+            </div>
+
+            {/* Scrollable Tables Area */}
+            <div className="overflow-y-auto p-4 space-y-5 flex-1">
+              
+              {/* TABELA 1: CONFERENTES */}
+              {(exportModalRoleTab === 'todos' || exportModalRoleTab === 'conferente') && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center space-x-1.5">
+                      <span className="w-2 h-2 rounded-full bg-blue-600" />
+                      <span>Conferentes e Auditores de Docas</span>
+                    </h3>
+                    <span className="text-xxs font-bold text-slate-500">
+                      Critério Acuracidade 1ª Contagem: 100% se inalterado após recontagem
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-100 text-slate-700 font-extrabold uppercase text-[10px] border-b border-slate-200">
+                        <tr>
+                          <th className="py-2.5 px-3">Colaborador</th>
+                          <th className="py-2.5 px-3">Meta 1: Produtividade (≤15m)</th>
+                          <th className="py-2.5 px-3">
+                            Meta 2: Acuracidade 1ª (≥95%)
+                          </th>
+                          <th className="py-2.5 px-3">Meta 3: Blitz Refugo (2 Veíc.)</th>
+                          <th className="py-2.5 px-3">Meta 4: 5S Posto</th>
+                          <th className="py-2.5 px-3 text-center">Pontos Totais</th>
+                          <th className="py-2.5 px-3 text-center">Status DPO</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white font-medium">
+                        {dailyReportData.conferentesMetrics.map(({ user: u, metrics: m }) => (
+                          <tr key={u.id} className="hover:bg-slate-50 transition">
+                            <td className="py-2 px-3">
+                              <div className="font-extrabold text-slate-900">{u.name}</div>
+                              <div className="text-[10px] font-mono text-slate-400">Login: @{u.username || u.id}</div>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${m.avgTimePassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {m.avgDurationMinutes} min
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({m.avgTimePoints}/2 pts)</span>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${m.accuracyPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {m.accuracyRate}%
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({m.accuracyPoints}/2 pts)</span>
+                              {m.accuracyRate >= 95 && (
+                                <span className="ml-1 text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-mono font-bold">100% OK</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${m.blitzPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {m.dayBlitzCount} veíc.
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({m.blitzPoints}/1 pt)</span>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${m.fiveSPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {m.fiveSPassed ? 'Conforme' : 'Pendente'}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({m.fiveSPoints}/1 pt)</span>
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span className={`font-black text-xs px-2.5 py-0.5 rounded-full ${
+                                m.totalPoints === 6 ? 'bg-emerald-100 text-emerald-800' : m.totalPoints >= 4 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                {m.totalPoints} / 6
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                m.totalPoints === 6 ? 'bg-emerald-100 text-emerald-800' : m.totalPoints > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'
+                              }`}>
+                                {m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* TABELA 2: EMPILHADORES */}
+              {(exportModalRoleTab === 'todos' || exportModalRoleTab === 'empilhador') && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center space-x-1.5">
+                      <span className="w-2 h-2 rounded-full bg-amber-600" />
+                      <span>Operadores de Empilhadeira</span>
+                    </h3>
+                    <span className="text-xxs font-bold text-slate-500">
+                      Descarregamento até 22h & Zero Quebras
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-100 text-slate-700 font-extrabold uppercase text-[10px] border-b border-slate-200">
+                        <tr>
+                          <th className="py-2.5 px-3">Colaborador</th>
+                          <th className="py-2.5 px-3">Meta 1: EFD (≤22:00)</th>
+                          <th className="py-2.5 px-3">Meta 2: Qualidade (0 Quebras)</th>
+                          <th className="py-2.5 px-3">Meta 3: Segurança (Relato)</th>
+                          <th className="py-2.5 px-3">Meta 4: 5S Equipamento</th>
+                          <th className="py-2.5 px-3 text-center">Pontos Totais</th>
+                          <th className="py-2.5 px-3 text-center">Status DPO</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white font-medium">
+                        {dailyReportData.empilhadoresMetrics.map(({ user: u, metrics: m }) => (
+                          <tr key={u.id} className="hover:bg-slate-50 transition">
+                            <td className="py-2 px-3">
+                              <div className="font-extrabold text-slate-900">{u.name}</div>
+                              <div className="text-[10px] font-mono text-slate-400">Login: @{u.username || u.id}</div>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${(m as any).efdPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {(m as any).efdPassed ? '≤ 22:00 OK' : 'Não Atend.'}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({(m as any).efdPoints || 0}/2 pts)</span>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${(m as any).zeroBreaksPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {(m as any).zeroBreaksPassed ? 'Zero Quebras' : 'Com Quebra'}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({(m as any).zeroBreakPoints || 0}/2 pts)</span>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${(m as any).safetyPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {(m as any).safetyReportsCountToday || 0} Relato(s)
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({(m as any).safetyPoints || 0}/1 pt)</span>
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`font-bold ${m.fiveSPassed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                                {m.fiveSPassed ? 'Conforme' : 'Pendente'}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">({m.fiveSPoints}/1 pt)</span>
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span className={`font-black text-xs px-2.5 py-0.5 rounded-full ${
+                                m.totalPoints === 6 ? 'bg-emerald-100 text-emerald-800' : m.totalPoints >= 4 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                {m.totalPoints} / 6
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                m.totalPoints === 6 ? 'bg-emerald-100 text-emerald-800' : m.totalPoints > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'
+                              }`}>
+                                {m.totalPoints === 6 ? 'META BATIDA' : m.totalPoints > 0 ? 'PARCIAL' : 'PENDENTE'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Informação do Critério Oficial de Acuracidade */}
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 leading-relaxed">
+                <strong>Critério de Acuracidade DPO Ambev:</strong> A 1ª contagem física do conferente é computada em 100% de acuracidade caso permaneça inalterada mesmo após solicitação de recontagem. Divergências contra nota fiscal (gerando sobras e faltas no mapa) não invalidam a contagem do conferente se a quantidade física aferida no caminhão foi mantida e confirmada nas docas.
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-200 p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="text-xs text-slate-500 font-medium">
+                Relatório Oficial de Pontos • Pau Brasil Distribuidora Guarabira
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDailyExportModal(false)}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+                >
+                  Fechar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadDailyPointsCsv(exportDate)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>Baixar Planilha CSV</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePrintDailyPointsReport(exportDate)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-black px-4 py-2 rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>Imprimir Relatório</span>
+                </button>
+              </div>
+            </div>
+
           </div>
         </div>
       )}
