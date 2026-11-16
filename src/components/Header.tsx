@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, UserRole, FiscalAlert } from '../types';
+import { User, UserRole, FiscalAlert, isAlertForRole, isAlertReadByUser } from '../types';
 import { 
   Shield, User as UserIcon, Truck, CheckCircle, BarChart3, Settings, 
   LogOut, FileSpreadsheet, Bell, Check, Clock, AlertCircle, FileText,
@@ -347,26 +347,29 @@ export default function Header({
     };
   }, [showNotifications]);
 
-  // Mark all relevant alerts as read when notifications popup is opened
+  // Mark all relevant alerts as read FOR THIS USER ONLY when notifications popup is opened
   useEffect(() => {
-    if (showNotifications && fiscalAlerts.length > 0 && onSaveAlerts) {
+    const readerId = currentUser.id || currentUser.username || currentUser.role;
+    if (showNotifications && fiscalAlerts.length > 0 && onSaveAlerts && readerId) {
       const relevantUnreadAlerts = fiscalAlerts.filter(alert => {
-        if (alert.read) return false;
-        if (!alert.targetRole || alert.targetRole === 'todos') return true;
-        return alert.targetRole === currentUser.role;
+        if (!isAlertForRole(alert, currentUser.role)) return false;
+        return !isAlertReadByUser(alert, readerId);
       });
 
       if (relevantUnreadAlerts.length > 0) {
         const updated = fiscalAlerts.map(a => {
-          if (!a.targetRole || a.targetRole === 'todos' || a.targetRole === currentUser.role) {
-            return { ...a, read: true };
+          if (isAlertForRole(a, currentUser.role) && !isAlertReadByUser(a, readerId)) {
+            const existingReadBy = Array.isArray(a.readBy) ? a.readBy : [];
+            if (!existingReadBy.some(id => id.toLowerCase() === readerId.toLowerCase())) {
+              return { ...a, readBy: [...existingReadBy, readerId] };
+            }
           }
           return a;
         });
         onSaveAlerts(updated);
       }
     }
-  }, [showNotifications, fiscalAlerts, onSaveAlerts, currentUser.role]);
+  }, [showNotifications, fiscalAlerts, onSaveAlerts, currentUser.role, currentUser.id, currentUser.username]);
   return (
     <header className="bg-slate-900 text-white shadow-md border-b border-slate-800 w-full max-w-full overflow-hidden" id="main_header">
       {/* Top tier bar: Logo and actions */}
@@ -459,11 +462,9 @@ export default function Header({
                 >
                   <Bell className="h-4 w-4 shrink-0" />
                   {(() => {
-                    const relevantAlerts = (fiscalAlerts || []).filter(alert => {
-                      if (!alert.targetRole || alert.targetRole === 'todos') return true;
-                      return alert.targetRole === currentUser.role;
-                    });
-                    const unreadCount = relevantAlerts.filter(a => !a.read).length;
+                    const readerId = currentUser.id || currentUser.username || currentUser.role;
+                    const relevantAlerts = (fiscalAlerts || []).filter(alert => isAlertForRole(alert, currentUser.role));
+                    const unreadCount = relevantAlerts.filter(a => !isAlertReadByUser(a, readerId)).length;
                     return unreadCount > 0 ? (
                       <span 
                         id="unread_badge"
@@ -476,15 +477,18 @@ export default function Header({
                 </button>
 
                 {showNotifications && (() => {
-                  const relevantAlerts = (fiscalAlerts || []).filter(alert => {
-                    if (!alert.targetRole || alert.targetRole === 'todos') return true;
-                    return alert.targetRole === currentUser.role;
-                  });
-                  const unreadCount = relevantAlerts.filter(a => !a.read).length;
+                  const readerId = currentUser.id || currentUser.username || currentUser.role;
+                  const relevantAlerts = (fiscalAlerts || []).filter(alert => isAlertForRole(alert, currentUser.role));
+                  const unreadCount = relevantAlerts.filter(a => !isAlertReadByUser(a, readerId)).length;
 
                   const handleMarkAsRead = (alertId: string) => {
                     if (onSaveAlerts) {
-                      const updated = fiscalAlerts.map(a => a.id === alertId ? { ...a, read: true } : a);
+                      const updated = fiscalAlerts.map(a => {
+                        if (a.id !== alertId) return a;
+                        const existingReadBy = Array.isArray(a.readBy) ? a.readBy : [];
+                        if (existingReadBy.some(id => id.toLowerCase() === readerId.toLowerCase())) return a;
+                        return { ...a, readBy: [...existingReadBy, readerId] };
+                      });
                       onSaveAlerts(updated);
                     }
                   };
@@ -492,8 +496,9 @@ export default function Header({
                   const handleMarkAllAsRead = () => {
                     if (onSaveAlerts) {
                       const updated = fiscalAlerts.map(a => {
-                        if (!a.targetRole || a.targetRole === 'todos' || a.targetRole === currentUser.role) {
-                          return { ...a, read: true };
+                        if (isAlertForRole(a, currentUser.role) && !isAlertReadByUser(a, readerId)) {
+                          const existingReadBy = Array.isArray(a.readBy) ? a.readBy : [];
+                          return { ...a, readBy: [...existingReadBy, readerId] };
                         }
                         return a;
                       });
@@ -521,14 +526,16 @@ export default function Header({
 
                       <div className="max-h-72 overflow-y-auto divide-y divide-slate-900">
                         {relevantAlerts.length > 0 ? (
-                          relevantAlerts.map((alert) => (
+                          relevantAlerts.map((alert) => {
+                            const isRead = isAlertReadByUser(alert, readerId);
+                            return (
                             <div 
                               key={alert.id} 
                               className={`p-3 transition-colors flex items-start space-x-2.5 ${
-                                alert.read ? 'bg-slate-950 text-slate-400' : 'bg-slate-900/40 text-white border-l-2 border-amber-500'
+                                isRead ? 'bg-slate-950 text-slate-400' : 'bg-slate-900/40 text-white border-l-2 border-amber-500'
                               }`}
                             >
-                              <div className={`p-1.5 rounded-lg shrink-0 ${alert.read ? 'bg-slate-900 text-slate-500' : 'bg-amber-500/15 text-amber-500'}`}>
+                              <div className={`p-1.5 rounded-lg shrink-0 ${isRead ? 'bg-slate-900 text-slate-500' : 'bg-amber-500/15 text-amber-500'}`}>
                                 <AlertCircle className="h-3.5 w-3.5" />
                               </div>
                               
@@ -537,7 +544,7 @@ export default function Header({
                                   <span className="font-sans font-bold text-xs block truncate pr-1">
                                     {alert.title || `Mapa ${alert.routeMap}`}
                                   </span>
-                                  {!alert.read && (
+                                  {!isRead && (
                                     <button
                                       onClick={() => handleMarkAsRead(alert.id)}
                                       className="text-amber-500 hover:text-amber-400 p-0.5 rounded hover:bg-slate-800 shrink-0 cursor-pointer"
@@ -560,7 +567,8 @@ export default function Header({
                                 </div>
                               </div>
                             </div>
-                          ))
+                          );
+                          })
                         ) : (
                           <div className="text-center py-8 text-xxs text-slate-500 font-sans italic">
                             Nenhuma notificação encontrada.

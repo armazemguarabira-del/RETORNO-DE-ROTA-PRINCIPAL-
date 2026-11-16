@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName, isAlertForRole, isAlertReadByUser } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
 import { 
@@ -32,6 +32,55 @@ const normalizeMapCode = (mapCode: any): string => {
     return String(parseInt(digitsOnly, 10));
   }
   return str;
+};
+
+const hasCoreAuditDiff = (a: AuditSession, b: AuditSession): boolean => {
+  if (a.status !== b.status) return true;
+  if (JSON.stringify(a.items || []) !== JSON.stringify(b.items || [])) return true;
+  if (JSON.stringify(a.assets || []) !== JSON.stringify(b.assets || [])) return true;
+  if (JSON.stringify(a.exchanges || []) !== JSON.stringify(b.exchanges || [])) return true;
+  if (JSON.stringify(a.refugos || []) !== JSON.stringify(b.refugos || [])) return true;
+  return false;
+};
+
+const mergeRemoteMetadata = (local: AuditSession, remote?: AuditSession): AuditSession => {
+  if (!remote) return local;
+  const localHistoryKeys = new Set((local.history || []).map(h => `${h.timestamp}|${h.action}`));
+  const extraRemoteHistory = (remote.history || []).filter(h => !localHistoryKeys.has(`${h.timestamp}|${h.action}`));
+  const mergedObservations = (() => {
+    const localObs = local.routeObservations || [];
+    const remoteObs = remote.routeObservations || [];
+    const seen = new Set(localObs.map(o => o.id));
+    return [...localObs, ...remoteObs.filter(o => !seen.has(o.id))];
+  })();
+  return {
+    ...local,
+    descarregamentoStatus: remote.descarregamentoStatus ?? local.descarregamentoStatus,
+    unloadingStartTime: remote.unloadingStartTime ?? local.unloadingStartTime,
+    unloadingEndTime: remote.unloadingEndTime ?? local.unloadingEndTime,
+    isPernoite: remote.isPernoite ?? local.isPernoite,
+    dock: remote.dock ?? local.dock,
+    empilhadorId: remote.empilhadorId ?? local.empilhadorId,
+    empilhadorName: remote.empilhadorName ?? local.empilhadorName,
+    totalPallets: remote.totalPallets ?? local.totalPallets,
+    loadedPallets: remote.loadedPallets ?? local.loadedPallets,
+    unloadingNote: remote.unloadingNote ?? local.unloadingNote,
+    unloadingChecklist: remote.unloadingChecklist ?? local.unloadingChecklist,
+    routeObservations: mergedObservations,
+    reconciliationNotes: remote.reconciliationNotes ?? local.reconciliationNotes,
+    clientCodeNB: remote.clientCodeNB ?? local.clientCodeNB,
+    deliveryDate: remote.deliveryDate ?? local.deliveryDate,
+    reopeningRequested: remote.reopeningRequested ?? local.reopeningRequested,
+    reopeningJustification: remote.reopeningJustification ?? local.reopeningJustification,
+    reopeningRequestDate: remote.reopeningRequestDate ?? local.reopeningRequestDate,
+    reopeningRequestUser: remote.reopeningRequestUser ?? local.reopeningRequestUser,
+    surplusFlowStatus: remote.surplusFlowStatus ?? local.surplusFlowStatus,
+    surplusActionStatus: remote.surplusActionStatus ?? local.surplusActionStatus,
+    financeiroCiente: remote.financeiroCiente ?? local.financeiroCiente,
+    history: [...(local.history || []), ...extraRemoteHistory],
+    updatedAt: remote.updatedAt ?? local.updatedAt,
+    lastUpdatedBy: remote.lastUpdatedBy ?? local.lastUpdatedBy
+  };
 };
 
 const DEFAULT_EMP_LIST = [
@@ -654,15 +703,17 @@ export default function ConferenteView({
       const currentInAudits = audits.find(a => a.id === activeSession.id);
       if (currentInAudits) {
         if (JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
-          // If there is an active concurrency conflict, we do NOT auto-overwrite,
-          // giving the user the opportunity to resolve or sync via the banner
-          const hasConflict = currentInAudits.updatedAt && 
+          const hasCoreDiff = hasCoreAuditDiff(currentInAudits, activeSession);
+          const hasConflict = hasCoreDiff &&
+                              currentInAudits.updatedAt && 
                               loadedSessionTime && 
                               currentInAudits.updatedAt !== loadedSessionTime && 
                               currentInAudits.lastUpdatedBy !== currentUser.name;
           
           if (!hasConflict) {
-            let mergedSession = { ...currentInAudits };
+            let mergedSession = hasCoreDiff
+              ? { ...currentInAudits }
+              : mergeRemoteMetadata(activeSession, currentInAudits);
             if (!mergedSession.assets || mergedSession.assets.length === 0) {
               const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
               mergedSession.assets = assetsSource.map(asset => ({
@@ -673,7 +724,6 @@ export default function ConferenteView({
               }));
             }
             setActiveSession(mergedSession);
-            // Also keep loadedSessionTime updated if we seamlessly merged
             setLoadedSessionTime(currentInAudits.updatedAt);
           }
         }
@@ -1275,9 +1325,16 @@ export default function ConferenteView({
       }
     } else {
       const isBlitzRoute = targetMapsUpper.some(m => {
-        const r = (importedRoutes || []).find(route => route.routeMap.toUpperCase() === m);
+        const mNorm = normalizeMapCode(m).toUpperCase();
+        const r = (importedRoutes || []).find(route =>
+          normalizeMapCode(route.routeMap).toUpperCase() === mNorm || route.routeMap.toUpperCase() === m
+        );
         return r?.isBlitz;
       });
+      const primaryMatchedRoute = (importedRoutes || []).find(route =>
+        normalizeMapCode(route.routeMap).toUpperCase() === normalizeMapCode(finalRouteMap).toUpperCase() ||
+        route.routeMap.toUpperCase() === finalRouteMap.toUpperCase()
+      );
 
       const newSession: AuditSession = {
         id: 'aud_' + Date.now(),
@@ -1294,6 +1351,17 @@ export default function ConferenteView({
         totalCountingDurationMs: 0,
         isSuspended: false,
         isBlitz: isBlitzRoute,
+        descarregamentoStatus: primaryMatchedRoute?.descarregamentoStatus,
+        unloadingStartTime: primaryMatchedRoute?.unloadingStartTime,
+        unloadingEndTime: primaryMatchedRoute?.unloadingEndTime,
+        dock: primaryMatchedRoute?.dock,
+        empilhadorId: primaryMatchedRoute?.empilhadorId,
+        empilhadorName: primaryMatchedRoute?.empilhadorName,
+        isPernoite: primaryMatchedRoute?.isPernoite,
+        totalPallets: primaryMatchedRoute?.totalPallets,
+        loadedPallets: primaryMatchedRoute?.loadedPallets,
+        unloadingNote: primaryMatchedRoute?.unloadingNote,
+        routeObservations: primaryMatchedRoute?.routeObservations,
         status: 'em_aberto',
         conferenteId: currentUser.id,
         items: initialItems,
@@ -1631,16 +1699,18 @@ export default function ConferenteView({
         finalDurationMs += Date.now() - new Date(updatedSession.lastTimerStart).getTime();
       }
 
+      const latestRemote = audits.find(a => a.id === activeSession.id);
+      const baseWithRemoteMeta = mergeRemoteMetadata(updatedSession, latestRemote);
       const finalizedSession: AuditSession = {
-        ...updatedSession,
-        items: getMergedFinalItems(updatedSession),
+        ...baseWithRemoteMeta,
+        items: getMergedFinalItems(baseWithRemoteMeta),
         status: nextStatus,
         reopeningRequested: false,
         endTime: now,
         lastTimerStart: undefined,
         totalCountingDurationMs: finalDurationMs,
         history: [
-          ...updatedSession.history,
+          ...(baseWithRemoteMeta.history || []),
           {
             timestamp: now,
             action: actionText,
@@ -1655,7 +1725,7 @@ export default function ConferenteView({
         : [finalizedSession, ...audits];
       onSaveAudits(finalAudits);
 
-      // Create notification alert for Auxiliar de Logistica
+      // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor
       if (onSaveAlerts && fiscalAlerts) {
         const newAlert: FiscalAlert = {
           id: 'al_' + Date.now(),
@@ -1664,11 +1734,13 @@ export default function ConferenteView({
           status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
           timestamp: now,
           read: false,
+          readBy: [],
           title: isReconferindo ? 'Recontagem Finalizada (Blitz)' : 'Veículo Conferido (Blitz)',
           message: isReconferindo 
             ? `O conferente ${currentUser.name} finalizou a recontagem com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`
             : `O conferente ${currentUser.name} finalizou a conferência física com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
-          targetRole: 'auxiliar_logistica'
+          targetRole: 'auxiliar_logistica',
+          targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
         };
         onSaveAlerts([newAlert, ...fiscalAlerts]);
       }
@@ -1703,7 +1775,11 @@ export default function ConferenteView({
     if (!activeSession) return;
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
-    const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.trim().toUpperCase());
+    const sessionMapNormBlitz = normalizeMapCode(activeSession.routeMap).toUpperCase();
+    const matchingRoute = importedRoutes.find(r =>
+      normalizeMapCode(r.routeMap).toUpperCase() === sessionMapNormBlitz ||
+      r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase()
+    );
     if (matchingRoute?.isBlitz && activeSession.blitzBoxesChecked === undefined) {
       setBlitzBoxesChecked(10);
       setBlitzAvariasFound(0);
@@ -1756,9 +1832,11 @@ export default function ConferenteView({
       }
     }
 
+    const latestRemoteFinish = audits.find(a => a.id === activeSession.id);
+    const finishBaseWithMeta = mergeRemoteMetadata(activeSession, latestRemoteFinish);
     const updatedSession: AuditSession = {
-      ...activeSession,
-      items: getMergedFinalItems(activeSession),
+      ...finishBaseWithMeta,
+      items: getMergedFinalItems(finishBaseWithMeta),
       status: nextStatus,
       reopeningRequested: false,
       endTime: now,
@@ -1766,7 +1844,7 @@ export default function ConferenteView({
       totalCountingDurationMs: finalDurationMs,
       refugos: updatedRefugos,
       history: [
-        ...activeSession.history,
+        ...(finishBaseWithMeta.history || []),
         {
           timestamp: now,
           action: actionText,
@@ -1781,7 +1859,7 @@ export default function ConferenteView({
       : [updatedSession, ...audits];
     onSaveAudits(updatedAudits);
 
-    // Create notification alert for Auxiliar de Logistica
+    // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor
     if (onSaveAlerts && fiscalAlerts) {
       const newAlert: FiscalAlert = {
         id: 'al_' + Date.now(),
@@ -1790,11 +1868,13 @@ export default function ConferenteView({
         status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
         timestamp: now,
         read: false,
+        readBy: [],
         title: isReconferindo ? 'Recontagem Finalizada' : 'Veículo Conferido',
         message: isReconferindo 
           ? `O conferente ${currentUser.name} finalizou a recontagem do mapa ${activeSession.routeMap} (${activeSession.plate}).`
           : `O conferente ${currentUser.name} finalizou a conferência física do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
-        targetRole: 'auxiliar_logistica'
+        targetRole: 'auxiliar_logistica',
+        targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
       };
       onSaveAlerts([newAlert, ...fiscalAlerts]);
     }
@@ -2210,12 +2290,25 @@ export default function ConferenteView({
   };
 
   const handleMarkAlertAsRead = (alertId: string) => {
-    const updated = fiscalAlerts.map(a => a.id === alertId ? { ...a, read: true } : a);
+    const updated = fiscalAlerts.map(a => {
+      if (a.id !== alertId) return a;
+      const existingReadBy = Array.isArray(a.readBy) ? a.readBy : [];
+      const nextReadBy = existingReadBy.includes(currentUser.id) ? existingReadBy : [...existingReadBy, currentUser.id];
+      const markGlobalRead = a.targetRole === 'conferente' && (!a.targetRoles || a.targetRoles.length === 1);
+      return { ...a, read: markGlobalRead ? true : a.read, readBy: nextReadBy };
+    });
     onSaveAlerts(updated);
   };
 
   const handleClearAllAlerts = () => {
-    onSaveAlerts([]);
+    const updated = fiscalAlerts.map(a => {
+      if (!isAlertForRole(a, currentUser.role)) return a;
+      const existingReadBy = Array.isArray(a.readBy) ? a.readBy : [];
+      const nextReadBy = existingReadBy.includes(currentUser.id) ? existingReadBy : [...existingReadBy, currentUser.id];
+      const markGlobalRead = a.targetRole === 'conferente' && (!a.targetRoles || a.targetRoles.length === 1);
+      return { ...a, read: markGlobalRead ? true : a.read, readBy: nextReadBy };
+    });
+    onSaveAlerts(updated);
   };
 
   // Helper to determine if a route is closed based on audits
@@ -2576,7 +2669,7 @@ export default function ConferenteView({
       {/* PERSISTENT ALERTS BANNER PANEL */}
       {(() => {
         const relevantAlerts = (fiscalAlerts || []).filter(a => 
-          !a.read && (a.targetRole === 'conferente' || a.targetRole === 'todos' || !a.targetRole)
+          isAlertForRole(a, currentUser.role) && !isAlertReadByUser(a, currentUser.id)
         );
         if (relevantAlerts.length === 0) return null;
 
@@ -2597,12 +2690,7 @@ export default function ConferenteView({
                 </div>
               </div>
               <button 
-                onClick={() => {
-                  const updated = fiscalAlerts.map(a => 
-                    (a.targetRole === 'conferente' || a.targetRole === 'todos' || !a.targetRole) ? { ...a, read: true } : a
-                  );
-                  onSaveAlerts && onSaveAlerts(updated);
-                }}
+                onClick={handleClearAllAlerts}
                 className="text-amber-800 hover:text-amber-950 font-sans font-bold text-xxs uppercase bg-amber-100/60 hover:bg-amber-100 border border-amber-200 px-3 py-1.5 rounded-lg transition"
               >
                 Marcar Todos como Lidos
@@ -3406,17 +3494,23 @@ export default function ConferenteView({
             </div>
 
             {/* QUICK NOTIFICATIONS STATUS CLEAR */}
-            {fiscalAlerts.length > 0 && (
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex justify-between items-center text-xs">
-                <span className="text-slate-500 font-medium">Alerta de baixa fiscal ativo ({fiscalAlerts.length})</span>
-                <button 
-                  onClick={handleClearAllAlerts}
-                  className="text-red-600 hover:text-red-700 font-bold uppercase text-[10px]"
-                >
-                  Limpar Histórico de Alertas
-                </button>
-              </div>
-            )}
+            {(() => {
+              const unreadConferenteCount = (fiscalAlerts || []).filter(a =>
+                isAlertForRole(a, currentUser.role) && !isAlertReadByUser(a, currentUser.id)
+              ).length;
+              if (unreadConferenteCount === 0) return null;
+              return (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex justify-between items-center text-xs">
+                  <span className="text-slate-500 font-medium">Alertas pendentes ({unreadConferenteCount})</span>
+                  <button 
+                    onClick={handleClearAllAlerts}
+                    className="text-red-600 hover:text-red-700 font-bold uppercase text-[10px]"
+                  >
+                    Marcar Meus Alertas como Lidos
+                  </button>
+                </div>
+              );
+            })()}
           </div>
 
         </div>
@@ -3427,6 +3521,7 @@ export default function ConferenteView({
           {(() => {
             const currentInAudits = audits.find(a => a.id === activeSession.id);
             const hasConflict = currentInAudits &&
+                                hasCoreAuditDiff(currentInAudits, activeSession) &&
                                 currentInAudits.updatedAt &&
                                 loadedSessionTime &&
                                 currentInAudits.updatedAt !== loadedSessionTime &&

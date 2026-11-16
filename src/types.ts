@@ -208,9 +208,29 @@ export interface FiscalAlert {
   status: 'finalizado_ok' | 'finalizado_divergente' | 'recontagem_solicitada' | 'conferido_fisico' | 'recontagem_finalizada' | 'sobra_alinhada' | 'outros';
   timestamp: string;
   read: boolean;
+  readBy?: string[];
   title?: string;
   message?: string;
   targetRole?: UserRole | 'todos';
+  targetRoles?: Array<UserRole | 'todos'>;
+}
+
+export function isAlertForRole(alert: FiscalAlert, role?: UserRole | string): boolean {
+  if (!role) return true;
+  if (Array.isArray(alert.targetRoles) && alert.targetRoles.length > 0) {
+    return alert.targetRoles.includes('todos') || alert.targetRoles.includes(role as UserRole);
+  }
+  if (!alert.targetRole || alert.targetRole === 'todos') return true;
+  return alert.targetRole === role;
+}
+
+export function isAlertReadByUser(alert: FiscalAlert, userId?: string): boolean {
+  if (Array.isArray(alert.readBy)) {
+    const uid = (userId || '').trim().toLowerCase();
+    if (!uid) return alert.read === true;
+    return alert.readBy.some(id => String(id).trim().toLowerCase() === uid);
+  }
+  return alert.read === true;
 }
 
 export interface AuditExchangeItem {

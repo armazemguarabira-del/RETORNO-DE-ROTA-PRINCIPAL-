@@ -309,15 +309,30 @@ export default function ControleSobrasView({
 
     onSaveControleSobras(updatedList);
 
-    // If item was tied to an audit, update audit surplus status as well
+    // If item was tied to an audit, update audit surplus status and record history as well
     if (selectedItemForBaixa.auditId && onSaveAudits) {
       const updatedAudits = audits.map(audit => {
         if (audit.id === selectedItemForBaixa.auditId) {
+          const actionLabel = baixaForm.status === 'ENVIADO'
+            ? 'Sobra Enviada ao Cliente (Controle de Sobras)'
+            : 'Sobra Devolvida ao Estoque (Controle de Sobras)';
+          const detailsLabel = `Produto: ${selectedItemForBaixa.productDescription} (${selectedItemForBaixa.quantity} un.) • Destino: ${baixaForm.destination}${baixaForm.clientCodeNB ? ` • NB: ${baixaForm.clientCodeNB}` : ''}${baixaForm.notes ? ` • Obs: ${baixaForm.notes}` : ''}`;
           return {
             ...audit,
             surplusFlowStatus: (baixaForm.status === 'ENVIADO' ? 'ENVIADO' : 'BAIXADO') as any,
+            surplusActionStatus: (baixaForm.status === 'ENVIADO' ? 'enviado_cliente' : 'baixado_direto') as any,
             clientCodeNB: baixaForm.clientCodeNB || audit.clientCodeNB,
             correctiveActionNotes: baixaForm.notes || audit.correctiveActionNotes,
+            gestorAcknowledgedSurplus: false,
+            history: [
+              ...(audit.history || []),
+              {
+                timestamp,
+                action: actionLabel,
+                user: currentUser.name,
+                details: detailsLabel
+              }
+            ],
             updatedAt: timestamp,
             lastUpdatedBy: currentUser.name
           };

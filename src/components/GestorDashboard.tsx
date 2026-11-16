@@ -1416,17 +1416,6 @@ export default function GestorDashboard({
           return !normMapsToDelete.has(vMapNorm) && !mapCodesToDelete.has(vMapUpper);
         });
         onSaveVales(updatedVales);
-
-        // 5. Direct Firestore sync
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({
-            importedRoutes: updatedRoutes,
-            audits: updatedAudits,
-            carregamentos: updatedCarreg,
-            carregamentoProcesses: updatedCarreg,
-            vales: updatedVales
-          }, true, true);
-        }
         
         alert(`Todos os mapas, descarregamentos e auditorias do dia ${new Date(selectedDeleteDate + 'T00:00:00').toLocaleDateString('pt-BR')} foram excluídos com sucesso.`);
         setSelectedDeleteDate('');
@@ -7283,13 +7272,34 @@ export default function GestorDashboard({
                     </p>
 
                     {(() => {
-                      // Get all audits that have been sent or have history actions by 'auxiliar_logistica' that are NOT yet acknowledged by gestor
+                      const auxAndFinIdentities = new Set<string>();
+                      [...(users || []), ...DEFAULT_USERS].forEach(u => {
+                        if (u && (u.role === 'auxiliar_logistica' || u.role === 'financeiro')) {
+                          if (u.name) auxAndFinIdentities.add(u.name.trim().toLowerCase());
+                          if (u.id) auxAndFinIdentities.add(u.id.trim().toLowerCase());
+                          if (u.username) auxAndFinIdentities.add(u.username.trim().toLowerCase());
+                        }
+                      });
+
+                      // Get all audits that have been sent/processed in surplus flow or have history actions by 'auxiliar_logistica'/'financeiro' that are NOT yet acknowledged by gestor
                       const auxiliarActions = (audits || []).filter(audit => {
                         if (!audit) return false;
                         if (audit.gestorAcknowledgedSurplus) return false;
-                        const hasAuxiliarHistory = (audit.history || []).some(h => h.user.includes('Auxiliar') || h.user.toLowerCase().includes('auxiliar'));
-                        const isSent = audit.surplusFlowStatus === 'ENVIADO';
-                        return hasAuxiliarHistory || isSent;
+                        const hasSurplusFlowAction =
+                          audit.surplusFlowStatus === 'ENVIADO' ||
+                          audit.surplusFlowStatus === 'ENCAMINHADO' ||
+                          audit.surplusFlowStatus === 'BAIXADO' ||
+                          audit.surplusFlowStatus === 'REPROVADO';
+                        const hasAuxId = audit.auxiliarId ? auxAndFinIdentities.has(audit.auxiliarId.trim().toLowerCase()) : false;
+                        const hasAuxiliarHistory = (audit.history || []).some(h => {
+                          const hUser = (h.user || '').trim().toLowerCase();
+                          const hAction = (h.action || '').trim().toLowerCase();
+                          return auxAndFinIdentities.has(hUser) ||
+                            hUser.includes('auxiliar') ||
+                            hAction.includes('sobra') ||
+                            hAction.includes('envio');
+                        });
+                        return hasSurplusFlowAction || hasAuxiliarHistory || (hasAuxId && !!audit.surplusFlowStatus);
                       });
 
                       if (auxiliarActions.length === 0) {
@@ -7303,7 +7313,8 @@ export default function GestorDashboard({
                       return (
                         <div className="space-y-3.5 max-h-[450px] overflow-y-auto pr-1">
                           {auxiliarActions.map(audit => {
-                            const lastAction = audit.history[audit.history.length - 1];
+                            const historyList = audit.history || [];
+                            const lastAction = historyList.length > 0 ? historyList[historyList.length - 1] : null;
                             return (
                               <div key={audit.id} className="bg-slate-50 p-3 rounded-lg border border-slate-150 space-y-2">
                                 <div className="flex justify-between items-center text-xs">
@@ -7312,11 +7323,13 @@ export default function GestorDashboard({
                                     <span className="font-mono text-xxs text-slate-500 bg-white border border-slate-200 px-1 py-0.5 rounded">{audit.plate}</span>
                                   </div>
                                   <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
-                                    audit.surplusFlowStatus === 'ENVIADO' 
-                                      ? 'bg-emerald-100 text-emerald-800' 
-                                      : 'bg-amber-100 text-amber-800'
+                                    audit.surplusFlowStatus === 'ENVIADO' || audit.surplusFlowStatus === 'BAIXADO'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : audit.surplusFlowStatus === 'REPROVADO'
+                                        ? 'bg-red-100 text-red-800'
+                                        : 'bg-amber-100 text-amber-800'
                                   }`}>
-                                    {audit.surplusFlowStatus}
+                                    {audit.surplusFlowStatus || 'EM ANDAMENTO'}
                                   </span>
                                 </div>
 
@@ -7346,7 +7359,7 @@ export default function GestorDashboard({
                                             ...a,
                                             gestorAcknowledgedSurplus: true,
                                             history: [
-                                              ...a.history,
+                                              ...(a.history || []),
                                               {
                                                 timestamp: new Date().toISOString(),
                                                 action: 'Ciente do Gestor (Envio/Sobra)',

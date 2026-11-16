@@ -44,6 +44,7 @@ const COLLECTION_MAP: Record<string, string> = {
   auditLogs: "auditLogs",
   customManual: "customManual",
   empilhadores: "empilhadores",
+  carregamentos: "carregamentoProcesses",
   carregamentoProcesses: "carregamentoProcesses",
   controleSobras: "controleSobras",
   fiveSEntries: "fiveSEntries",
@@ -83,9 +84,9 @@ export function canonicalJson(obj: any): string {
     return JSON.stringify(obj);
   }
   if (Array.isArray(obj)) {
-    return "[" + obj.map(canonicalJson).join(",") + "]";
+    return "[" + obj.map(v => v === undefined ? "null" : canonicalJson(v)).join(",") + "]";
   }
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).filter(k => obj[k] !== undefined).sort();
   let res = "{";
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
@@ -740,16 +741,114 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   }
 }
 
-export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = true): Promise<boolean> {
+export interface CollectionDiff {
+  upsert: any[];
+  deleteIds: string[];
+}
+
+export async function saveCollectionDiffsToFirestore(
+  diffs: Record<string, CollectionDiff>,
+  customManualHtml?: string
+): Promise<boolean> {
+  const db = getClientFirestore();
+  if (!db) return false;
+  try {
+    const savePromise = (async () => {
+      if (customManualHtml !== undefined) {
+        const docRef = doc(db, "customManual", "main");
+        await setDoc(docRef, { html: customManualHtml, updatedAt: new Date().toISOString() });
+      }
+
+      const allOps: Array<{
+        type: "set" | "delete";
+        targetCol: string;
+        id: string;
+        data?: any;
+        json?: string;
+      }> = [];
+      const touchedCols = new Set<string>();
+
+      for (const [rawKey, diff] of Object.entries(diffs)) {
+        if (!diff) continue;
+        const targetCol = COLLECTION_MAP[rawKey] || rawKey;
+        if (targetCol === "customManual") continue;
+        const colCache = getColCache(targetCol);
+
+        for (const rawItem of diff.upsert || []) {
+          if (!rawItem) continue;
+          const cleanItem = JSON.parse(JSON.stringify(rawItem));
+          const docId = getDocIdForCollection(targetCol, cleanItem);
+          cleanItem.id = docId;
+          const newJson = canonicalJson(cleanItem);
+          if (colCache.get(docId) !== newJson) {
+            allOps.push({ type: "set", targetCol, id: docId, data: cleanItem, json: newJson });
+            touchedCols.add(targetCol);
+          }
+        }
+
+        for (const delId of diff.deleteIds || []) {
+          if (!delId) continue;
+          allOps.push({ type: "delete", targetCol, id: delId });
+          touchedCols.add(targetCol);
+        }
+      }
+
+      if (allOps.length === 0) return true;
+
+      const batchSize = 400;
+      for (let i = 0; i < allOps.length; i += batchSize) {
+        const chunk = allOps.slice(i, i + batchSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          const docRef = doc(db, op.targetCol, op.id);
+          if (op.type === "set") {
+            batch.set(docRef, op.data, { merge: true });
+          } else {
+            batch.delete(docRef);
+          }
+        });
+        await batch.commit();
+
+        chunk.forEach(op => {
+          const colCache = getColCache(op.targetCol);
+          if (op.type === "set" && op.json) {
+            colCache.set(op.id, op.json);
+          } else if (op.type === "delete") {
+            colCache.delete(op.id);
+          }
+        });
+      }
+
+      touchedCols.forEach(col => persistColCache(col));
+      return true;
+    })();
+
+    const timeoutPromise = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(true), 15000);
+    });
+
+    return await Promise.race([savePromise, timeoutPromise]);
+  } catch (err) {
+    console.warn("[ClientFirebase] Erro ao persistir diffs no Firestore:", err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
+    return false;
+  }
+}
+
+export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = false): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !payload) return false;
   try {
     const savePromise = (async () => {
       const keys = Object.keys(payload);
+      const processedCols = new Set<string>();
       for (const key of keys) {
         const colName = COLLECTION_MAP[key] || key;
+        if (processedCols.has(colName)) continue;
         const rawData = payload[key];
         if (rawData === undefined) continue;
+        processedCols.add(colName);
 
         if (colName === "customManual") {
           const docRef = doc(db, "customManual", "main");

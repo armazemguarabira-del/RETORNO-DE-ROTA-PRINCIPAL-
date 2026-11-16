@@ -64,7 +64,29 @@ import {
   List,
   Trophy
 } from 'lucide-react';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
+
+const isSafeRouteMatch = (
+  recMap?: string,
+  recPlate?: string,
+  targetMap?: string,
+  targetPlate?: string,
+  recUnifiedMaps?: string[]
+): boolean => {
+  const norm = (v?: string) => String(v || '').trim().replace(/^0+/, '').toUpperCase();
+  const tMap = norm(targetMap);
+  const rMap = norm(recMap);
+  if (tMap && rMap) {
+    if (rMap === tMap) return true;
+    if (Array.isArray(recUnifiedMaps) && recUnifiedMaps.some(m => norm(m) === tMap)) return true;
+    return false;
+  }
+  if (tMap && Array.isArray(recUnifiedMaps) && recUnifiedMaps.some(m => norm(m) === tMap)) {
+    return true;
+  }
+  const tPlate = String(targetPlate || '').trim().toUpperCase();
+  const rPlate = String(recPlate || '').trim().toUpperCase();
+  return !!(tPlate && rPlate && rPlate === tPlate);
+};
 
 export interface EmpilhadorViewProps {
   currentUser: User;
@@ -704,10 +726,7 @@ export default function EmpilhadorView({
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(r.routeMap, r.plate, checklistVehicle.routeMap, checklistVehicle.plate)) {
           return {
             ...r,
             descarregamentoStatus: 'EM_DESCARGA' as const,
@@ -730,10 +749,7 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(a.routeMap, a.plate, checklistVehicle.routeMap, checklistVehicle.plate, a.unifiedMaps)) {
           return {
             ...a,
             descarregamentoStatus: 'EM_DESCARGA' as const,
@@ -754,8 +770,7 @@ export default function EmpilhadorView({
 
     // 3. Update or create CarregamentoProcess
     const existingProc = carregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-      (c.plate && c.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
+      isSafeRouteMatch(c.routeMap, c.plate, checklistVehicle.routeMap, checklistVehicle.plate)
     );
 
     let updatedCarregamentos = carregamentos;
@@ -824,15 +839,6 @@ export default function EmpilhadorView({
       onSaveEmpilhadores(updatedOps);
     }
 
-    // 5. Direct Firestore synchronization
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing checklist start:', err));
-    }
-
     setShowChecklistModal(false);
     setChecklistVehicle(null);
   };
@@ -845,10 +851,7 @@ export default function EmpilhadorView({
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(r.routeMap, r.plate, vehicle.routeMap, vehicle.plate)) {
           return {
             ...r,
             descarregamentoStatus: 'DESCARREGADO' as const,
@@ -865,10 +868,7 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(a.routeMap, a.plate, vehicle.routeMap, vehicle.plate, a.unifiedMaps)) {
           return {
             ...a,
             descarregamentoStatus: 'DESCARREGADO' as const,
@@ -883,8 +883,7 @@ export default function EmpilhadorView({
 
     // 3. Update carregamentos
     const existingProc = carregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-      (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
+      isSafeRouteMatch(c.routeMap, c.plate, vehicle.routeMap, vehicle.plate)
     );
 
     let updatedCarregamentos = carregamentos;
@@ -919,15 +918,6 @@ export default function EmpilhadorView({
       });
       onSaveEmpilhadores(updatedOps);
     }
-
-    // 5. Sync Firestore
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing finished unloading:', err));
-    }
   };
 
   // HANDLER: TOGGLE PERNOITE
@@ -938,10 +928,7 @@ export default function EmpilhadorView({
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(r.routeMap, r.plate, vehicle.routeMap, vehicle.plate)) {
           return {
             ...r,
             isPernoite: nextPernoite,
@@ -957,10 +944,7 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(a.routeMap, a.plate, vehicle.routeMap, vehicle.plate, a.unifiedMaps)) {
           return {
             ...a,
             isPernoite: nextPernoite,
@@ -975,10 +959,7 @@ export default function EmpilhadorView({
     // 3. Update forecasts
     if (onSaveForecasts && returnForecasts.length > 0) {
       const updatedForecasts = returnForecasts.map(f => {
-        if (
-          (f.routeMap && f.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (f.plate && f.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(f.routeMap, f.plate, vehicle.routeMap, vehicle.plate)) {
           return {
             ...f,
             tripStatus: (nextPernoite ? 'pernoitam' : 'retornam') as 'pernoitam' | 'retornam'
@@ -991,10 +972,7 @@ export default function EmpilhadorView({
 
     // 4. Update carregamentos
     const updatedCarregamentos = carregamentos.map(c => {
-      if (
-        (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-        (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
-      ) {
+      if (isSafeRouteMatch(c.routeMap, c.plate, vehicle.routeMap, vehicle.plate)) {
         return {
           ...c,
           isPernoite: nextPernoite
@@ -1003,14 +981,6 @@ export default function EmpilhadorView({
       return c;
     });
     onSaveCarregamentos(updatedCarregamentos);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing pernoite:', err));
-    }
   };
 
   // HANDLER: ADD NEW PLATE MANUALLY
@@ -1044,10 +1014,6 @@ export default function EmpilhadorView({
 
     const updatedRoutes = [newRoute, ...importedRoutes];
     if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({ importedRoutes: updatedRoutes }).catch(err => console.error('Error saving new plate:', err));
-    }
 
     setShowAddPlateModal(false);
     setNewPlate('');
@@ -1091,10 +1057,7 @@ export default function EmpilhadorView({
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(r.routeMap, r.plate, selectedVehicle.routeMap, selectedVehicle.plate)) {
           return {
             ...r,
             dock: editDock,
@@ -1115,10 +1078,7 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-        ) {
+        if (isSafeRouteMatch(a.routeMap, a.plate, selectedVehicle.routeMap, selectedVehicle.plate, a.unifiedMaps)) {
           return {
             ...a,
             dock: editDock,
@@ -1137,10 +1097,7 @@ export default function EmpilhadorView({
 
     // Update carregamentos
     const updatedCarreg = carregamentos.map(c => {
-      if (
-        (c.routeMap && c.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-        (c.plate && c.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-      ) {
+      if (isSafeRouteMatch(c.routeMap, c.plate, selectedVehicle.routeMap, selectedVehicle.plate)) {
         return {
           ...c,
           dock: editDock,
@@ -1156,14 +1113,6 @@ export default function EmpilhadorView({
       return c;
     });
     onSaveCarregamentos(updatedCarreg);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarreg
-      }).catch(err => console.error('Error updating times:', err));
-    }
 
     setShowEditTimeModal(false);
     setSelectedVehicle(null);
@@ -1184,7 +1133,7 @@ export default function EmpilhadorView({
           const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
           const rUpper = (r.routeMap || '').toUpperCase().trim();
           const rPlate = (r.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && rNorm === vMapNorm) || (vMapUpper && rUpper === vMapUpper) || (vPlateUpper && rPlate === vPlateUpper);
+          const isMatch = (vMapNorm && rNorm === vMapNorm) || (vMapUpper && rUpper === vMapUpper) || (!vMapNorm && vPlateUpper && rPlate === vPlateUpper);
           return !isMatch;
         });
         if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
@@ -1194,7 +1143,7 @@ export default function EmpilhadorView({
           const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
           const aUpper = (a.routeMap || '').toUpperCase().trim();
           const aPlate = (a.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && aNorm === vMapNorm) || (vMapUpper && aUpper === vMapUpper) || (vPlateUpper && aPlate === vPlateUpper);
+          const isMatch = (vMapNorm && aNorm === vMapNorm) || (vMapUpper && aUpper === vMapUpper) || (!vMapNorm && vPlateUpper && aPlate === vPlateUpper);
           return !isMatch;
         });
         if (onSaveAudits) onSaveAudits(updatedAudits);
@@ -1204,20 +1153,10 @@ export default function EmpilhadorView({
           const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
           const cUpper = (c.routeMap || '').toUpperCase().trim();
           const cPlate = (c.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && cNorm === vMapNorm) || (vMapUpper && cUpper === vMapUpper) || (vPlateUpper && cPlate === vPlateUpper);
+          const isMatch = (vMapNorm && cNorm === vMapNorm) || (vMapUpper && cUpper === vMapUpper) || (!vMapNorm && vPlateUpper && cPlate === vPlateUpper);
           return !isMatch;
         });
         if (onSaveCarregamentos) onSaveCarregamentos(updatedCarreg);
-
-        // 4. Direct Firestore sync
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({
-            importedRoutes: updatedRoutes,
-            audits: updatedAudits,
-            carregamentos: updatedCarreg,
-            carregamentoProcesses: updatedCarreg
-          }).catch(err => console.error('Error deleting from queue:', err));
-        }
 
         alert(`Mapa ${vehicle.routeMap} (${vehicle.plate}) removido da fila de descarregamento com sucesso.`);
       }

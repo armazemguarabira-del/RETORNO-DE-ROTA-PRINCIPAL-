@@ -73,7 +73,7 @@ export default function Sidebar({
 
   // Count pending items for badges
   const pendingAuditsCount = useMemo(() => {
-    return audits.filter(a => a.status === 'em_aberto' || a.status === 'conferido_fisico' || a.status === 'reconferencia').length;
+    return audits.filter(a => a.status === 'em_aberto' || a.status === 'conferido_fisico' || a.status === 'reconferencia' || a.status === 'recontagem_finalizada').length;
   }, [audits]);
 
   const pendingValesCount = useMemo(() => {
@@ -90,7 +90,7 @@ export default function Sidebar({
       iconColor: 'text-blue-400',
       iconBg: 'bg-blue-500/15 border-blue-500/30 group-hover:bg-blue-500/25',
       activeIconClass: 'bg-slate-950 text-blue-400',
-      roles: ['gestor', 'financeiro']
+      roles: ['gestor', 'financeiro', 'auxiliar_logistica']
     },
     {
       id: 'liga',

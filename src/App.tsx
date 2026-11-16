@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration } from './types';
 import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive } from './data';
 import { ImageDB } from './imageDb';
-import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
+import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, saveCollectionDiffsToFirestore, canonicalJson, getDocIdForCollection, CollectionDiff, deleteDocFromFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
 import Header from './components/Header';
 import ConferenteView from './components/ConferenteView';
 import FiscalView from './components/FiscalView';
@@ -22,6 +22,27 @@ import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2
 export default function App() {
   const lastWriteTime = useRef<number>(0);
   const pendingUpdatesRef = useRef<any>({});
+  const pendingDiffsRef = useRef<Record<string, { upsertMap: Map<string, any>; deleteSet: Set<string> }>>({});
+  const pendingSnapshotDbRef = useRef<Record<string, any>>({});
+  const latestCollectionRefs = useRef<Record<string, any[]>>({
+    users: DEFAULT_USERS,
+    drivers: [],
+    vehicles: [],
+    products: DEFAULT_PRODUCTS,
+    activeAssets: [],
+    audits: [],
+    vales: [],
+    returnForecasts: [],
+    fiscalAlerts: [],
+    importedRoutes: [],
+    empilhadores: DEFAULT_EMPILHADORES,
+    carregamentoProcesses: [],
+    controleSobras: [],
+    fiveSEntries: [],
+    safetyReports: [],
+    blitzEntries: [],
+    zeroBreakDeclarations: [],
+  });
   const pushTimeoutRef = useRef<any>(null);
   const lastSyncAlertTime = useRef<number>(0);
 
@@ -293,8 +314,15 @@ export default function App() {
       localStorage.removeItem('logiroute_cached_app_db');
     } catch (e) {}
 
-    // Cancel pending throttled writes
+    // Cancel pending throttled writes & reset refs for cleared collections
     pendingUpdatesRef.current = {};
+    pendingDiffsRef.current = {};
+    latestCollectionRefs.current.importedRoutes = [];
+    latestCollectionRefs.current.audits = [];
+    latestCollectionRefs.current.returnForecasts = [];
+    latestCollectionRefs.current.fiscalAlerts = [];
+    latestCollectionRefs.current.vales = [];
+    latestCollectionRefs.current.controleSobras = [];
     if (pushTimeoutRef.current) {
       clearTimeout(pushTimeoutRef.current);
       pushTimeoutRef.current = null;
@@ -343,7 +371,7 @@ export default function App() {
     pushDatabaseToServer({ customManual: html });
   };
 
-  // Push changes to server database with batching/throttling to prevent concurrency race conditions
+  // Push changes to server database with diff computation to prevent multi-user overwrites/deletions
   const pushDatabaseToServer = (updates: {
     users?: User[];
     drivers?: Driver[];
@@ -360,10 +388,70 @@ export default function App() {
     carregamentoProcesses?: CarregamentoProcess[];
     customManual?: string;
     controleSobras?: ControleSobraItem[];
+    fiveSEntries?: FiveSEntry[];
+    safetyReports?: SafetyReport[];
+    blitzEntries?: BlitzRefugoEntry[];
+    zeroBreakDeclarations?: ZeroBreakDeclaration[];
   }) => {
     lastWriteTime.current = Date.now();
-    
-    // Accumulate the updates atomically
+
+    // Compute exact per-document diffs against the last known state of each updated collection
+    const recordCollectionDiff = (refKey: string, nextItems: any[]) => {
+      const prevItems = latestCollectionRefs.current[refKey] || [];
+      const prevJsonById = new Map<string, string>();
+      for (const prevItem of prevItems) {
+        if (!prevItem) continue;
+        const docId = getDocIdForCollection(refKey, prevItem);
+        prevJsonById.set(docId, canonicalJson(prevItem));
+      }
+
+      const nextIds = new Set<string>();
+      if (!pendingDiffsRef.current[refKey]) {
+        pendingDiffsRef.current[refKey] = { upsertMap: new Map<string, any>(), deleteSet: new Set<string>() };
+      }
+      const acc = pendingDiffsRef.current[refKey];
+
+      for (const nextItem of nextItems) {
+        if (!nextItem) continue;
+        const docId = getDocIdForCollection(refKey, nextItem);
+        nextIds.add(docId);
+        const nextJson = canonicalJson(nextItem);
+        if (prevJsonById.get(docId) !== nextJson) {
+          acc.upsertMap.set(docId, nextItem);
+          acc.deleteSet.delete(docId);
+        }
+      }
+
+      for (const prevId of prevJsonById.keys()) {
+        if (!nextIds.has(prevId)) {
+          acc.upsertMap.delete(prevId);
+          acc.deleteSet.add(prevId);
+        }
+      }
+
+      latestCollectionRefs.current[refKey] = nextItems;
+    };
+
+    const arrayKeys = [
+      'users', 'drivers', 'vehicles', 'products', 'activeAssets',
+      'audits', 'returnForecasts', 'fiscalAlerts', 'importedRoutes',
+      'vales', 'empilhadores', 'controleSobras', 'fiveSEntries',
+      'safetyReports', 'blitzEntries', 'zeroBreakDeclarations'
+    ] as const;
+
+    for (const k of arrayKeys) {
+      const arr = (updates as any)[k];
+      if (Array.isArray(arr)) {
+        recordCollectionDiff(k, arr);
+      }
+    }
+
+    const nextCarreg = updates.carregamentoProcesses ?? updates.carregamentos;
+    if (Array.isArray(nextCarreg)) {
+      recordCollectionDiff('carregamentoProcesses', nextCarreg);
+    }
+
+    // Accumulate updates for /api/db fallback
     pendingUpdatesRef.current = {
       ...pendingUpdatesRef.current,
       ...updates
@@ -374,28 +462,41 @@ export default function App() {
       clearTimeout(pushTimeoutRef.current);
     }
 
-    // Schedule single POST request after a short quiet period (300ms) to ensure fast persistence while bundling rapid keypresses
+    // Flush quickly (150ms) so multi-collection actions inside one click are batched cleanly without lag
     pushTimeoutRef.current = setTimeout(async () => {
       const payload = { ...pendingUpdatesRef.current };
-      pendingUpdatesRef.current = {}; // Clear accumulator
+      pendingUpdatesRef.current = {};
+
+      const diffsSnapshot: Record<string, CollectionDiff> = {};
+      for (const [k, acc] of Object.entries(pendingDiffsRef.current)) {
+        if (acc.upsertMap.size > 0 || acc.deleteSet.size > 0) {
+          diffsSnapshot[k] = {
+            upsert: Array.from(acc.upsertMap.values()),
+            deleteIds: Array.from(acc.deleteSet.values()),
+          };
+        }
+      }
+      pendingDiffsRef.current = {};
       pushTimeoutRef.current = null;
 
-      // Extract only keys that have non-empty or updated content
       const payloadKeys = Object.keys(payload);
-      if (payloadKeys.length > 0) {
+      const diffKeys = Object.keys(diffsSnapshot);
+      const customManualVal = typeof payload.customManual === 'string' ? payload.customManual : undefined;
+
+      if (payloadKeys.length > 0 || diffKeys.length > 0) {
         let success = false;
-        
+
         const saveToServer = async (pld: any) => {
-          let attempts = 3;
+          const attempts = 3;
           let delay = 300;
           let srvSuccess = false;
-          
+
           for (let i = 0; i < attempts; i++) {
             try {
               const res = await fetch('/api/db', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                   db: pld,
                   user: currentUser ? { id: currentUser.id, name: currentUser.name, role: currentUser.role } : null
                 }),
@@ -418,9 +519,9 @@ export default function App() {
         if (isClientFirebaseActive()) {
           let fsSuccess = false;
           try {
-            fsSuccess = await saveDirectlyToFirestore(payload);
+            fsSuccess = await saveCollectionDiffsToFirestore(diffsSnapshot, customManualVal);
           } catch (err) {
-            console.warn('[ClientFirebase] Erro ao sincronizar diretamente com o Firestore:', err);
+            console.warn('[ClientFirebase] Erro ao sincronizar diffs com o Firestore:', err);
           }
 
           let srvSuccess = false;
@@ -437,20 +538,35 @@ export default function App() {
 
         if (!success) {
           console.error('Failed to push batched database updates to server after all attempts.');
-          // Return payload to the pendingUpdatesRef so they are retried or merged in the next write
           pendingUpdatesRef.current = {
             ...payload,
             ...pendingUpdatesRef.current
           };
-          
-          // Throttle the intrusive sync warning to maximum once per 60 seconds to avoid spamming the user during flaky network
+          for (const [k, d] of Object.entries(diffsSnapshot)) {
+            if (!pendingDiffsRef.current[k]) {
+              pendingDiffsRef.current[k] = { upsertMap: new Map<string, any>(), deleteSet: new Set<string>() };
+            }
+            const cur = pendingDiffsRef.current[k];
+            for (const item of d.upsert) {
+              const id = getDocIdForCollection(k, item);
+              if (!cur.upsertMap.has(id) && !cur.deleteSet.has(id)) {
+                cur.upsertMap.set(id, item);
+              }
+            }
+            for (const delId of d.deleteIds) {
+              if (!cur.upsertMap.has(delId)) {
+                cur.deleteSet.add(delId);
+              }
+            }
+          }
+
           if (Date.now() - lastSyncAlertTime.current > 60000) {
             lastSyncAlertTime.current = Date.now();
             console.warn("[AppSync] Falha ao sincronizar alterações com o servidor. Re-agendando no background...");
           }
         }
       }
-    }, 300);
+    }, 150);
   };
 
   // Helper to repair missing or broken product descriptions
@@ -550,11 +666,11 @@ export default function App() {
     }
   };
 
-  const applyDirectDb = (db: any) => {
+  const applyDirectDb = (db: any, bypassCooldown: boolean = false) => {
     if (!db) return;
 
     // Protection: If a local write was performed in the last 1.5 seconds, defer remote override to protect local user inputs/imports
-    if (Date.now() - lastWriteTime.current < 1500) {
+    if (!bypassCooldown && Date.now() - lastWriteTime.current < 1500) {
       console.log("[AppSync] Ignorando atualização remota temporariamente para proteger escrita local recente.");
       return;
     }
@@ -581,6 +697,7 @@ export default function App() {
 
       // If remote database is completely empty (e.g. brand new initialization), use DEFAULT_USERS; otherwise respect the DB
       const activeUsers = deduplicated.length > 0 ? deduplicated : DEFAULT_USERS;
+      latestCollectionRefs.current.users = activeUsers;
       setUsers(activeUsers);
       setCurrentUser(prevUser => {
         const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
@@ -599,78 +716,101 @@ export default function App() {
     }
 
     if (db.drivers !== undefined && Array.isArray(db.drivers)) {
+      latestCollectionRefs.current.drivers = db.drivers;
       setDrivers(db.drivers);
     }
 
     if (db.vehicles !== undefined && Array.isArray(db.vehicles)) {
+      latestCollectionRefs.current.vehicles = db.vehicles;
       setVehicles(db.vehicles);
     }
 
     if (db.products !== undefined && Array.isArray(db.products)) {
       const repaired = repairProductsList(db.products);
+      latestCollectionRefs.current.products = repaired;
       setProducts(repaired);
     }
 
     if (db.activeAssets !== undefined && Array.isArray(db.activeAssets)) {
+      latestCollectionRefs.current.activeAssets = db.activeAssets;
       setActiveAssets(db.activeAssets);
     }
 
-    if (db.audits !== undefined && Array.isArray(db.audits)) {
-      const cleaned = cleanAudits(db.audits);
-      setAudits(cleaned);
+    const effectiveRemoteAudits = db.audits !== undefined && Array.isArray(db.audits)
+      ? cleanAudits(db.audits)
+      : undefined;
+
+    if (effectiveRemoteAudits !== undefined) {
+      latestCollectionRefs.current.audits = effectiveRemoteAudits;
+      setAudits(effectiveRemoteAudits);
     }
 
     if (db.vales !== undefined && Array.isArray(db.vales)) {
       const cleaned = cleanVales(db.vales);
+      latestCollectionRefs.current.vales = cleaned;
       setVales(cleaned);
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
+      latestCollectionRefs.current.empilhadores = db.empilhadores;
       setEmpilhadores(db.empilhadores);
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
+      latestCollectionRefs.current.carregamentoProcesses = db.carregamentoProcesses;
       setCarregamentos(db.carregamentoProcesses);
     } else if (db.carregamentos !== undefined && Array.isArray(db.carregamentos)) {
+      latestCollectionRefs.current.carregamentoProcesses = db.carregamentos;
       setCarregamentos(db.carregamentos);
     }
 
     if (db.controleSobras !== undefined && Array.isArray(db.controleSobras)) {
+      latestCollectionRefs.current.controleSobras = db.controleSobras;
       setControleSobras(db.controleSobras);
     }
 
     if (db.fiveSEntries !== undefined && Array.isArray(db.fiveSEntries)) {
+      latestCollectionRefs.current.fiveSEntries = db.fiveSEntries;
       setFiveSEntries(db.fiveSEntries);
       try { localStorage.setItem('ambev_liga_5s_entries', JSON.stringify(db.fiveSEntries)); } catch (e) {}
     }
 
     if (db.safetyReports !== undefined && Array.isArray(db.safetyReports)) {
+      latestCollectionRefs.current.safetyReports = db.safetyReports;
       setSafetyReports(db.safetyReports);
       try { localStorage.setItem('ambev_liga_safety_reports', JSON.stringify(db.safetyReports)); } catch (e) {}
     }
 
     if (db.blitzEntries !== undefined && Array.isArray(db.blitzEntries)) {
+      latestCollectionRefs.current.blitzEntries = db.blitzEntries;
       setBlitzEntries(db.blitzEntries);
       try { localStorage.setItem('ambev_liga_blitz_entries', JSON.stringify(db.blitzEntries)); } catch (e) {}
     }
 
     if (db.zeroBreakDeclarations !== undefined && Array.isArray(db.zeroBreakDeclarations)) {
+      latestCollectionRefs.current.zeroBreakDeclarations = db.zeroBreakDeclarations;
       setZeroBreakDeclarations(db.zeroBreakDeclarations);
       try { localStorage.setItem('ambev_liga_break_declarations', JSON.stringify(db.zeroBreakDeclarations)); } catch (e) {}
     }
 
     if (db.returnForecasts !== undefined && Array.isArray(db.returnForecasts)) {
       const cleaned = cleanReturnForecasts(db.returnForecasts);
+      latestCollectionRefs.current.returnForecasts = cleaned;
       setReturnForecasts(cleaned);
     }
 
     if (db.fiscalAlerts !== undefined && Array.isArray(db.fiscalAlerts)) {
+      latestCollectionRefs.current.fiscalAlerts = db.fiscalAlerts;
       setFiscalAlerts(db.fiscalAlerts);
     }
 
     // Smart Merge Imported Routes
     if (db.importedRoutes !== undefined) {
-      const remoteCleaned = cleanImportedRoutes(db.importedRoutes);
+      const remoteCleaned = cleanImportedRoutes(
+        db.importedRoutes,
+        effectiveRemoteAudits || latestCollectionRefs.current.audits
+      );
+      latestCollectionRefs.current.importedRoutes = remoteCleaned;
       setImportedRoutes(remoteCleaned);
     }
 
@@ -693,10 +833,21 @@ export default function App() {
         pushTimeoutRef.current = null;
       }
       const payload = { ...pendingUpdatesRef.current };
-      if (Object.keys(payload).length > 0) {
+      const diffsSnapshot: Record<string, CollectionDiff> = {};
+      for (const [k, acc] of Object.entries(pendingDiffsRef.current)) {
+        if (acc.upsertMap.size > 0 || acc.deleteSet.size > 0) {
+          diffsSnapshot[k] = {
+            upsert: Array.from(acc.upsertMap.values()),
+            deleteIds: Array.from(acc.deleteSet.values()),
+          };
+        }
+      }
+      if (Object.keys(payload).length > 0 || Object.keys(diffsSnapshot).length > 0) {
         pendingUpdatesRef.current = {};
+        pendingDiffsRef.current = {};
+        const customManualVal = typeof payload.customManual === 'string' ? payload.customManual : undefined;
         if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore(payload);
+          saveCollectionDiffsToFirestore(diffsSnapshot, customManualVal);
         } else {
           try {
             fetch('/api/db', {
@@ -785,18 +936,34 @@ export default function App() {
       if (isClientFirebaseActive()) {
         console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore (Plano Blaze)...");
         unsubscribe = subscribeToFirestore((db) => {
-          // If there was a recent local write on this client, schedule applying the snapshot after the cooldown
-          // so concurrent remote changes or server confirmations are never dropped
-          if (Date.now() - lastWriteTime.current < 1500) {
+          // If there was a recent local write on this client, accumulate snapshot updates per collection
+          // so rapid multi-collection snapshots are NEVER dropped during cooldown
+          const elapsed = Date.now() - lastWriteTime.current;
+          if (elapsed < 1500) {
+            pendingSnapshotDbRef.current = {
+              ...pendingSnapshotDbRef.current,
+              ...db,
+            };
             if (pendingSnapshotTimeout) clearTimeout(pendingSnapshotTimeout);
             pendingSnapshotTimeout = setTimeout(() => {
-              applyDirectDb(db);
-            }, 1600);
+              pendingSnapshotTimeout = null;
+              const mergedDb = { ...pendingSnapshotDbRef.current };
+              pendingSnapshotDbRef.current = {};
+              if (Object.keys(mergedDb).length > 0) {
+                applyDirectDb(mergedDb, true);
+              }
+            }, Math.max(150, 1550 - elapsed));
             return;
           }
-          if (pendingSnapshotTimeout) {
-            clearTimeout(pendingSnapshotTimeout);
-            pendingSnapshotTimeout = null;
+          if (Object.keys(pendingSnapshotDbRef.current).length > 0) {
+            const mergedDb = { ...pendingSnapshotDbRef.current, ...db };
+            pendingSnapshotDbRef.current = {};
+            if (pendingSnapshotTimeout) {
+              clearTimeout(pendingSnapshotTimeout);
+              pendingSnapshotTimeout = null;
+            }
+            applyDirectDb(mergedDb, true);
+            return;
           }
           applyDirectDb(db);
         });
@@ -1051,8 +1218,9 @@ export default function App() {
 
   const handleSaveAudits = (newAudits: AuditSession[]) => {
     const timestamp = new Date().toISOString();
+    const prevAudits = (latestCollectionRefs.current.audits as AuditSession[]) || audits;
     const updatedAudits = newAudits.map(newAudit => {
-      const oldAudit = audits.find(a => a.id === newAudit.id);
+      const oldAudit = prevAudits.find(a => a.id === newAudit.id);
       const oldFunctional = oldAudit ? { ...oldAudit, updatedAt: undefined, lastUpdatedBy: undefined } : null;
       const newFunctional = { ...newAudit, updatedAt: undefined, lastUpdatedBy: undefined };
       if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
@@ -1083,10 +1251,12 @@ export default function App() {
 
   const handleSaveImportedRoutes = (newRoutes: ImportedRoute[]) => {
     const timestamp = new Date().toISOString();
+    const prevRoutes = (latestCollectionRefs.current.importedRoutes as ImportedRoute[]) || importedRoutes;
+    const currentAudits = (latestCollectionRefs.current.audits as AuditSession[]) || audits;
     const updatedRoutes = newRoutes.map(newRoute => {
       const newMapKey = normalizeMapCode(newRoute.routeMap).toUpperCase();
       const newDate = newRoute.routeDate || '';
-      const oldRoute = importedRoutes.find(r => 
+      const oldRoute = prevRoutes.find(r => 
         normalizeMapCode(r.routeMap).toUpperCase() === newMapKey &&
         (r.routeDate || '') === newDate
       );
@@ -1101,7 +1271,7 @@ export default function App() {
       return newRoute;
     });
 
-    const cleaned = cleanImportedRoutes(updatedRoutes);
+    const cleaned = cleanImportedRoutes(updatedRoutes, currentAudits);
     setImportedRoutes(cleaned);
     pushDatabaseToServer({ importedRoutes: cleaned });
   };

@@ -66,7 +66,8 @@ export default function MonitoramentoView({
   const [justificationTexts, setJustificationTexts] = useState<Record<string, string>>({});
 
   const getForecastStatusLabel = (f: ReturnForecast) => {
-    const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === f.routeMap.toUpperCase());
+    const fNorm = normalizeMapCode(f.routeMap).toUpperCase();
+    const matchingRoute = importedRoutes.find(r => normalizeMapCode(r.routeMap).toUpperCase() === fNorm);
     
     if (f.tripStatus === 'pernoitam') {
       return {
@@ -136,7 +137,8 @@ export default function MonitoramentoView({
     setSelectedDriverId(route.driverId || '');
     
     // Find existing forecast if any
-    const existing = returnForecasts.find(f => f.routeMap === route.routeMap);
+    const rNorm = normalizeMapCode(route.routeMap).toUpperCase();
+    const existing = returnForecasts.find(f => normalizeMapCode(f.routeMap).toUpperCase() === rNorm);
     if (existing && existing.eta) {
       if (existing.eta.includes(' as ')) {
         const parts = existing.eta.split(' as ');
@@ -168,9 +170,10 @@ export default function MonitoramentoView({
     }
 
     const finalEta = `${etaStart} as ${etaEnd}`;
+    const routeNorm = normalizeMapCode(route.routeMap).toUpperCase();
 
     // 1. Create or update ReturnForecast
-    const existingIndex = returnForecasts.findIndex(f => f.routeMap.toUpperCase() === route.routeMap.toUpperCase());
+    const existingIndex = returnForecasts.findIndex(f => normalizeMapCode(f.routeMap).toUpperCase() === routeNorm);
     
     // Find driver name or matched name
     const matchedDriver = drivers.find(d => d.id === selectedDriverId);
@@ -195,16 +198,15 @@ export default function MonitoramentoView({
     }
     onSaveForecasts(updatedForecasts);
 
-    // 2. If tripStatus is 'pernoitam', we can optionally update something or just let the Conferente know they stayed overnight.
-    // Also change status of ImportedRoute if appropriate
+    // 2. Sync to ImportedRoute
     if (onSaveImportedRoutes) {
       const updatedRoutes = importedRoutes.map(r => {
         if (r.id === route.id) {
           return {
             ...r,
             driverId: selectedDriverId,
-            // If they are in court, keep state or mark
-            status: status === 'no_patio' ? ('conferindo' as const) : r.status,
+            isPernoite: tripStatus === 'pernoitam',
+            status: status === 'no_patio' && r.status === 'pendente' ? ('conferindo' as const) : r.status,
             discrepancyObservation: discrepancyObs.trim() || undefined,
             routeObservations: r.routeObservations
           };
@@ -212,6 +214,39 @@ export default function MonitoramentoView({
         return r;
       });
       onSaveImportedRoutes(updatedRoutes);
+    }
+
+    // 3. Also sync driver / pernoite / observation to active AuditSession if it already exists
+    if (audits && onSaveAudits) {
+      let auditsChanged = false;
+      const updatedAudits = audits.map(audit => {
+        if (!audit) return audit;
+        const aNorm = normalizeMapCode(audit.routeMap).toUpperCase();
+        const isMatch = aNorm === routeNorm || (audit.unifiedMaps || []).some(m => normalizeMapCode(m).toUpperCase() === routeNorm);
+        if (!isMatch) return audit;
+
+        const nextDriverId = selectedDriverId || audit.driverId;
+        const nextPernoite = tripStatus === 'pernoitam';
+        let nextNotes = audit.reconciliationNotes || '';
+        const cleanDisc = discrepancyObs.trim();
+        if (cleanDisc && !nextNotes.includes(cleanDisc)) {
+          nextNotes = nextNotes ? `${nextNotes}\n[Monitoramento]: ${cleanDisc}` : `[Monitoramento]: ${cleanDisc}`;
+        }
+
+        if (nextDriverId !== audit.driverId || nextPernoite !== !!audit.isPernoite || nextNotes !== (audit.reconciliationNotes || '')) {
+          auditsChanged = true;
+          return {
+            ...audit,
+            driverId: nextDriverId,
+            isPernoite: nextPernoite,
+            reconciliationNotes: nextNotes || undefined
+          };
+        }
+        return audit;
+      });
+      if (auditsChanged) {
+        onSaveAudits(updatedAudits);
+      }
     }
 
     setSelectedRouteId(null);
@@ -234,6 +269,7 @@ export default function MonitoramentoView({
 
     const currentObsList = route.routeObservations || [];
     const updatedObsList = [...currentObsList, newObs];
+    const routeNorm = normalizeMapCode(route.routeMap).toUpperCase();
 
     // 1. Update ImportedRoute with combined discrepancy string too for legacy compatibility
     const updatedRoutes = importedRoutes.map(r => {
@@ -249,10 +285,15 @@ export default function MonitoramentoView({
     });
     onSaveImportedRoutes(updatedRoutes);
 
-    // 2. Sync to active AuditSession (and reconciliationNotes)
+    // 2. Sync to active AuditSession (and reconciliationNotes) using normalized map + unifiedMaps match
     if (audits && onSaveAudits) {
+      let changed = false;
       const updatedAudits = audits.map(audit => {
-        if (audit.routeMap.toUpperCase() === route.routeMap.toUpperCase()) {
+        if (!audit) return audit;
+        const aNorm = normalizeMapCode(audit.routeMap).toUpperCase();
+        const isMatch = aNorm === routeNorm || (audit.unifiedMaps || []).some(m => normalizeMapCode(m).toUpperCase() === routeNorm);
+        if (isMatch) {
+          changed = true;
           let currentNotes = audit.reconciliationNotes || '';
           const newObsStr = `[${newObs.author} - ${newObs.timestamp}]: ${newObs.text}`;
           if (currentNotes) {
@@ -263,15 +304,23 @@ export default function MonitoramentoView({
             currentNotes = newObsStr;
           }
 
+          const existingAuditObs = audit.routeObservations || [];
+          const mergedObsMap = new Map<string, RouteObservation>();
+          [...existingAuditObs, ...updatedObsList].forEach(o => {
+            if (o && o.id) mergedObsMap.set(o.id, o);
+          });
+
           return {
             ...audit,
-            routeObservations: updatedObsList,
+            routeObservations: Array.from(mergedObsMap.values()),
             reconciliationNotes: currentNotes
           };
         }
         return audit;
       });
-      onSaveAudits(updatedAudits);
+      if (changed) {
+        onSaveAudits(updatedAudits);
+      }
     }
 
     setObsText('');
