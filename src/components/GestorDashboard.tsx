@@ -2144,7 +2144,7 @@ export default function GestorDashboard({
   };
 
   const handleRemoveUser = (id: string) => {
-    if (id === currentUser.id) {
+    if ((id || '').toLowerCase() === (currentUser.id || '').toLowerCase()) {
       alert('Você não pode excluir o seu próprio usuário logado!');
       return;
     }

@@ -433,6 +433,9 @@ export async function switchActiveFirebaseConfig(newConfig: any): Promise<boolea
     authStateListenerAttached = false;
     isAuthenticated = false;
     isAuthenticating = false;
+    g1163RestorePromise = null;
+    g1163RestoreCompleted = false;
+    g1163ShouldKeepFallback = true;
     Object.keys(inMemoryDocCache).forEach(k => delete inMemoryDocCache[k]);
     if (typeof window !== "undefined") {
       try {
@@ -863,6 +866,71 @@ export function forceReconnect(): void {
   subscribeToFirestore(activeOnUpdateCallback);
 }
 
+let g1163RestorePromise: Promise<boolean> | null = null;
+let g1163RestoreCompleted = false;
+let g1163ShouldKeepFallback = true;
+
+function getDefaultG1163User() {
+  const found = DEFAULT_USERS.find(
+    (u) =>
+      (u.username || "").trim().toLowerCase() === "g1163" ||
+      (u.id || "").trim().toLowerCase() === "g1163"
+  );
+  return found ? { ...found, id: "g1163" } : null;
+}
+
+function hasG1163User(items: any[]): boolean {
+  return items.some(
+    (u: any) =>
+      (u?.id || "").trim().toLowerCase() === "g1163" ||
+      (u?.username || "").trim().toLowerCase() === "g1163"
+  );
+}
+
+async function ensureG1163Restored(db: any, items: any[]): Promise<boolean> {
+  if (hasG1163User(items)) {
+    g1163RestoreCompleted = true;
+    g1163ShouldKeepFallback = false;
+    return false;
+  }
+  if (g1163RestoreCompleted) {
+    return g1163ShouldKeepFallback;
+  }
+  if (!g1163RestorePromise) {
+    g1163RestorePromise = (async () => {
+      try {
+        const markerRef = doc(db, "app_state", "user_restore_g1163_v1");
+        const markerSnap = await getDoc(markerRef);
+        if (!markerSnap.exists()) {
+          const g1163Default = getDefaultG1163User();
+          if (g1163Default) {
+            const saved = await saveDocToFirestore("users", g1163Default);
+            if (!saved) {
+              g1163RestorePromise = null;
+              return true;
+            }
+            await setDoc(markerRef, {
+              restoredAt: new Date().toISOString(),
+              username: "G1163",
+            });
+            g1163ShouldKeepFallback = true;
+            g1163RestoreCompleted = true;
+            return true;
+          }
+        }
+        g1163ShouldKeepFallback = false;
+        g1163RestoreCompleted = true;
+        return false;
+      } catch (e) {
+        console.warn("[ClientFirebase] Erro ao verificar/restaurar usuário G1163:", e);
+        g1163RestorePromise = null;
+        return true;
+      }
+    })();
+  }
+  return await g1163RestorePromise;
+}
+
 /**
  * Requirement 3: Real-time queries straight from Firestore collections.
  * Seed default initial values directly to Firestore if collections are empty.
@@ -1008,6 +1076,31 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
             combinedDb.auditLogs = items;
             combinedDb.audit_logs = items;
             onUpdate({ auditLogs: items, audit_logs: items });
+          } else if (colName === "users") {
+            let effectiveUsers = items;
+            if (items.length > 0 && !hasG1163User(items)) {
+              const g1163Default = getDefaultG1163User();
+              if (!snapshot.metadata.fromCache) {
+                if (!g1163RestoreCompleted) {
+                  if (g1163Default && g1163ShouldKeepFallback) {
+                    effectiveUsers = [...items, g1163Default];
+                  }
+                  ensureG1163Restored(db, items).then((wasRestored) => {
+                    if (!wasRestored && myGeneration === reconnectGeneration) {
+                      combinedDb.users = items;
+                      onUpdate({ users: items });
+                    }
+                  });
+                }
+              } else if (g1163Default && g1163ShouldKeepFallback) {
+                effectiveUsers = [...items, g1163Default];
+              }
+            } else if (hasG1163User(items)) {
+              g1163RestoreCompleted = true;
+              g1163ShouldKeepFallback = false;
+            }
+            combinedDb[colName] = effectiveUsers;
+            onUpdate({ [colName]: effectiveUsers });
           } else {
             combinedDb[colName] = items;
             onUpdate({ [colName]: items });
@@ -1119,6 +1212,14 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;
             combinedDb.audit_logs = items;
+          } else if (colName === "users") {
+            if (items.length > 0 && !hasG1163User(items)) {
+              const wasRestored = await ensureG1163Restored(db, items);
+              const g1163Default = getDefaultG1163User();
+              combinedDb[colName] = wasRestored && g1163Default ? [...items, g1163Default] : items;
+            } else {
+              combinedDb[colName] = items;
+            }
           } else {
             combinedDb[colName] = items;
           }

@@ -124,7 +124,8 @@ export default function App() {
       }
       const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
       if (savedUserId) {
-        const found = DEFAULT_USERS.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase()));
+        const lowerSavedId = savedUserId.toLowerCase();
+        const found = DEFAULT_USERS.find(u => (u.id && u.id.toLowerCase() === lowerSavedId) || (u.username && u.username.toLowerCase() === lowerSavedId));
         if (found) return found;
       }
     } catch (e) {}
@@ -144,7 +145,8 @@ export default function App() {
       if (!role) {
         const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
         if (savedUserId) {
-          const found = DEFAULT_USERS.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase()));
+          const lowerSavedId = savedUserId.toLowerCase();
+          const found = DEFAULT_USERS.find(u => (u.id && u.id.toLowerCase() === lowerSavedId) || (u.username && u.username.toLowerCase() === lowerSavedId));
           if (found?.role) role = found.role;
         }
       }
@@ -584,7 +586,8 @@ export default function App() {
         const savedUserId = localStorage.getItem('logiroute_authenticated_user_id');
         const targetId = prevUser?.id || savedUserId;
         if (targetId) {
-          const matched = activeUsers.find((u: User) => u.id === targetId || (u.username && u.username.toLowerCase() === targetId.toLowerCase()));
+          const lowerTargetId = targetId.toLowerCase();
+          const matched = activeUsers.find((u: User) => (u.id && u.id.toLowerCase() === lowerTargetId) || (u.username && u.username.toLowerCase() === lowerTargetId));
           if (matched) {
             try { localStorage.setItem('logiroute_authenticated_user', JSON.stringify(matched)); } catch (e) {}
             return matched;
@@ -730,7 +733,11 @@ export default function App() {
       try { defaultUser = JSON.parse(savedUserStr); } catch (e) {}
     }
     if (!defaultUser && savedUserId) {
-      defaultUser = users.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase())) || DEFAULT_USERS.find(u => u.id === savedUserId) || null;
+      const lowerSavedId = savedUserId.toLowerCase();
+      defaultUser =
+        users.find(u => (u.id && u.id.toLowerCase() === lowerSavedId) || (u.username && u.username.toLowerCase() === lowerSavedId)) ||
+        DEFAULT_USERS.find(u => (u.id && u.id.toLowerCase() === lowerSavedId) || (u.username && u.username.toLowerCase() === lowerSavedId)) ||
+        null;
     }
     if (defaultUser) {
       setCurrentUser(defaultUser);
@@ -1213,7 +1220,8 @@ export default function App() {
       try { fallbackUser = JSON.parse(savedUserStr); } catch (e) {}
     }
     if (!fallbackUser && savedUserId) {
-      fallbackUser = availableUsers.find(u => u.id === savedUserId || (u.username && u.username.toLowerCase() === savedUserId.toLowerCase())) || null;
+      const lowerSavedId = savedUserId.toLowerCase();
+      fallbackUser = availableUsers.find(u => (u.id && u.id.toLowerCase() === lowerSavedId) || (u.username && u.username.toLowerCase() === lowerSavedId)) || null;
     }
 
     if (fallbackUser) {
