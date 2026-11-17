@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, ImportedRoute, ReturnForecast, Driver, Vehicle, AuditSession, RouteObservation } from '../types';
+import { doesAuditMatchRoute, isAuditDeletedId } from '../clientFirebase';
 import { Truck, Clock, Calendar, Check, Save, RefreshCw, AlertCircle, FileSpreadsheet, MapPin, AlertTriangle, BarChart3, Plus, MessageSquare, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
 
 interface MonitoramentoViewProps {
@@ -32,18 +33,21 @@ export default function MonitoramentoView({
   audits = [],
   onSaveAudits
 }: MonitoramentoViewProps) {
-  // Helper to determine if a route is closed based on audits
-  const isRouteClosedInAudits = (routeMap: string) => {
+  // Helper to determine if a route is closed based on audits (com escopo de data e sem deletados)
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = routeMap.trim().toUpperCase();
     return (audits || []).some(a => {
-      if (!a || a.reopeningRequested) return false;
+      if (!a || a.deletedAt || isAuditDeletedId(a.id) || a.reopeningRequested) return false;
+      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente';
+      if (!isFinished) return false;
+      if (routeDate) {
+        return doesAuditMatchRoute(a, { routeMap, routeDate });
+      }
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
       const aUpper = (a.routeMap || '').trim().toUpperCase();
-      const isMatch = aNorm === norm || aUpper === upper ||
+      return aNorm === norm || aUpper === upper ||
         ((a.unifiedMaps || []).some(m => normalizeMapCode(m).toUpperCase() === norm || (m || '').trim().toUpperCase() === upper));
-      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      return isMatch && isFinished;
     });
   };
 
@@ -334,7 +338,7 @@ export default function MonitoramentoView({
     return new Date().toISOString().split('T')[0];
   });
 
-  const routesForSelectedDate = importedRoutes.filter(r => r.routeDate === selectedDate && r.status !== 'fechado' && !isRouteClosedInAudits(r.routeMap));
+  const routesForSelectedDate = importedRoutes.filter(r => !r.deletedAt && r.routeDate === selectedDate && r.status !== 'fechado' && !isRouteClosedInAudits(r.routeMap, r.routeDate));
 
   return (
     <div className="w-full px-2 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-8" id="monitoramento_workspace">
@@ -908,12 +912,12 @@ export default function MonitoramentoView({
                 const todayStr = new Date().toISOString().split('T')[0];
 
                 // Check if route is closed/audit finished
-                const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === fc.routeMap.toUpperCase());
+                const matchingRoute = importedRoutes.find(r => !r.deletedAt && r.routeMap.toUpperCase() === fc.routeMap.toUpperCase());
                 if (matchingRoute && matchingRoute.status === 'fechado') {
                   return false;
                 }
 
-                const isAuditClosed = isRouteClosedInAudits(fc.routeMap);
+                const isAuditClosed = isRouteClosedInAudits(fc.routeMap, matchingRoute?.routeDate);
                 if (isAuditClosed) {
                   return false;
                 }

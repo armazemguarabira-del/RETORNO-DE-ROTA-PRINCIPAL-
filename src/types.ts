@@ -179,6 +179,16 @@ export interface AuditSession {
   reopened?: boolean;
   reopenedAt?: string;
   reopenedBy?: string;
+
+  // Soft-delete & transactional versioning metadata
+  deletedAt?: string;
+  deletedBy?: string;
+  generation?: number;
+  rev?: number;
+  reopenCycle?: number;
+  closedAt?: string;
+  closedBy?: string;
+  baixaConcluida?: boolean;
 }
 
 export interface RouteObservation {
@@ -286,6 +296,13 @@ export interface ImportedRoute {
     completedAt: string;
     completedBy: string;
   };
+
+  // Soft-delete & transactional versioning metadata
+  deletedAt?: string;
+  deletedBy?: string;
+  generation?: number;
+  rev?: number;
+  lastUpdatedBy?: string;
 }
 
 export function isTreatableAssetId(assetId: string): boolean {

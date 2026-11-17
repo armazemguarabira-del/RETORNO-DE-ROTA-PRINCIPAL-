@@ -13,13 +13,18 @@ import {
   onSnapshot,
   terminate,
   setLogLevel,
-  writeBatch
+  writeBatch,
+  runTransaction,
+  updateDoc,
+  increment,
+  deleteField
 } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import firebaseConfig from "../firebase-applet-config.json";
 import { DEFAULT_USERS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, DEFAULT_PRODUCTS, DEFAULT_ACTIVE_ASSETS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from "./data";
 import { FIREBASE_PRESETS } from "./firebasePresets";
 import { isAutoScheduleEnabled, getCurrentScheduledPreset } from "./utils/databaseScheduler";
+import type { AuditSession, AuditStatus, ImportedRoute } from "./types";
 
 // Silence verbose or harmless Firestore warnings/info logs in browser
 try {
@@ -184,6 +189,188 @@ function getColCache(colName: string): Map<string, string> {
 
 function persistColCache(_colName: string) {
   // Ephemeral in-memory cache only; no sessionStorage persistence to prevent stale cross-user cache
+}
+
+// --- Fase 1 & 2: Rastreamento de tombstones, geração, metadados e transições ---
+export class FirestoreNotFoundError extends Error {
+  code = "NOT_FOUND" as const;
+  constructor(message = "Documento não encontrado ou já foi excluído.") {
+    super(message);
+    this.name = "FirestoreNotFoundError";
+  }
+}
+
+export class FirestoreConflictError extends Error {
+  code = "CONFLICT" as const;
+  currentStatus?: string;
+  constructor(message = "O documento já foi alterado por outro usuário.", currentStatus?: string) {
+    super(message);
+    this.name = "FirestoreConflictError";
+    this.currentStatus = currentStatus;
+  }
+}
+
+export function isGuardConflictOrNotFound(err: any): err is FirestoreNotFoundError | FirestoreConflictError {
+  return Boolean(
+    err &&
+      (err.code === "NOT_FOUND" ||
+        err.code === "CONFLICT" ||
+        err instanceof FirestoreNotFoundError ||
+        err instanceof FirestoreConflictError)
+  );
+}
+
+const deletedAuditIds = new Set<string>();
+const deletedRouteIds = new Set<string>();
+const latestRouteGenerationById = new Map<string, number>();
+const latestAuditMetaById = new Map<
+  string,
+  { status: string; rev: number; generation: number; reopenCycle: number; deletedAt?: string }
+>();
+const legitimateCreatedAuditIds = new Set<string>();
+
+export function isAuditDeletedId(id: string): boolean {
+  return Boolean(id && deletedAuditIds.has(id));
+}
+
+export function isRouteDeletedId(id: string): boolean {
+  return Boolean(id && deletedRouteIds.has(id));
+}
+
+export function getDeletedAuditIds(): Set<string> {
+  return deletedAuditIds;
+}
+
+export function getDeletedRouteIds(): Set<string> {
+  return deletedRouteIds;
+}
+
+export function getRouteGeneration(routeId: string): number {
+  return latestRouteGenerationById.get(routeId) ?? 1;
+}
+
+export function getAuditMeta(auditId: string) {
+  return latestAuditMetaById.get(auditId);
+}
+
+export function markLegitimateAuditCreation(auditId: string): void {
+  if (auditId) legitimateCreatedAuditIds.add(auditId);
+}
+
+export function isLegitimateCreatedAudit(auditId: string): boolean {
+  return Boolean(auditId && legitimateCreatedAuditIds.has(auditId));
+}
+
+export function normalizeMapCodeClient(mapCode: any): string {
+  if (mapCode === undefined || mapCode === null) return "";
+  return String(mapCode).trim().replace(/^0+/, "");
+}
+
+/**
+ * Compara data de rota importada com data de chegada da auditoria de forma segura:
+ * - Se ambas existem: aceita mesmo dia, ou ciclo de retorno em até 5 dias posteriores (arrivalDate >= routeDate).
+ * - Nunca casa auditoria de data anterior (arrivalDate < routeDate) para não fechar rota nova com mapa antigo reutilizado.
+ */
+export function datesMatchForQueue(routeDate?: string, arrivalDate?: string): boolean {
+  if (!routeDate || !arrivalDate) return true;
+  if (routeDate === arrivalDate) return true;
+  try {
+    const startMs = new Date(`${routeDate}T00:00:00`).getTime();
+    const endMs = new Date(`${arrivalDate}T00:00:00`).getTime();
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) return routeDate === arrivalDate;
+    const diffDays = Math.round((endMs - startMs) / (1000 * 60 * 60 * 24));
+    return diffDays >= 0 && diffDays <= 5;
+  } catch {
+    return routeDate === arrivalDate;
+  }
+}
+
+export function doesAuditMatchRoute(
+  audit: { routeMap?: string; unifiedMaps?: string[]; arrivalDate?: string; deletedAt?: string },
+  route: { routeMap?: string; routeDate?: string; deletedAt?: string },
+  options?: { strictSameDate?: boolean }
+): boolean {
+  if (!audit || !route || audit.deletedAt || route.deletedAt) return false;
+  const rNorm = normalizeMapCodeClient(route.routeMap).toUpperCase();
+  const rUpper = String(route.routeMap || "").trim().toUpperCase();
+  if (!rNorm && !rUpper) return false;
+
+  const aNorm = normalizeMapCodeClient(audit.routeMap).toUpperCase();
+  const aUpper = String(audit.routeMap || "").trim().toUpperCase();
+  const mapMatches =
+    (rNorm && aNorm === rNorm) ||
+    (rUpper && aUpper === rUpper) ||
+    (Array.isArray(audit.unifiedMaps) &&
+      audit.unifiedMaps.some(
+        (m) => normalizeMapCodeClient(m).toUpperCase() === rNorm || String(m || "").trim().toUpperCase() === rUpper
+      ));
+
+  if (!mapMatches) return false;
+  if (options?.strictSameDate) {
+    if (route.routeDate && audit.arrivalDate) {
+      return route.routeDate === audit.arrivalDate;
+    }
+    return true;
+  }
+  return datesMatchForQueue(route.routeDate, audit.arrivalDate);
+}
+
+const ALLOWED_AUDIT_TRANSITIONS: Record<string, Set<string>> = {
+  em_aberto: new Set(["em_aberto", "conferido_fisico"]),
+  conferido_fisico: new Set(["conferido_fisico", "reconferencia", "finalizado_ok", "finalizado_divergente"]),
+  reconferencia: new Set(["reconferencia", "recontagem_finalizada"]),
+  recontagem_finalizada: new Set(["recontagem_finalizada", "reconferencia", "finalizado_ok", "finalizado_divergente"]),
+  finalizado_ok: new Set(["finalizado_ok"]),
+  finalizado_divergente: new Set(["finalizado_divergente"])
+};
+
+export function isAllowedAuditStatusTransition(
+  fromStatus: string | undefined,
+  toStatus: string | undefined,
+  opts?: { prevReopenCycle?: number; nextReopenCycle?: number }
+): boolean {
+  if (!fromStatus) return true;
+  if (!toStatus) return false;
+  if (fromStatus === toStatus) return true;
+
+  // Transição de finalizado_* -> conferido_fisico SOMENTE quando reopenCycle aumentou (via reopenAudit)
+  if (
+    (fromStatus === "finalizado_ok" || fromStatus === "finalizado_divergente") &&
+    toStatus === "conferido_fisico"
+  ) {
+    const prevCycle = Number(opts?.prevReopenCycle || 0);
+    const nextCycle = Number(opts?.nextReopenCycle || 0);
+    return nextCycle > prevCycle;
+  }
+
+  const allowed = ALLOWED_AUDIT_TRANSITIONS[fromStatus];
+  if (!allowed) return false;
+  return allowed.has(toStatus);
+}
+
+function isFirestoreSentinel(val: any): boolean {
+  if (!val || typeof val !== "object") return false;
+  const proto = Object.getPrototypeOf(val);
+  if (proto !== null && proto !== Object.prototype && !Array.isArray(val)) {
+    return true;
+  }
+  if (typeof val._methodName === "string") return true;
+  return false;
+}
+
+function sanitizeForFirestore<T>(input: T): T {
+  if (input === null || input === undefined) return input;
+  if (typeof input !== "object") return input;
+  if (isFirestoreSentinel(input)) return input;
+  if (Array.isArray(input)) {
+    return input.filter((v) => v !== undefined).map((v) => sanitizeForFirestore(v)) as unknown as T;
+  }
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(input as Record<string, any>)) {
+    if (v === undefined) continue;
+    out[k] = sanitizeForFirestore(v);
+  }
+  return out as T;
 }
 let clientAuthError: string | null = null;
 let lastAuthAttemptTime = 0;
@@ -788,6 +975,10 @@ export async function saveCollectionDiffsToFirestore(
 
         for (const delId of diff.deleteIds || []) {
           if (!delId) continue;
+          if (targetCol === "audits" || targetCol === "importedRoutes") {
+            console.warn(`[ClientFirebase] Bloqueado delete físico automático em '${targetCol}' (${delId}). Use softDeleteMapCascade.`);
+            continue;
+          }
           allOps.push({ type: "delete", targetCol, id: delId });
           touchedCols.add(targetCol);
         }
@@ -824,7 +1015,10 @@ export async function saveCollectionDiffsToFirestore(
     })();
 
     const timeoutPromise = new Promise<boolean>((resolve) => {
-      setTimeout(() => resolve(true), 15000);
+      setTimeout(() => {
+        console.warn("[ClientFirebase] saveCollectionDiffsToFirestore atingiu timeout de 15s (escrita pendente na fila offline local).");
+        resolve(true);
+      }, 15000);
     });
 
     return await Promise.race([savePromise, timeoutPromise]);
@@ -875,6 +1069,527 @@ export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean 
     console.warn("[ClientFirebase] Erro ao persistir no Firestore:", err);
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fase 2: Helpers Transacionais por Documento (máx 1-2 docs por operação)
+// ---------------------------------------------------------------------------
+
+export async function createAudit(audit: AuditSession, actor: string): Promise<AuditSession> {
+  const docId = getDocIdForCollection("audits", audit);
+  markLegitimateAuditCreation(docId);
+
+  const nowIso = new Date().toISOString();
+  const baseAudit: AuditSession = sanitizeForFirestore({
+    ...audit,
+    id: docId,
+    generation: audit.generation || 1,
+    rev: 1,
+    reopenCycle: audit.reopenCycle || 0,
+    updatedAt: nowIso,
+    lastUpdatedBy: actor
+  });
+  delete baseAudit.deletedAt;
+  delete baseAudit.deletedBy;
+
+  const db = getClientFirestore();
+  if (!db) {
+    latestAuditMetaById.set(docId, {
+      status: baseAudit.status,
+      rev: 1,
+      generation: baseAudit.generation || 1,
+      reopenCycle: baseAudit.reopenCycle || 0
+    });
+    return baseAudit;
+  }
+
+  await runTransaction(db, async (tx) => {
+    const docRef = doc(db, "audits", docId);
+    const snap = await tx.get(docRef);
+    if (snap.exists()) {
+      const existing = snap.data() as any;
+      if (!existing.deletedAt) {
+        throw new FirestoreConflictError(
+          `Já existe uma conferência ativa para o mapa ${audit.routeMap}.`,
+          existing.status
+        );
+      }
+      baseAudit.generation = Number(existing.generation || 1) + 1;
+      baseAudit.rev = Number(existing.rev || 0) + 1;
+    }
+    tx.set(docRef, baseAudit);
+  });
+
+  deletedAuditIds.delete(docId);
+  latestAuditMetaById.set(docId, {
+    status: baseAudit.status,
+    rev: baseAudit.rev || 1,
+    generation: baseAudit.generation || 1,
+    reopenCycle: baseAudit.reopenCycle || 0
+  });
+  getColCache("audits").set(docId, canonicalJson(baseAudit));
+  return baseAudit;
+}
+
+export async function createRoute(route: ImportedRoute, actor: string): Promise<ImportedRoute> {
+  const docId = getDocIdForCollection("importedRoutes", route);
+  const nowIso = new Date().toISOString();
+  const cleanBase: ImportedRoute = sanitizeForFirestore({
+    ...route,
+    id: docId,
+    updatedAt: nowIso,
+    lastUpdatedBy: actor
+  });
+  delete cleanBase.deletedAt;
+  delete cleanBase.deletedBy;
+
+  const db = getClientFirestore();
+  if (!db) {
+    const nextGen = getRouteGeneration(docId) + (isRouteDeletedId(docId) ? 1 : 0);
+    const created = { ...cleanBase, generation: nextGen, rev: 1 };
+    deletedRouteIds.delete(docId);
+    latestRouteGenerationById.set(docId, nextGen);
+    return created;
+  }
+
+  let finalRoute: ImportedRoute = { ...cleanBase, generation: 1, rev: 1 };
+
+  await runTransaction(db, async (tx) => {
+    const docRef = doc(db, "importedRoutes", docId);
+    const snap = await tx.get(docRef);
+    if (snap.exists()) {
+      const existing = snap.data() as any;
+      if (!existing.deletedAt) {
+        throw new FirestoreConflictError(
+          `O mapa ${route.routeMap} já está cadastrado e ativo para a data informada.`,
+          existing.status
+        );
+      }
+      const nextGen = Number(existing.generation || 1) + 1;
+      const nextRev = Number(existing.rev || 0) + 1;
+      finalRoute = {
+        ...cleanBase,
+        generation: nextGen,
+        rev: nextRev
+      };
+      // Reaproveita o documento existente removendo deletedAt/deletedBy com deleteField() e incrementando generation
+      tx.set(
+        docRef,
+        {
+          ...finalRoute,
+          deletedAt: deleteField(),
+          deletedBy: deleteField()
+        },
+        { merge: true }
+      );
+    } else {
+      finalRoute = { ...cleanBase, generation: 1, rev: 1 };
+      tx.set(docRef, finalRoute);
+    }
+  });
+
+  deletedRouteIds.delete(docId);
+  latestRouteGenerationById.set(docId, finalRoute.generation || 1);
+  getColCache("importedRoutes").set(docId, canonicalJson(finalRoute));
+  return finalRoute;
+}
+
+export async function updateAuditGuarded(
+  auditId: string,
+  patch: Partial<AuditSession> & Record<string, any>,
+  opts: {
+    expectedStatus: AuditStatus[];
+    actor: string;
+    clearFields?: string[];
+    appendHistoryEntry?: AuditSession["history"][number];
+  }
+): Promise<AuditSession> {
+  const nowIso = new Date().toISOString();
+  const db = getClientFirestore();
+
+  if (!db) {
+    if (isAuditDeletedId(auditId)) {
+      throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+    }
+    const meta = getAuditMeta(auditId);
+    if (meta && !opts.expectedStatus.includes(meta.status as AuditStatus)) {
+      throw new FirestoreConflictError(
+        `Este mapa já está com status "${meta.status}" e não pode ser alterado.`,
+        meta.status
+      );
+    }
+    const localPatch = sanitizeForFirestore({ ...patch });
+    for (const k of opts.clearFields || []) {
+      delete (localPatch as any)[k];
+    }
+    return {
+      ...(localPatch as any),
+      id: auditId,
+      updatedAt: nowIso,
+      lastUpdatedBy: opts.actor
+    } as AuditSession;
+  }
+
+  let resultingAudit: AuditSession | null = null;
+
+  await runTransaction(db, async (tx) => {
+    const docRef = doc(db, "audits", auditId);
+    const snap = await tx.get(docRef);
+    if (!snap.exists()) {
+      throw new FirestoreNotFoundError("Este mapa não existe mais no banco de dados.");
+    }
+    const data = snap.data() as any;
+    if (data.deletedAt) {
+      throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+    }
+    if (!opts.expectedStatus.includes(data.status)) {
+      throw new FirestoreConflictError(
+        `Este mapa já foi alterado por outro usuário (status atual: ${data.status}).`,
+        data.status
+      );
+    }
+
+    const baseHistory = Array.isArray(data.history) ? [...data.history] : [];
+    const nextHistory = opts.appendHistoryEntry
+      ? [...baseHistory, opts.appendHistoryEntry]
+      : Array.isArray(patch.history)
+        ? patch.history
+        : baseHistory;
+
+    const cleanPatch = sanitizeForFirestore({
+      ...patch,
+      history: nextHistory,
+      updatedAt: nowIso,
+      lastUpdatedBy: opts.actor
+    }) as Record<string, any>;
+
+    delete cleanPatch.id;
+
+    const txUpdatePayload: Record<string, any> = {
+      ...cleanPatch,
+      rev: increment(1)
+    };
+
+    for (const fieldKey of opts.clearFields || []) {
+      txUpdatePayload[fieldKey] = deleteField();
+    }
+
+    tx.update(docRef, txUpdatePayload);
+
+    const nextObj: Record<string, any> = {
+      ...data,
+      ...cleanPatch,
+      id: auditId,
+      rev: Number(data.rev || 0) + 1
+    };
+    for (const fieldKey of opts.clearFields || []) {
+      delete nextObj[fieldKey];
+    }
+    resultingAudit = nextObj as AuditSession;
+  });
+
+  if (!resultingAudit) {
+    throw new FirestoreConflictError("Falha ao concluir a transação de atualização.");
+  }
+
+  const finalRes = resultingAudit as AuditSession;
+  latestAuditMetaById.set(auditId, {
+    status: finalRes.status,
+    rev: Number(finalRes.rev || 1),
+    generation: Number(finalRes.generation || 1),
+    reopenCycle: Number(finalRes.reopenCycle || 0)
+  });
+  getColCache("audits").set(auditId, canonicalJson(finalRes));
+  return finalRes;
+}
+
+export async function updateRouteStatus(
+  routeId: string,
+  status: ImportedRoute["status"],
+  actor?: string,
+  extraPatch?: Record<string, any>
+): Promise<boolean> {
+  if (!routeId) return false;
+  const db = getClientFirestore();
+  const nowIso = new Date().toISOString();
+
+  if (!db) {
+    return true;
+  }
+
+  try {
+    let updated = false;
+    await runTransaction(db, async (tx) => {
+      const docRef = doc(db, "importedRoutes", routeId);
+      const snap = await tx.get(docRef);
+      if (!snap.exists()) return;
+      const data = snap.data() as any;
+      if (data.deletedAt) return;
+
+      const cleanExtra = extraPatch ? sanitizeForFirestore(extraPatch) : {};
+      delete (cleanExtra as any).id;
+
+      tx.update(docRef, {
+        ...cleanExtra,
+        status,
+        updatedAt: nowIso,
+        ...(actor ? { lastUpdatedBy: actor } : {}),
+        rev: increment(1)
+      });
+      updated = true;
+    });
+    return updated;
+  } catch (err) {
+    console.warn(`[ClientFirebase] Erro ao atualizar status da rota ${routeId}:`, err);
+    return false;
+  }
+}
+
+export async function reopenAudit(
+  auditId: string,
+  opts: {
+    actor: string;
+    actorRoleTitle: string;
+    justification: string;
+    routeIds?: string[];
+  }
+): Promise<AuditSession> {
+  const db = getClientFirestore();
+  const nowIso = new Date().toISOString();
+
+  const historyEntry = {
+    timestamp: nowIso,
+    action: `Mapa Reaberto por ${opts.actor} (${opts.actorRoleTitle})`,
+    user: opts.actor,
+    details: `Motivo da Reabertura: ${opts.justification}`
+  };
+
+  if (!db) {
+    throw new FirestoreConflictError("Banco de dados Firestore indisponível para reabertura transacional.");
+  }
+
+  let reopenedResult: AuditSession | null = null;
+  const uniqueRouteIds = Array.from(new Set((opts.routeIds || []).filter(Boolean)));
+
+  await runTransaction(db, async (tx) => {
+    const auditRef = doc(db, "audits", auditId);
+    const auditSnap = await tx.get(auditRef);
+    if (!auditSnap.exists() || auditSnap.data()?.deletedAt) {
+      throw new FirestoreNotFoundError("Este mapa não foi encontrado ou foi excluído.");
+    }
+    const data = auditSnap.data() as any;
+    if (data.status !== "finalizado_ok" && data.status !== "finalizado_divergente") {
+      throw new FirestoreConflictError(
+        `Somente mapas finalizados podem ser reabertos (status atual: ${data.status}).`,
+        data.status
+      );
+    }
+
+    // Ler rotas vinculadas (no máx 1-2 docs da mesma data/unificação) antes de gravar
+    const routeSnaps = await Promise.all(
+      uniqueRouteIds.map((rId) => tx.get(doc(db, "importedRoutes", rId)))
+    );
+
+    const nextCycle = Number(data.reopenCycle || 0) + 1;
+    const nextHistory = [...(Array.isArray(data.history) ? data.history : []), historyEntry];
+
+    const auditUpdate: Record<string, any> = {
+      status: "conferido_fisico",
+      reopeningRequested: false,
+      reopened: true,
+      reopenCycle: nextCycle,
+      reopenedAt: nowIso,
+      reopenedBy: opts.actor,
+      reopeningJustification: opts.justification,
+      pdfDownloaded: false,
+      financeiroCiente: false,
+      baixaConcluida: false,
+      history: nextHistory,
+      updatedAt: nowIso,
+      lastUpdatedBy: opts.actor,
+      rev: increment(1),
+      surplusFlowStatus: deleteField(),
+      closedAt: deleteField(),
+      closedBy: deleteField()
+    };
+
+    tx.update(auditRef, auditUpdate);
+
+    routeSnaps.forEach((rSnap) => {
+      if (rSnap.exists() && !rSnap.data()?.deletedAt) {
+        tx.update(rSnap.ref, {
+          status: "em_analise",
+          updatedAt: nowIso,
+          lastUpdatedBy: opts.actor,
+          rev: increment(1)
+        });
+      }
+    });
+
+    const nextState: Record<string, any> = {
+      ...data,
+      id: auditId,
+      status: "conferido_fisico",
+      reopeningRequested: false,
+      reopened: true,
+      reopenCycle: nextCycle,
+      reopenedAt: nowIso,
+      reopenedBy: opts.actor,
+      reopeningJustification: opts.justification,
+      pdfDownloaded: false,
+      financeiroCiente: false,
+      baixaConcluida: false,
+      history: nextHistory,
+      updatedAt: nowIso,
+      lastUpdatedBy: opts.actor,
+      rev: Number(data.rev || 0) + 1
+    };
+    delete nextState.surplusFlowStatus;
+    delete nextState.closedAt;
+    delete nextState.closedBy;
+    reopenedResult = nextState as AuditSession;
+  });
+
+  if (!reopenedResult) {
+    throw new FirestoreConflictError("Falha ao reabrir o mapa.");
+  }
+
+  const finalAudit = reopenedResult as AuditSession;
+  latestAuditMetaById.set(auditId, {
+    status: "conferido_fisico",
+    rev: Number(finalAudit.rev || 1),
+    generation: Number(finalAudit.generation || 1),
+    reopenCycle: Number(finalAudit.reopenCycle || 1)
+  });
+  getColCache("audits").set(auditId, canonicalJson(finalAudit));
+  return finalAudit;
+}
+
+export async function softDeleteMapCascade(params: {
+  routeIds: string[];
+  auditIds: string[];
+  valeIds?: string[];
+  alertIds?: string[];
+  carregamentoIds?: string[];
+  actor: string;
+  logDetails: string;
+}): Promise<boolean> {
+  const db = getClientFirestore();
+  const nowIso = new Date().toISOString();
+  const uniqueRoutes = Array.from(new Set((params.routeIds || []).filter(Boolean)));
+  const uniqueAudits = Array.from(new Set((params.auditIds || []).filter(Boolean)));
+  const uniqueVales = Array.from(new Set((params.valeIds || []).filter(Boolean)));
+  const uniqueAlerts = Array.from(new Set((params.alertIds || []).filter(Boolean)));
+  const uniqueCarreg = Array.from(new Set((params.carregamentoIds || []).filter(Boolean)));
+
+  uniqueRoutes.forEach((id) => deletedRouteIds.add(id));
+  uniqueAudits.forEach((id) => deletedAuditIds.add(id));
+
+  if (!db) return true;
+
+  try {
+    const batch = writeBatch(db);
+
+    uniqueRoutes.forEach((id) => {
+      batch.set(
+        doc(db, "importedRoutes", id),
+        {
+          deletedAt: nowIso,
+          deletedBy: params.actor,
+          updatedAt: nowIso,
+          lastUpdatedBy: params.actor,
+          rev: increment(1)
+        },
+        { merge: true }
+      );
+    });
+
+    uniqueAudits.forEach((id) => {
+      batch.set(
+        doc(db, "audits", id),
+        {
+          deletedAt: nowIso,
+          deletedBy: params.actor,
+          updatedAt: nowIso,
+          lastUpdatedBy: params.actor,
+          rev: increment(1)
+        },
+        { merge: true }
+      );
+    });
+
+    uniqueVales.forEach((id) => batch.delete(doc(db, "vales", id)));
+    uniqueAlerts.forEach((id) => batch.delete(doc(db, "fiscalAlerts", id)));
+    uniqueCarreg.forEach((id) => batch.delete(doc(db, "carregamentoProcesses", id)));
+
+    const logId = `log_del_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    batch.set(doc(db, "auditLogs", logId), {
+      id: logId,
+      timestamp: nowIso,
+      user: params.actor,
+      operation: "EXCLUSÃO",
+      details: params.logDetails
+    });
+
+    await batch.commit();
+    return true;
+  } catch (err) {
+    console.warn("[ClientFirebase] Erro em softDeleteMapCascade:", err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
+    return false;
+  }
+}
+
+export async function markAuditPdfDownloadedDoc(auditId: string, actor: string): Promise<boolean> {
+  if (!auditId) return false;
+  const db = getClientFirestore();
+  if (!db) return true;
+  try {
+    const nowIso = new Date().toISOString();
+    await updateDoc(doc(db, "audits", auditId), {
+      pdfDownloaded: true,
+      updatedAt: nowIso,
+      lastUpdatedBy: actor,
+      rev: increment(1)
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[ClientFirebase] Aviso ao marcar pdfDownloaded em ${auditId}:`, err);
+    return false;
+  }
+}
+
+export async function batchRepairFinalizedAudits(
+  repairs: Array<{ id: string; closedAt: string; closedBy?: string }>,
+  actor: string
+): Promise<number> {
+  if (!repairs || repairs.length === 0) return 0;
+  const db = getClientFirestore();
+  if (!db) return repairs.length;
+
+  let repairedCount = 0;
+  const nowIso = new Date().toISOString();
+  const batchSize = 400;
+
+  for (let i = 0; i < repairs.length; i += batchSize) {
+    const chunk = repairs.slice(i, i + batchSize);
+    const batch = writeBatch(db);
+    chunk.forEach((rep) => {
+      batch.update(doc(db, "audits", rep.id), {
+        closedAt: rep.closedAt,
+        ...(rep.closedBy ? { closedBy: rep.closedBy } : {}),
+        pdfDownloaded: true,
+        updatedAt: nowIso,
+        lastUpdatedBy: actor,
+        rev: increment(1)
+      });
+    });
+    await batch.commit();
+    repairedCount += chunk.length;
+  }
+
+  return repairedCount;
 }
 
 // --- Gerente de reconexão dos listeners em tempo real ----------------------
@@ -1146,13 +1861,26 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
           const colCache = getColCache(targetCol);
 
           const currentServerIds = new Set<string>();
-          const items = snapshot.docs.map((d) => {
+          const rawItems = snapshot.docs.map((d) => {
             const data = d.data();
             const docId = d.id;
             currentServerIds.add(docId);
             const itemWithId = { ...data, id: docId };
             colCache.set(docId, canonicalJson(itemWithId));
+
             if (colName === "audits") {
+              latestAuditMetaById.set(docId, {
+                status: data.status,
+                rev: Number(data.rev || 0),
+                generation: Number(data.generation || 1),
+                reopenCycle: Number(data.reopenCycle || 0),
+                deletedAt: data.deletedAt
+              });
+              if (data.deletedAt) {
+                deletedAuditIds.add(docId);
+              } else {
+                deletedAuditIds.delete(docId);
+              }
               return {
                 ...itemWithId,
                 items: Array.isArray(data.items) ? data.items : [],
@@ -1161,10 +1889,25 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
                 unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
               };
             }
+
+            if (colName === "importedRoutes") {
+              latestRouteGenerationById.set(docId, Number(data.generation || 1));
+              if (data.deletedAt) {
+                deletedRouteIds.add(docId);
+              } else {
+                deletedRouteIds.delete(docId);
+              }
+            }
+
             return itemWithId;
           });
 
-          // Clean up cache for deleted docs
+          // Filtrar tombstones (deletedAt) antes de entregar ao React (Audits & ImportedRoutes)
+          const items = (colName === "audits" || colName === "importedRoutes")
+            ? rawItems.filter((it: any) => !it.deletedAt)
+            : rawItems;
+
+          // Clean up cache for physically deleted docs
           for (const cachedId of Array.from(colCache.keys())) {
             if (!currentServerIds.has(cachedId)) {
               colCache.delete(cachedId);
@@ -1290,10 +2033,19 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
           const snap = await getDocs(collRef);
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
-          const items = snap.docs.map((d) => {
+          const rawItems = snap.docs.map((d) => {
             const data = d.data();
             colCache.set(d.id, JSON.stringify(data));
             if (colName === "audits") {
+              latestAuditMetaById.set(d.id, {
+                status: data.status,
+                rev: Number(data.rev || 0),
+                generation: Number(data.generation || 1),
+                reopenCycle: Number(data.reopenCycle || 0),
+                deletedAt: data.deletedAt
+              });
+              if (data.deletedAt) deletedAuditIds.add(d.id);
+              else deletedAuditIds.delete(d.id);
               return {
                 ...data,
                 id: d.id,
@@ -1303,11 +2055,19 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
                 unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
               };
             }
+            if (colName === "importedRoutes") {
+              latestRouteGenerationById.set(d.id, Number(data.generation || 1));
+              if (data.deletedAt) deletedRouteIds.add(d.id);
+              else deletedRouteIds.delete(d.id);
+            }
             return {
               ...data,
               id: d.id
             };
           });
+          const items = (colName === "audits" || colName === "importedRoutes")
+            ? rawItems.filter((it: any) => !it.deletedAt)
+            : rawItems;
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;
             combinedDb.audit_logs = items;

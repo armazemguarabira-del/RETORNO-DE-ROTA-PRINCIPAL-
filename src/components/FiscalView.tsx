@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
-import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
+import { isClientFirebaseActive, saveDirectlyToFirestore, createRoute, updateAuditGuarded, updateRouteStatus, reopenAudit, softDeleteMapCascade, markAuditPdfDownloadedDoc, batchRepairFinalizedAudits, isGuardConflictOrNotFound, isAuditDeletedId, isRouteDeletedId, doesAuditMatchRoute, datesMatchForQueue, markLegitimateAuditCreation, saveDocToFirestore } from '../clientFirebase';
+import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users, Wrench } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
@@ -887,6 +887,107 @@ export default function FiscalView({
     };
   }, [activeSession]);
 
+  // Modal "Reparar dados" (Fase 4 - gestor e auxiliar_logistica)
+  const [showRepairModal, setShowRepairModal] = useState(false);
+  const [isRepairingData, setIsRepairingData] = useState(false);
+  const [repairReport, setRepairReport] = useState<{
+    repairedCount: number;
+    fixedAudits: { id: string; routeMap: string; arrivalDate: string; closedAt: string }[];
+    duplicateGroups: { key: string; routeMap: string; arrivalDate: string; ids: string[] }[];
+    unclosedRoutes: { id: string; routeMap: string; routeDate: string }[];
+  } | null>(null);
+
+  const buildDataDiagnosticReport = () => {
+    const activeAudits = (audits || []).filter(a => a && !a.deletedAt && !isAuditDeletedId(a.id));
+    const activeRoutes = (importedRoutes || []).filter(r => r && !r.deletedAt && !isRouteDeletedId(r.id));
+
+    const toFix: { id: string; routeMap: string; arrivalDate: string; closedAt: string; closedBy?: string }[] = [];
+    const byMapDate = new Map<string, AuditSession[]>();
+
+    for (const a of activeAudits) {
+      const key = `${normalizeMapCode(a.routeMap).toUpperCase()}_${a.arrivalDate || ''}`;
+      if (!byMapDate.has(key)) byMapDate.set(key, []);
+      byMapDate.get(key)!.push(a);
+
+      if ((a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && (!a.closedAt || !a.pdfDownloaded)) {
+        const baixaEntry = (a.history || []).slice().reverse().find(h =>
+          h.action && (h.action.includes('Baixa Concluída') || h.action.includes('Baixa'))
+        );
+        const derivedClosedAt = a.closedAt || baixaEntry?.timestamp || a.endTime || a.updatedAt || new Date().toISOString();
+        toFix.push({
+          id: a.id,
+          routeMap: a.routeMap,
+          arrivalDate: a.arrivalDate,
+          closedAt: derivedClosedAt,
+          closedBy: a.closedBy || baixaEntry?.user || a.auxiliarId
+        });
+      }
+    }
+
+    const duplicateGroups = Array.from(byMapDate.entries())
+      .filter(([, list]) => list.length > 1)
+      .map(([key, list]) => ({
+        key,
+        routeMap: list[0].routeMap,
+        arrivalDate: list[0].arrivalDate,
+        ids: list.map(x => `${x.id} (${x.status})`)
+      }));
+
+    const unclosedRoutes = activeRoutes
+      .filter(r => {
+        if (r.status === 'fechado') return false;
+        return activeAudits.some(a =>
+          (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') &&
+          !a.reopeningRequested &&
+          doesAuditMatchRoute(a, r)
+        );
+      })
+      .map(r => ({ id: r.id, routeMap: r.routeMap, routeDate: r.routeDate }));
+
+    return { toFix, duplicateGroups, unclosedRoutes };
+  };
+
+  const handleOpenRepairModal = () => {
+    const diag = buildDataDiagnosticReport();
+    setRepairReport({
+      repairedCount: 0,
+      fixedAudits: diag.toFix.map(x => ({ id: x.id, routeMap: x.routeMap, arrivalDate: x.arrivalDate, closedAt: x.closedAt })),
+      duplicateGroups: diag.duplicateGroups,
+      unclosedRoutes: diag.unclosedRoutes
+    });
+    setShowRepairModal(true);
+  };
+
+  const handleRunDataRepair = async () => {
+    setIsRepairingData(true);
+    try {
+      const diag = buildDataDiagnosticReport();
+      let repairedCount = 0;
+      if (diag.toFix.length > 0) {
+        repairedCount = await batchRepairFinalizedAudits(
+          diag.toFix.map(x => ({ id: x.id, closedAt: x.closedAt, closedBy: x.closedBy })),
+          currentUser.name
+        );
+      }
+      setRepairReport({
+        repairedCount,
+        fixedAudits: diag.toFix.map(x => ({ id: x.id, routeMap: x.routeMap, arrivalDate: x.arrivalDate, closedAt: x.closedAt })),
+        duplicateGroups: diag.duplicateGroups,
+        unclosedRoutes: diag.unclosedRoutes
+      });
+      if (repairedCount > 0) {
+        alert(`Reparo concluído! ${repairedCount} mapa(s) finalizado(s) receberam closedAt e pdfDownloaded=true.`);
+      } else {
+        alert('Nenhuma inconsistência corrigível encontrada nas auditorias finalizadas.');
+      }
+    } catch (err: any) {
+      console.error('[Reparar dados] Erro:', err);
+      alert('Erro ao reparar dados: ' + (err?.message || 'Erro desconhecido'));
+    } finally {
+      setIsRepairingData(false);
+    }
+  };
+
   // Automatically reset loadedSessionTime if session is closed
   React.useEffect(() => {
     if (!activeSession) {
@@ -894,18 +995,20 @@ export default function FiscalView({
     }
   }, [activeSession]);
 
-  // Helper to determine if a route is closed based on audits
-  const isRouteClosed = (routeMap: string) => {
+  // Helper to determine if a route is closed based on audits (com escopo de data quando disponível)
+  const isRouteClosed = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
-    const upper = routeMap.trim().toUpperCase();
+    const upper = (routeMap || '').trim().toUpperCase();
     return audits.some(a => {
-      if (a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
+      if (!a || a.deletedAt || isAuditDeletedId(a.id) || a.reopeningRequested) return false;
+      if (a.status !== 'finalizado_ok' && a.status !== 'finalizado_divergente') return false;
+      if (routeDate) {
+        return doesAuditMatchRoute(a, { routeMap, routeDate });
+      }
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-      const aUpper = a.routeMap.trim().toUpperCase();
-      const isMatch = aNorm === norm || aUpper === upper ||
+      const aUpper = (a.routeMap || '').trim().toUpperCase();
+      return aNorm === norm || aUpper === upper ||
         (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
-      const isFinished = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopened;
-      return isMatch && isFinished;
     });
   };
 
@@ -978,6 +1081,7 @@ export default function FiscalView({
           }
           updatedAudits[existingIdx] = { ...existing, ...newAudit };
         } else {
+          markLegitimateAuditCreation(newAudit.id);
           updatedAudits.push(newAudit);
         }
       }
@@ -2477,71 +2581,112 @@ export default function FiscalView({
   const [selectedHistoryAudit, setSelectedHistoryAudit] = useState<AuditSession | null>(null);
   const [reopeningJustificationText, setReopeningJustificationText] = useState('');
 
-  const handleDeleteRouteComplete = (route: ImportedRoute) => {
+  const buildDeleteRouteConfirmMessage = (route: ImportedRoute) => {
+    const activeAudit = (audits || []).find(a =>
+      a && !a.deletedAt && !isAuditDeletedId(a.id) && doesAuditMatchRoute(a, route)
+    );
+    if (activeAudit) {
+      const statusLabel =
+        activeAudit.status === 'em_aberto' ? 'Em Conferência' :
+        activeAudit.status === 'reconferencia' ? 'Em Recontagem' :
+        (activeAudit.status === 'conferido_fisico' || activeAudit.status === 'recontagem_finalizada')
+          ? 'Conferido (Aguardando Conciliação)'
+          : 'Finalizado / Baixado';
+      const timeRef = activeAudit.endTime || activeAudit.startTime || activeAudit.updatedAt;
+      const timeLabel = timeRef ? new Date(timeRef).toLocaleString('pt-BR') : 'sem horário registrado';
+      return `⚠️ ATENÇÃO: Já existe uma conferência registrada para este mapa!\n• Mapa: ${route.routeMap} (${route.plate})\n• Status: ${statusLabel}\n• Conferente: ${activeAudit.conferenteId || 'N/A'}\n• Registro: ${timeLabel}\n\nDeseja realmente excluir este mapa, seus descarregamentos e esta conferência?`;
+    }
+    return `Tem certeza que deseja excluir permanentemente o mapa ${route.routeMap} (${route.plate}) e todos os seus registros de descarregamento e auditoria?`;
+  };
+
+  const handleDeleteRouteComplete = async (route: ImportedRoute) => {
     const routeMapNorm = normalizeMapCode(route.routeMap).toUpperCase();
     const routeMapUpper = (route.routeMap || '').toUpperCase().trim();
-    const plateUpper = (route.plate || '').toUpperCase().trim();
+    const targetDate = route.routeDate || '';
 
-    // 1. Remove from imported routes
-    const updatedRoutes = (importedRoutes || []).filter(r => {
-      const rMapNorm = normalizeMapCode(r.routeMap).toUpperCase();
-      const rMapUpper = (r.routeMap || '').toUpperCase().trim();
-      if (r.id === route.id) return false;
-      if (routeMapUpper && (rMapUpper === routeMapUpper || rMapNorm === routeMapNorm)) return false;
-      return true;
-    });
-    if (onSaveImportedRoutes) {
-      onSaveImportedRoutes(updatedRoutes);
+    const routeIdsToDelete = (importedRoutes || [])
+      .filter(r => {
+        if (r.id === route.id) return true;
+        const rMapNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rMapUpper = (r.routeMap || '').toUpperCase().trim();
+        const sameMap = Boolean(routeMapUpper && (rMapUpper === routeMapUpper || rMapNorm === routeMapNorm));
+        const sameDate = !targetDate || !r.routeDate || r.routeDate === targetDate;
+        return sameMap && sameDate;
+      })
+      .map(r => r.id);
+    if (route.id && !routeIdsToDelete.includes(route.id)) {
+      routeIdsToDelete.push(route.id);
     }
 
-    // 2. Remove from audits
-    let updatedAudits = audits || [];
-    if (onSaveAudits && audits) {
-      updatedAudits = audits.filter(a => {
+    const auditIdsToDelete = (audits || [])
+      .filter(a => {
+        if (targetDate) {
+          return doesAuditMatchRoute(a, { routeMap: route.routeMap, routeDate: targetDate });
+        }
         const aMapNorm = normalizeMapCode(a.routeMap).toUpperCase();
         const aMapUpper = (a.routeMap || '').toUpperCase().trim();
-        const aPlateUpper = (a.plate || '').toUpperCase().trim();
-        const isMapMatch = routeMapUpper && (aMapUpper === routeMapUpper || aMapNorm === routeMapNorm);
-        const isPlateMatch = plateUpper && aPlateUpper === plateUpper && (isMapMatch || !a.routeMap);
-        return !isMapMatch && !isPlateMatch;
-      });
-      onSaveAudits(updatedAudits);
-    }
+        return Boolean(routeMapUpper && (aMapUpper === routeMapUpper || aMapNorm === routeMapNorm));
+      })
+      .map(a => a.id);
 
-    // 3. Remove from carregamentos
-    let updatedCarreg = carregamentos || [];
-    if (onSaveCarregamentos && carregamentos) {
-      updatedCarreg = carregamentos.filter(c => {
+    const carregIdsToDelete = (carregamentos || [])
+      .filter(c => {
         const cMapNorm = normalizeMapCode(c.routeMap).toUpperCase();
         const cMapUpper = (c.routeMap || '').toUpperCase().trim();
-        const cPlateUpper = (c.plate || '').toUpperCase().trim();
-        const isMapMatch = routeMapUpper && (cMapUpper === routeMapUpper || cMapNorm === routeMapNorm);
-        const isPlateMatch = plateUpper && cPlateUpper === plateUpper && (isMapMatch || !c.routeMap);
-        return !isMapMatch && !isPlateMatch;
-      });
-      onSaveCarregamentos(updatedCarreg);
-    }
+        const sameMap = Boolean(routeMapUpper && (cMapUpper === routeMapUpper || cMapNorm === routeMapNorm));
+        if (!sameMap) return false;
+        const cDate = c.routeDate || (c.createdAt ? c.createdAt.split('T')[0] : '');
+        return !targetDate || !cDate || datesMatchForQueue(targetDate, cDate);
+      })
+      .map(c => c.id);
 
-    // 4. Remove from vales
-    let updatedVales = vales || [];
-    if (onSaveVales && vales) {
-      updatedVales = vales.filter(v => {
+    const valeIdsToDelete = (vales || [])
+      .filter(v => {
+        if (v.auditId && auditIdsToDelete.includes(v.auditId)) return true;
         const vMapNorm = normalizeMapCode(v.routeMap).toUpperCase();
         const vMapUpper = (v.routeMap || '').toUpperCase().trim();
-        return !routeMapUpper || (vMapUpper !== routeMapUpper && vMapNorm !== routeMapNorm);
-      });
-      onSaveVales(updatedVales);
-    }
+        const sameMap = Boolean(routeMapUpper && (vMapUpper === routeMapUpper || vMapNorm === routeMapNorm));
+        if (!sameMap) return false;
+        const vDate = v.dataGeracao ? v.dataGeracao.split('T')[0] : '';
+        return !targetDate || !vDate || datesMatchForQueue(targetDate, vDate);
+      })
+      .map(v => v.id);
 
-    // 5. Remove from alerts
-    let updatedAlerts = fiscalAlerts || [];
-    if (onSaveAlerts && fiscalAlerts) {
-      updatedAlerts = fiscalAlerts.filter(al => {
+    const alertIdsToDelete = (fiscalAlerts || [])
+      .filter(al => {
         const alMapNorm = normalizeMapCode(al.routeMap).toUpperCase();
         const alMapUpper = (al.routeMap || '').toUpperCase().trim();
-        return !routeMapUpper || (alMapUpper !== routeMapUpper && alMapNorm !== routeMapNorm);
-      });
-      onSaveAlerts(updatedAlerts);
+        const sameMap = Boolean(routeMapUpper && (alMapUpper === routeMapUpper || alMapNorm === routeMapNorm));
+        if (!sameMap) return false;
+        const alDate = al.timestamp ? al.timestamp.split('T')[0] : '';
+        return !targetDate || !alDate || datesMatchForQueue(targetDate, alDate);
+      })
+      .map(al => al.id);
+
+    await softDeleteMapCascade({
+      routeIds: routeIdsToDelete,
+      auditIds: auditIdsToDelete,
+      carregamentoIds: carregIdsToDelete,
+      valeIds: valeIdsToDelete,
+      alertIds: alertIdsToDelete,
+      actor: currentUser.name,
+      logDetails: `Exclusão lógica do mapa ${route.routeMap} (placa ${route.plate}, data ${targetDate || 'N/A'}). Rotas: ${routeIdsToDelete.length}, Auditorias: ${auditIdsToDelete.length}, Carregamentos: ${carregIdsToDelete.length}, Vales: ${valeIdsToDelete.length}.`
+    });
+
+    if (onSaveImportedRoutes) {
+      onSaveImportedRoutes((importedRoutes || []).filter(r => !routeIdsToDelete.includes(r.id)));
+    }
+    if (onSaveAudits && audits) {
+      onSaveAudits(audits.filter(a => !auditIdsToDelete.includes(a.id)));
+    }
+    if (onSaveCarregamentos && carregamentos && carregIdsToDelete.length > 0) {
+      onSaveCarregamentos(carregamentos.filter(c => !carregIdsToDelete.includes(c.id)));
+    }
+    if (onSaveVales && vales && valeIdsToDelete.length > 0) {
+      onSaveVales(vales.filter(v => !valeIdsToDelete.includes(v.id)));
+    }
+    if (onSaveAlerts && fiscalAlerts && alertIdsToDelete.length > 0) {
+      onSaveAlerts(fiscalAlerts.filter(al => !alertIdsToDelete.includes(al.id)));
     }
   };
 
@@ -2796,7 +2941,7 @@ export default function FiscalView({
     alert(`⚡ Sorteio Circular de Blitz de Refugo Realizado com Sucesso!\n\nVeículos sorteados para Blitz (${blitzMaps.length} de 2):\n${blitzDetails || 'Nenhum'}`);
   };
 
-  const handleManualMapSubmit = (e: React.FormEvent) => {
+  const handleManualMapSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualMap.trim()) {
       alert("Por favor, insira o número do mapa.");
@@ -2815,7 +2960,12 @@ export default function FiscalView({
     const plateClean = manualPlate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
     // Check if map already exists
-    const mapExists = importedRoutes.some(r => r.routeMap.toUpperCase() === mapClean.toUpperCase() && r.routeDate === manualDate);
+    const mapExists = importedRoutes.some(r =>
+      !r.deletedAt &&
+      !isRouteDeletedId(r.id) &&
+      r.routeMap.toUpperCase() === mapClean.toUpperCase() &&
+      r.routeDate === manualDate
+    );
     if (mapExists) {
       alert(`O mapa ${mapClean} já está cadastrado para a data ${new Date(manualDate + 'T00:00:00').toLocaleDateString('pt-BR')}.`);
       return;
@@ -2829,8 +2979,9 @@ export default function FiscalView({
     }));
 
     const nowISO = new Date().toISOString();
+    const stableRouteId = `${mapClean.replace(/[^a-zA-Z0-9_-]/g, '_')}_${manualDate}`;
     const newRoute: ImportedRoute = {
-      id: `imp_manual_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      id: stableRouteId,
       routeMap: mapClean,
       plate: plateClean,
       driverId: manualDriverId || '',
@@ -2842,14 +2993,24 @@ export default function FiscalView({
       items: initialRouteItems
     };
 
-    if (onSaveImportedRoutes) {
-      onSaveImportedRoutes([...importedRoutes, newRoute]);
-    }
+    try {
+      const createdRoute = await createRoute(newRoute, currentUser.name);
+      if (onSaveImportedRoutes) {
+        onSaveImportedRoutes([...importedRoutes.filter(r => r.id !== createdRoute.id), createdRoute]);
+      }
 
-    alert(`Sucesso! Mapa ${mapClean} inserido manualmente.`);
-    setManualMap('');
-    setManualPlate('');
-    setManualDriverId('');
+      alert(`Sucesso! Mapa ${mapClean} inserido manualmente.`);
+      setManualMap('');
+      setManualPlate('');
+      setManualDriverId('');
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert(err.message);
+      } else {
+        console.error('[ManualMapSubmit] Erro ao cadastrar mapa manualmente:', err);
+        alert('Falha ao salvar mapa manualmente: ' + (err?.message || 'Erro desconhecido'));
+      }
+    }
   };
 
   const handleDriverImport = (file: File) => {
@@ -2921,14 +3082,10 @@ export default function FiscalView({
 
   // Pending for fiscal verification (filtering out maps that are already closed or downloaded)
   const pendingAudits = audits.filter(a => {
+    if (!a || a.deletedAt || isAuditDeletedId(a.id)) return false;
+
     // If reopening was requested by fiscal/conferente/auxiliar, keep in pending so fiscal can re-reconcile
     if (a.reopeningRequested) return true;
-
-    // If audit was reopened, and status is conferido_fisico or recontagem_finalizada, ALWAYS show in pending!
-    const wasReopened = a.reopened === true || (a.history && a.history.some(h => h.action.includes('Reabert') || h.action.includes('Reabertura')));
-    if (wasReopened && (a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada')) {
-      return true;
-    }
 
     // If PDF was downloaded or status is already finalized or surplus status is BAIXADO
     if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
@@ -2937,24 +3094,24 @@ export default function FiscalView({
     // Must be in conferido_fisico or recontagem_finalizada
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
 
-    // Check if matching route or another audit for this map is already closed/finalized
+    // Check if matching route (same map & matching date) is already closed/finalized
+    const isRouteClosedInImports = importedRoutes.some(r =>
+      !r.deletedAt &&
+      !isRouteDeletedId(r.id) &&
+      r.status === 'fechado' &&
+      doesAuditMatchRoute(a, r)
+    );
+    if (isRouteClosedInImports) return false;
+
+    // Check if another audit session for the same map AND same arrivalDate is already finished
     const normMap = normalizeMapCode(a.routeMap).toUpperCase();
-    const upperMap = a.routeMap.trim().toUpperCase();
-
-    // Check if importedRoute is already closed (only applies if audit is not actively in conferido_fisico/recontagem_finalizada)
-    const isRouteClosedInImports = importedRoutes.some(r => {
-      const normR = normalizeMapCode(r.routeMap).toUpperCase();
-      return (normR === normMap || r.routeMap.trim().toUpperCase() === upperMap) && r.status === 'fechado';
-    });
-    if (isRouteClosedInImports && !wasReopened) return false;
-
-    // Check if another audit session for the same map is already finished
     const isAuditClosedInOthers = audits.some(other => {
-      if (other.id === a.id || other.reopeningRequested || other.reopened) return false;
+      if (!other || other.id === a.id || other.deletedAt || isAuditDeletedId(other.id) || other.reopeningRequested) return false;
       const otherNorm = normalizeMapCode(other.routeMap).toUpperCase();
       const isMapMatch = otherNorm === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-      const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente') && !other.reopened;
-      return isMapMatch && isFinished;
+      const sameDate = !a.arrivalDate || !other.arrivalDate || other.arrivalDate === a.arrivalDate;
+      const isFinished = other.status === 'finalizado_ok' || other.status === 'finalizado_divergente';
+      return isMapMatch && sameDate && isFinished;
     });
     if (isAuditClosedInOthers) return false;
 
@@ -2962,25 +3119,28 @@ export default function FiscalView({
   });
 
   // History audits (finished today or reopened)
-  const historyAudits = audits.filter(a => 
-    a.status === 'finalizado_ok' || 
-    a.status === 'finalizado_divergente' ||
-    a.reopened === true ||
-    a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto') || h.action.includes('Mapa Reaberto'))
+  const historyAudits = audits.filter(a =>
+    a && !a.deletedAt && !isAuditDeletedId(a.id) && (
+      a.status === 'finalizado_ok' ||
+      a.status === 'finalizado_divergente' ||
+      a.reopened === true ||
+      a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto') || h.action.includes('Mapa Reaberto'))
+    )
   );
 
   // Unacknowledged baixas for financeiro (Aguardando Fechamento Promax)
-  const unacknowledgedBaixas = audits.filter(a => 
-    (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && 
+  const unacknowledgedBaixas = audits.filter(a =>
+    a && !a.deletedAt && !isAuditDeletedId(a.id) &&
+    (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') &&
     a.financeiroCiente !== true
   );
 
   // Memoized process metrics for "Monitoramento Integrado de Processos"
   const processProgressMetrics = React.useMemo(() => {
-    const totalWorking = importedRoutes.filter(r => (r.status === 'conferindo' || r.status === 'reconferir') && !isRouteClosed(r.routeMap)).length;
-    const totalPending = importedRoutes.filter(r => (r.status === 'pendente' || !r.status) && (r.status as string) !== 'fechado' && !isRouteClosed(r.routeMap)).length;
+    const totalWorking = importedRoutes.filter(r => !r.deletedAt && (r.status === 'conferindo' || r.status === 'reconferir') && !isRouteClosed(r.routeMap, r.routeDate)).length;
+    const totalPending = importedRoutes.filter(r => !r.deletedAt && (r.status === 'pendente' || !r.status) && (r.status as string) !== 'fechado' && !isRouteClosed(r.routeMap, r.routeDate)).length;
     const totalWaiting = pendingAudits.length;
-    const totalReconciled = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente').length;
+    const totalReconciled = audits.filter(a => !a.deletedAt && (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente')).length;
 
     const totalCalculated = totalWorking + totalPending + totalWaiting + totalReconciled;
     const pendingPct = totalCalculated > 0 ? (totalPending / totalCalculated) * 100 : 0;
@@ -3808,134 +3968,97 @@ export default function FiscalView({
     requestConfirm(
       "🔓 Confirmar Reabertura do Mapa?",
       `Tem certeza que deseja reabrir o mapa ${targetAudit.routeMap}? Ele retornará imediatamente para a coluna "Aguardando Conciliação" para conferência e conciliação fiscal.`,
-      () => {
-        const userRoleTitle = currentUser.role === 'auxiliar_logistica' 
-          ? 'Auxiliar de Logística' 
-          : currentUser.role === 'gestor' 
-            ? 'Gestor' 
+      async () => {
+        const userRoleTitle = currentUser.role === 'auxiliar_logistica'
+          ? 'Auxiliar de Logística'
+          : currentUser.role === 'gestor'
+            ? 'Gestor'
             : 'Financeiro';
 
-        const updatedAudits = audits.map(audit => {
-          if (audit.id === auditId) {
-            const updatedHistory = [
-              ...(audit.history || []),
-              {
-                timestamp: new Date().toISOString(),
-                action: `Mapa Reaberto por ${currentUser.name} (${userRoleTitle})`,
-                user: currentUser.name,
-                details: `Motivo da Reabertura: ${note}`
-              }
-            ];
-            return {
-              ...audit,
-              status: 'conferido_fisico' as const,
-              reopeningRequested: false,
-              reopened: true,
-              reopenedAt: new Date().toISOString(),
-              reopenedBy: currentUser.name,
-              reopeningJustification: note,
-              pdfDownloaded: false,
-              surplusFlowStatus: undefined,
-              financeiroCiente: false,
-              closedAt: undefined,
-              baixaConcluida: false,
-              history: updatedHistory,
-              updatedAt: new Date().toISOString(),
-              lastUpdatedBy: currentUser.name
-            };
-          }
-          return audit;
-        });
+        const matchedRouteIds = (importedRoutes || [])
+          .filter(r => !r.deletedAt && doesAuditMatchRoute(targetAudit, r))
+          .map(r => r.id);
 
-        let updatedAlerts = [...fiscalAlerts];
-        const newAlert: FiscalAlert = {
-          id: 'al_reopen_done_' + Date.now(),
-          routeMap: targetAudit.routeMap,
-          plate: targetAudit.plate,
-          status: 'conferido_fisico',
-          timestamp: new Date().toISOString(),
-          read: false,
-          readBy: [],
-          title: `🔓 Mapa ${targetAudit.routeMap} Reaberto`,
-          message: `O mapa ${targetAudit.routeMap} foi reaberto por ${currentUser.name} (${userRoleTitle}) e retornou para "Aguardando Conciliação".`,
-          targetRole: 'auxiliar_logistica',
-          targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
-        };
-        updatedAlerts = [newAlert, ...updatedAlerts];
-
-        onSaveAudits(updatedAudits);
-
-        if (onSaveImportedRoutes && importedRoutes) {
-          const targetNorm = normalizeMapCode(targetAudit.routeMap).toUpperCase();
-          const targetUpper = targetAudit.routeMap.trim().toUpperCase();
-          const updatedRoutes = importedRoutes.map(r => {
-            const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-            const rUpper = r.routeMap.trim().toUpperCase();
-            const isMatched = rNorm === targetNorm || rUpper === targetUpper ||
-              (targetAudit.unifiedMaps && targetAudit.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === rNorm || m.trim().toUpperCase() === rUpper));
-            if (isMatched) {
-              return { ...r, status: 'em_analise' as const };
-            }
-            return r;
+        try {
+          const reopenedAudit = await reopenAudit(auditId, {
+            actor: currentUser.name,
+            actorRoleTitle: userRoleTitle,
+            justification: note,
+            routeIds: matchedRouteIds
           });
-          onSaveImportedRoutes(updatedRoutes);
-        }
 
-        if (onSaveAlerts) {
-          onSaveAlerts(updatedAlerts);
-        }
+          const newAlert: FiscalAlert = {
+            id: 'al_reopen_done_' + Date.now(),
+            routeMap: targetAudit.routeMap,
+            plate: targetAudit.plate,
+            status: 'conferido_fisico',
+            timestamp: new Date().toISOString(),
+            read: false,
+            readBy: [],
+            title: `🔓 Mapa ${targetAudit.routeMap} Reaberto`,
+            message: `O mapa ${targetAudit.routeMap} foi reaberto por ${currentUser.name} (${userRoleTitle}) e retornou para "Aguardando Conciliação".`,
+            targetRole: 'auxiliar_logistica',
+            targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
+          };
 
-        const currentSelected = updatedAudits.find(a => a.id === auditId);
-        if (currentSelected) {
-          setSelectedHistoryAudit(currentSelected);
-        }
+          if (isClientFirebaseActive()) {
+            await saveDocToFirestore('fiscalAlerts', newAlert);
+          } else if (onSaveAlerts) {
+            onSaveAlerts([newAlert, ...fiscalAlerts]);
+          }
 
-        setReopeningJustificationText('');
-        alert(`O mapa ${targetAudit.routeMap} foi reaberto com sucesso e retornou para "Aguardando Conciliação"!`);
+          setSelectedHistoryAudit(reopenedAudit);
+          setReopeningJustificationText('');
+          alert(`O mapa ${targetAudit.routeMap} foi reaberto com sucesso e retornou para "Aguardando Conciliação"!`);
+        } catch (err: any) {
+          if (isGuardConflictOrNotFound(err)) {
+            alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          } else {
+            console.error('[ReopenAudit] Erro ao reabrir mapa:', err);
+            alert('Erro ao reabrir mapa: ' + (err?.message || 'Erro desconhecido'));
+          }
+        }
       }
     );
   };
 
-  const handleRequestReopening = (auditId: string) => {
+  const handleRequestReopening = async (auditId: string) => {
     if (!reopeningJustificationText.trim()) {
       alert("Por favor, preencha a justificativa para solicitar a reabertura.");
       return;
     }
 
-    const updatedAudits = audits.map(audit => {
-      if (audit.id === auditId) {
-        const updatedHistory = [
-          ...(audit.history || []),
-          {
-            timestamp: new Date().toISOString(),
+    const targetAudit = audits.find(a => a.id === auditId);
+    if (!targetAudit) return;
+    const now = new Date().toISOString();
+
+    try {
+      const updated = await updateAuditGuarded(
+        auditId,
+        {
+          reopeningRequested: true,
+          reopeningJustification: reopeningJustificationText.trim(),
+          reopeningRequestDate: now,
+          reopeningRequestUser: currentUser.name
+        },
+        {
+          expectedStatus: ['finalizado_ok', 'finalizado_divergente'],
+          actor: currentUser.name,
+          appendHistoryEntry: {
+            timestamp: now,
             action: `Solicitou Reabertura do Mapa`,
             user: currentUser.name,
             details: `Justificativa: ${reopeningJustificationText.trim()}`
           }
-        ];
-        return {
-          ...audit,
-          reopeningRequested: true,
-          reopeningJustification: reopeningJustificationText.trim(),
-          reopeningRequestDate: new Date().toISOString(),
-          reopeningRequestUser: currentUser.name,
-          history: updatedHistory,
-          updatedAt: new Date().toISOString(),
-          lastUpdatedBy: currentUser.name
-        };
-      }
-      return audit;
-    });
+        }
+      );
 
-    let updatedAlerts = [...fiscalAlerts];
-    const targetAudit = audits.find(a => a.id === auditId);
-    if (targetAudit) {
       const newAlert: FiscalAlert = {
         id: 'al_reopen_' + Date.now(),
         routeMap: targetAudit.routeMap,
         plate: targetAudit.plate,
         status: 'outros',
-        timestamp: new Date().toISOString(),
+        timestamp: now,
         read: false,
         readBy: [],
         title: `🔓 Solicitação de Reabertura`,
@@ -3943,21 +4066,24 @@ export default function FiscalView({
         targetRole: 'financeiro',
         targetRoles: ['financeiro', 'auxiliar_logistica', 'gestor']
       };
-      updatedAlerts = [newAlert, ...updatedAlerts];
-    }
 
-    onSaveAudits(updatedAudits);
-    if (onSaveAlerts) {
-      onSaveAlerts(updatedAlerts);
-    }
+      if (isClientFirebaseActive()) {
+        await saveDocToFirestore('fiscalAlerts', newAlert);
+      } else {
+        if (onSaveAlerts) onSaveAlerts([newAlert, ...fiscalAlerts]);
+        onSaveAudits(audits.map(a => a.id === auditId ? updated : a));
+      }
 
-    const currentSelected = updatedAudits.find(a => a.id === auditId);
-    if (currentSelected) {
-      setSelectedHistoryAudit(currentSelected);
+      setSelectedHistoryAudit(updated);
+      setReopeningJustificationText('');
+      alert("Solicitação de reabertura registrada com sucesso!");
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+      } else {
+        alert('Erro ao solicitar reabertura: ' + (err?.message || 'Erro desconhecido'));
+      }
     }
-
-    setReopeningJustificationText('');
-    alert("Solicitação de reabertura registrada com sucesso!");
   };
 
   const handleApproveReopening = (auditId: string) => {
@@ -3984,83 +4110,82 @@ export default function FiscalView({
     requestConfirm(
       "❌ Recusar Reabertura?",
       `Deseja recusar o pedido de reabertura do mapa ${targetAudit.routeMap}?`,
-      () => {
-        const userRoleTitle = currentUser.role === 'auxiliar_logistica' 
-          ? 'Auxiliar de Logística' 
-          : currentUser.role === 'gestor' 
-            ? 'Gestor' 
+      async () => {
+        const userRoleTitle = currentUser.role === 'auxiliar_logistica'
+          ? 'Auxiliar de Logística'
+          : currentUser.role === 'gestor'
+            ? 'Gestor'
             : 'Financeiro';
+        const now = new Date().toISOString();
 
-        const updatedAudits = audits.map(audit => {
-          if (audit.id === auditId) {
-            const updatedHistory = [
-              ...(audit.history || []),
-              {
-                timestamp: new Date().toISOString(),
+        try {
+          const updated = await updateAuditGuarded(
+            auditId,
+            { reopeningRequested: false },
+            {
+              expectedStatus: ['finalizado_ok', 'finalizado_divergente'],
+              actor: currentUser.name,
+              appendHistoryEntry: {
+                timestamp: now,
                 action: `Reabertura Recusada por ${currentUser.name} (${userRoleTitle})`,
                 user: currentUser.name,
                 details: `Recusado`
               }
-            ];
-            return {
-              ...audit,
-              reopeningRequested: false,
-              history: updatedHistory,
-              updatedAt: new Date().toISOString(),
-              lastUpdatedBy: currentUser.name
-            };
+            }
+          );
+
+          if (!isClientFirebaseActive()) {
+            onSaveAudits(audits.map(a => a.id === auditId ? updated : a));
           }
-          return audit;
-        });
-
-        onSaveAudits(updatedAudits);
-
-        const currentSelected = updatedAudits.find(a => a.id === auditId);
-        if (currentSelected) {
-          setSelectedHistoryAudit(currentSelected);
+          setSelectedHistoryAudit(updated);
+          alert(`A solicitação de reabertura do mapa ${targetAudit.routeMap} foi recusada.`);
+        } catch (err: any) {
+          if (isGuardConflictOrNotFound(err)) {
+            alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          } else {
+            alert('Erro ao recusar reabertura: ' + (err?.message || 'Erro desconhecido'));
+          }
         }
-
-        alert(`A solicitação de reabertura do mapa ${targetAudit.routeMap} foi recusada.`);
       }
     );
   };
 
-  const handleAcknowledgePromax = (auditId: string) => {
+  const handleAcknowledgePromax = async (auditId: string) => {
     const targetAudit = audits.find(a => a.id === auditId);
     if (!targetAudit) return;
+    const now = new Date().toISOString();
 
-    const updatedAudits = audits.map(audit => {
-      if (audit.id === auditId) {
-        const updatedHistory = [
-          ...(audit.history || []),
-          {
-            timestamp: new Date().toISOString(),
+    try {
+      const updated = await updateAuditGuarded(
+        auditId,
+        { financeiroCiente: true },
+        {
+          expectedStatus: ['finalizado_ok', 'finalizado_divergente'],
+          actor: currentUser.name,
+          appendHistoryEntry: {
+            timestamp: now,
             action: `Ciente Fechamento Promax`,
             user: currentUser.name,
-            details: `Financeiro marcou o mapa ${audit.routeMap} como ciente do fechamento no Promax.`
+            details: `Financeiro marcou o mapa ${targetAudit.routeMap} como ciente do fechamento no Promax.`
           }
-        ];
-        return {
-          ...audit,
-          financeiroCiente: true,
-          history: updatedHistory,
-          updatedAt: new Date().toISOString(),
-          lastUpdatedBy: currentUser.name
-        };
-      }
-      return audit;
-    });
+        }
+      );
 
-    onSaveAudits(updatedAudits);
-    
-    if (selectedHistoryAudit && selectedHistoryAudit.id === auditId) {
-      const updatedSelected = updatedAudits.find(a => a.id === auditId);
-      if (updatedSelected) {
-        setSelectedHistoryAudit(updatedSelected);
+      if (!isClientFirebaseActive()) {
+        onSaveAudits(audits.map(a => a.id === auditId ? updated : a));
+      }
+      if (selectedHistoryAudit && selectedHistoryAudit.id === auditId) {
+        setSelectedHistoryAudit(updated);
+      }
+
+      alert(`Sucesso! Mapa ${targetAudit.routeMap} marcado como ciente de fechamento no Promax.`);
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+      } else {
+        alert('Erro ao registrar ciência Promax: ' + (err?.message || 'Erro desconhecido'));
       }
     }
-
-    alert(`Sucesso! Mapa ${targetAudit.routeMap} marcado como ciente de fechamento no Promax.`);
   };
 
   const getPhotoBase64 = async (photoUrl: string): Promise<string | null> => {
@@ -4531,38 +4656,11 @@ export default function FiscalView({
         return { success: true, doc, filename, base64: base64Data };
       }
 
-      // Mark audit as PDF downloaded and finalize process cycle for this map
-      const normAuditMap = normalizeMapCode(audit.routeMap).toUpperCase();
-      const isDivergent = audit.items && audit.items.some(i => i.physicalQty !== undefined && i.fiscalQty !== undefined && i.physicalQty !== i.fiscalQty);
-      const updatedAudit: AuditSession = {
-        ...audit,
-        pdfDownloaded: true,
-        status: (audit.status === 'finalizado_ok' || audit.status === 'finalizado_divergente')
-          ? audit.status
-          : (isDivergent ? 'finalizado_divergente' : 'finalizado_ok')
-      };
-
-      let nextRoutes = importedRoutes;
-      if (importedRoutes && importedRoutes.length > 0) {
-        nextRoutes = importedRoutes.map(r => {
-          const normR = normalizeMapCode(r.routeMap).toUpperCase();
-          const isMatch = normR === normAuditMap || 
-            (audit.unifiedMaps && audit.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR));
-          if (isMatch) {
-            return { ...r, status: 'fechado' as const };
-          }
-          return r;
-        });
-        if (onSaveImportedRoutes) {
-          onSaveImportedRoutes(nextRoutes);
-        }
+      // PDF de visualização/exportação nunca altera status nem chama onSaveAudits/onSaveImportedRoutes com lista antiga;
+      // se o mapa já estiver finalizado sem a flag pdfDownloaded, marca apenas esse campo no documento.
+      if ((audit.status === 'finalizado_ok' || audit.status === 'finalizado_divergente') && !audit.pdfDownloaded) {
+        markAuditPdfDownloadedDoc(audit.id, currentUser.name).catch(() => {});
       }
-
-      const nextAudits = audits.map(a => a.id === audit.id ? updatedAudit : a);
-      if (!audits.some(a => a.id === audit.id)) {
-        nextAudits.push(updatedAudit);
-      }
-      onSaveAudits(nextAudits);
 
       // Standard robust download supported in all browsers and iframe contexts
       doc.save(filename);
@@ -4759,7 +4857,7 @@ export default function FiscalView({
   };
 
   // Action: Request physical recount (Reconferência)
-  const handleRequestReconferencia = () => {
+  const handleRequestReconferencia = async () => {
     if (!activeSession) return;
     if (!reconciliationNotes.trim()) {
       alert('Por favor, informe no campo de observações o motivo da reconferência (quais produtos apresentaram divergência).');
@@ -4767,28 +4865,26 @@ export default function FiscalView({
     }
 
     const now = new Date().toISOString();
-    const latestRemote = audits.find(a => a.id === activeSession.id);
-    const sessionWithMeta = mergeNonConflictingMetadata(activeSession, latestRemote);
-    const updatedSession: AuditSession = {
-      ...sessionWithMeta,
-      status: 'reconferencia',
-      reconciliationNotes: reconciliationNotes.trim(),
-      history: [
-        ...(sessionWithMeta.history || []),
+    try {
+      const updatedSession = await updateAuditGuarded(
+        activeSession.id,
         {
-          timestamp: now,
-          action: 'Reconferência Solicitada',
-          user: currentUser.name,
-          details: reconciliationNotes.trim()
+          status: 'reconferencia',
+          reconciliationNotes: reconciliationNotes.trim()
+        },
+        {
+          expectedStatus: ['conferido_fisico', 'recontagem_finalizada'],
+          actor: currentUser.name,
+          appendHistoryEntry: {
+            timestamp: now,
+            action: 'Reconferência Solicitada',
+            user: currentUser.name,
+            details: reconciliationNotes.trim()
+          }
         }
-      ]
-    };
+      );
 
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
-
-    // Trigger alert for Conferente & Gestor that a recount has been requested
-    if (onSaveAlerts && fiscalAlerts) {
+      // Trigger alert for Conferente & Gestor that a recount has been requested
       const newAlert: FiscalAlert = {
         id: 'al_' + Date.now(),
         routeMap: activeSession.routeMap,
@@ -4802,30 +4898,38 @@ export default function FiscalView({
         targetRole: 'conferente',
         targetRoles: ['conferente', 'gestor']
       };
-      onSaveAlerts([newAlert, ...fiscalAlerts]);
-    }
 
-    // Also set corresponding imported route's status to 'reconferir'
-    if (onSaveImportedRoutes && importedRoutes) {
-      const activeNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
-      const updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const isMatched = rNorm === activeNorm ||
-          r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
-          (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m =>
-            normalizeMapCode(m).toUpperCase() === rNorm || m.trim().toUpperCase() === r.routeMap.trim().toUpperCase()
-          ));
-        if (isMatched) {
-          return { ...r, status: 'reconferir' as const };
+      const matchedRoutes = (importedRoutes || []).filter(r =>
+        !r.deletedAt && doesAuditMatchRoute(updatedSession, r)
+      );
+
+      if (isClientFirebaseActive()) {
+        await Promise.all([
+          saveDocToFirestore('fiscalAlerts', newAlert),
+          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'reconferir', currentUser.name))
+        ]);
+      } else {
+        onSaveAudits(audits.map(a => a.id === activeSession.id ? updatedSession : a));
+        if (onSaveAlerts) onSaveAlerts([newAlert, ...fiscalAlerts]);
+        if (onSaveImportedRoutes && matchedRoutes.length > 0) {
+          const matchedSet = new Set(matchedRoutes.map(r => r.id));
+          onSaveImportedRoutes(importedRoutes.map(r => matchedSet.has(r.id) ? { ...r, status: 'reconferir' as const } : r));
         }
-        return r;
-      });
-      onSaveImportedRoutes(updatedRoutes);
-    }
+      }
 
-    alert('Reconferência enviada com sucesso!');
-    setActiveSession(null);
-    setReconciliationNotes('');
+      alert('Reconferência enviada com sucesso!');
+      setActiveSession(null);
+      setReconciliationNotes('');
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+        setActiveSession(null);
+        setReconciliationNotes('');
+      } else {
+        console.error('[Reconferencia] Erro:', err);
+        alert('Erro ao solicitar reconferência: ' + (err?.message || 'Erro desconhecido'));
+      }
+    }
   };
 
   // Action: Finalize and log audit return (Dar Baixa)
@@ -4833,10 +4937,8 @@ export default function FiscalView({
     if (!activeSession || isFinalizing) return;
 
     // Check if monitoramento reported a discrepancy
-    const activeNormMatch = normalizeMapCode(activeSession.routeMap).toUpperCase();
     const matchedRoute = importedRoutes.find(r =>
-      normalizeMapCode(r.routeMap).toUpperCase() === activeNormMatch ||
-      r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase()
+      !r.deletedAt && doesAuditMatchRoute(activeSession, r)
     );
 
     const executeFinalization = async () => {
@@ -4844,7 +4946,7 @@ export default function FiscalView({
       try {
         // Check if there are differences
         let hasDiscrepancy = false;
-        
+
         // Verify products
         const itemsWithUpdatedFiscal = activeSession.items.map(item => {
           const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
@@ -4853,7 +4955,7 @@ export default function FiscalView({
           const recolha = item.recolhaQty ?? 0;
           const diff = physical - fiscal + comodato - recolha;
           if (diff !== 0) hasDiscrepancy = true;
-          return { ...item, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure it has fiscal quantity defined
+          return { ...item, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha };
         });
 
         // Verify assets
@@ -4863,14 +4965,14 @@ export default function FiscalView({
           const comodato = asset.comodatoQty ?? 0;
           const recolha = asset.recolhaQty ?? 0;
           const diff = physical - fiscal + comodato - recolha;
-          
+
           // Exclude chapatex from being considered a discrepancy
-          const isChapatex = asset.assetId === 'chapatex' || 
-                             asset.assetId?.toLowerCase() === 'chapatex' || 
-                             asset.assetName?.toUpperCase().includes('CHAPATEX');
-                             
+          const isChapatex = asset.assetId === 'chapatex' ||
+            asset.assetId?.toLowerCase() === 'chapatex' ||
+            asset.assetName?.toUpperCase().includes('CHAPATEX');
+
           if (diff !== 0 && !isChapatex) hasDiscrepancy = true;
-          return { ...asset, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure properties are preserved
+          return { ...asset, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha };
         });
 
         const finalStatus = hasDiscrepancy ? 'finalizado_divergente' : 'finalizado_ok';
@@ -4878,27 +4980,33 @@ export default function FiscalView({
 
         const latestRemoteFinalize = audits.find(a => a.id === activeSession.id);
         const finalizedBase = mergeNonConflictingMetadata(activeSession, latestRemoteFinalize);
-        const updatedSession: AuditSession = {
+        const notesTrimmed = reconciliationNotes.trim();
+        const historyEntry = {
+          timestamp: now,
+          action: finalStatus === 'finalizado_ok' ? 'Baixa Concluída - OK' : 'Baixa Concluída com Divergências',
+          user: currentUser.name,
+          details: notesTrimmed || 'Aferição concluída'
+        };
+
+        const pdfPreviewSession: AuditSession = {
           ...finalizedBase,
           items: itemsWithUpdatedFiscal,
           assets: assetsWithUpdatedFiscal,
           status: finalStatus,
           auxiliarId: currentUser.id,
-          reconciliationNotes: reconciliationNotes.trim() || undefined,
-          financeiroCiente: false, // Força a notificação no painel do Financeiro
-          history: [
-            ...(finalizedBase.history || []),
-            {
-              timestamp: now,
-              action: finalStatus === 'finalizado_ok' ? 'Baixa Concluída - OK' : 'Baixa Concluída com Divergências',
-              user: currentUser.name,
-              details: reconciliationNotes.trim() || 'Aferição concluída'
-            }
-          ]
+          reconciliationNotes: notesTrimmed || undefined,
+          financeiroCiente: false,
+          pdfDownloaded: true,
+          closedAt: now,
+          closedBy: currentUser.name,
+          baixaConcluida: true,
+          reopened: false,
+          reopeningRequested: false,
+          history: [...(finalizedBase.history || []), historyEntry]
         };
 
         // 1. GERAR O PDF E EXTRAIR BASE64 EM SEGUNDO PLANO (EM MEMÓRIA)
-        const pdfRes = await downloadSingleAuditPDF(updatedSession, true);
+        const pdfRes = await downloadSingleAuditPDF(pdfPreviewSession, true);
         if (!pdfRes || !pdfRes.success || !pdfRes.base64) {
           alert("Erro ao gerar o relatório PDF em memória. A baixa foi cancelada.");
           setIsFinalizing(false);
@@ -4907,47 +5015,69 @@ export default function FiscalView({
 
         const { base64, filename, doc } = pdfRes;
 
-        // Prepare payload data
-        const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-        
-        let updatedRoutes = importedRoutes;
-        const touchedRoutes: ImportedRoute[] = [];
-        if (onSaveImportedRoutes && importedRoutes) {
-          updatedRoutes = importedRoutes.map(r => {
-            const normR = normalizeMapCode(r.routeMap).toUpperCase();
-            const normActive = normalizeMapCode(activeSession.routeMap).toUpperCase();
-            const isMatched = normR === normActive || r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
-              (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === r.routeMap.trim().toUpperCase()));
-            if (isMatched) {
-              const closedRoute = { ...r, status: 'fechado' as const };
-              touchedRoutes.push(closedRoute);
-              return closedRoute;
-            }
-            return r;
-          });
-        }
-
-        let updatedAlerts = fiscalAlerts;
-        let createdAlert: FiscalAlert | null = null;
-        if (onSaveAlerts && fiscalAlerts) {
-          createdAlert = {
-            id: 'al_' + Date.now(),
-            routeMap: activeSession.routeMap,
-            plate: activeSession.plate,
+        // 2. GRAVAÇÃO TRANSACIONAL ÚNICA DA AUDITORIA (Fase 3: updateAuditGuarded)
+        const savedAudit = await updateAuditGuarded(
+          activeSession.id,
+          {
+            items: itemsWithUpdatedFiscal,
+            assets: assetsWithUpdatedFiscal,
             status: finalStatus,
-            timestamp: now,
-            read: false,
-            readBy: [],
-            title: finalStatus === 'finalizado_ok' ? 'Mapa Baixado (Saldo OK)' : 'Mapa Baixado com Divergências',
-            message: `O mapa ${activeSession.routeMap} (${activeSession.plate}) foi finalizado e baixado por ${currentUser.name}.`,
-            targetRole: 'todos',
-            targetRoles: ['todos']
-          };
-          updatedAlerts = [createdAlert, ...fiscalAlerts];
+            auxiliarId: currentUser.id,
+            ...(notesTrimmed ? { reconciliationNotes: notesTrimmed } : {}),
+            financeiroCiente: false,
+            pdfDownloaded: true,
+            closedAt: now,
+            closedBy: currentUser.name,
+            baixaConcluida: true,
+            reopened: false,
+            reopeningRequested: false
+          },
+          {
+            expectedStatus: ['conferido_fisico', 'recontagem_finalizada'],
+            actor: currentUser.name,
+            clearFields: notesTrimmed ? [] : ['reconciliationNotes'],
+            appendHistoryEntry: historyEntry
+          }
+        );
+
+        // 3. ATUALIZAR STATUS DAS ROTAS MATCHED POR DOCUMENTO (updateRouteStatus, sem lista antiga)
+        const matchedRoutes = (importedRoutes || []).filter(r =>
+          !r.deletedAt && doesAuditMatchRoute(savedAudit, r)
+        );
+        const touchedRoutes = matchedRoutes.map(r => ({ ...r, status: 'fechado' as const }));
+
+        const createdAlert: FiscalAlert = {
+          id: 'al_' + Date.now(),
+          routeMap: activeSession.routeMap,
+          plate: activeSession.plate,
+          status: finalStatus,
+          timestamp: now,
+          read: false,
+          readBy: [],
+          title: finalStatus === 'finalizado_ok' ? 'Mapa Baixado (Saldo OK)' : 'Mapa Baixado com Divergências',
+          message: `O mapa ${activeSession.routeMap} (${activeSession.plate}) foi finalizado e baixado por ${currentUser.name}.`,
+          targetRole: 'todos',
+          targetRoles: ['todos']
+        };
+
+        if (isClientFirebaseActive()) {
+          await Promise.all([
+            ...matchedRoutes.map(r => updateRouteStatus(r.id, 'fechado', currentUser.name)),
+            saveDocToFirestore('fiscalAlerts', createdAlert)
+          ]);
+        } else {
+          onSaveAudits(audits.map(a => a.id === activeSession.id ? savedAudit : a));
+          if (onSaveImportedRoutes && matchedRoutes.length > 0) {
+            const matchedSet = new Set(matchedRoutes.map(r => r.id));
+            onSaveImportedRoutes(importedRoutes.map(r => matchedSet.has(r.id) ? { ...r, status: 'fechado' as const } : r));
+          }
+          if (onSaveAlerts) {
+            onSaveAlerts([createdAlert, ...fiscalAlerts]);
+          }
         }
 
-        // 2. DISPARAR A SAGA DE BAIXA NO BACKEND E NO FIRESTORE
-        let result: any = { success: true, durableBackup: { cloudStorage: false, firestore: false } };
+        // 4. BACKUP NO SERVIDOR AUXILIAR DE ARQUIVOS (sem onSaveAudits com lista inteira)
+        let result: any = { success: true, durableBackup: { cloudStorage: false, firestore: isClientFirebaseActive() } };
         try {
           const response = await fetch('/api/concluir-baixa', {
             method: 'POST',
@@ -4956,9 +5086,9 @@ export default function FiscalView({
               auditId: activeSession.id,
               pdfBase64: base64,
               filename: filename,
-              updatedAuditSession: updatedSession,
-              updatedImportedRoutes: updatedRoutes,
-              updatedAlerts: updatedAlerts,
+              updatedAuditSession: savedAudit,
+              updatedImportedRoutes: touchedRoutes,
+              updatedAlerts: [createdAlert],
               user: currentUser ? { id: currentUser.id, name: currentUser.name, role: currentUser.role } : null
             })
           });
@@ -4966,45 +5096,23 @@ export default function FiscalView({
           if (response.ok) {
             const serverResult = await response.json();
             if (serverResult && serverResult.success) {
-              result = serverResult;
+              result = { ...serverResult, durableBackup: { ...(serverResult.durableBackup || {}), firestore: true } };
             }
           }
         } catch (srvErr) {
           console.warn("[Baixa Saga] Aviso ao gravar baixa no servidor de retaguarda:", srvErr);
         }
 
-        if (isClientFirebaseActive()) {
-          try {
-            await saveDirectlyToFirestore({
-              audits: [updatedSession],
-              importedRoutes: touchedRoutes.length > 0 ? touchedRoutes : undefined,
-              fiscalAlerts: createdAlert ? [createdAlert] : undefined
-            }, false, false);
-            if (result.durableBackup) {
-              result.durableBackup.firestore = true;
-            }
-          } catch (fsErr) {
-            console.warn("[Baixa Saga] Aviso ao sincronizar baixa com Firestore:", fsErr);
-          }
-        }
-
         console.log("[Baixa Saga] Sucesso na execução da saga de baixa:", result);
 
-        // 3. CICLO DE VIDA DAS FOTOS: Excluídas no momento do fechamento/exportação para otimização e prevenção de corrupção
-        console.log("[Baixa Saga] Excluindo fotos de evidência locais e do servidor para este mapa...");
+        // 5. CICLO DE VIDA DAS FOTOS
         try {
           await ImageDB.clearPhotosByAudit(activeSession.id);
-          console.log("[Baixa Saga] Fotos excluídas com sucesso.");
         } catch (photoClearErr) {
           console.error("Erro ao excluir fotos de evidência:", photoClearErr);
         }
 
-        // 4. ATUALIZAR OS ESTADOS DE MEMÓRIA DA PLATAFORMA PARA SINC NO CLIENT
-        onSaveAudits(updatedAudits);
-        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
-        if (onSaveAlerts) onSaveAlerts(updatedAlerts);
-
-        // 5. EFETUAR DOWNLOAD DE CONVENIÊNCIA NO NAVEGADOR DO USUÁRIO
+        // 6. EFETUAR DOWNLOAD DE CONVENIÊNCIA NO NAVEGADOR DO USUÁRIO
         try {
           doc.save(filename);
         } catch (downErr) {
@@ -5012,20 +5120,21 @@ export default function FiscalView({
         }
 
         const isSavedOnServer = result.success === true || !!result.filePath;
-        
-        let alertMessage = "";
-        if (!isSavedOnServer) {
-          alertMessage = `Atenção: Houve um atraso na gravação do servidor. O PDF foi baixado no seu computador. O sistema continuará tentando sincronizar em segundo plano.`;
-        } else {
-          alertMessage = finalStatus === 'finalizado_ok' 
-            ? 'Retorno baixado com sucesso! Relatório PDF salvo no servidor de arquivos (pasta compartilhada) e baixado no seu computador.' 
+        const alertMessage = !isSavedOnServer
+          ? `Atenção: Houve um atraso na gravação do servidor de arquivos. O PDF foi baixado no seu computador e a baixa já foi gravada no Firestore.`
+          : finalStatus === 'finalizado_ok'
+            ? 'Retorno baixado com sucesso! Relatório PDF salvo no servidor de arquivos (pasta compartilhada) e baixado no seu computador.'
             : 'Retorno baixado com divergências registradas. PDF arquivado no servidor de arquivos e no seu computador com sucesso.';
-        }
         alert(alertMessage);
         setActiveSession(null);
         setReconciliationNotes('');
-
       } catch (sagaErr: any) {
+        if (isGuardConflictOrNotFound(sagaErr)) {
+          alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          setActiveSession(null);
+          setReconciliationNotes('');
+          return;
+        }
         console.error("[Baixa Saga] Falha crítica na execução:", sagaErr);
         alert(`FALHA CRÍTICA NA BAIXA:\n\n${sagaErr.message || sagaErr}\n\nA operação foi cancelada e o mapa continua pendente de fechamento.`);
       } finally {
@@ -6167,106 +6276,86 @@ export default function FiscalView({
                 <button
                   type="button"
                   onClick={() => {
-                    const activeDateRoutes = (importedRoutes || []).filter(r => r.routeDate === routeImportDate);
+                    const activeDateRoutes = (importedRoutes || []).filter(r => !r.deletedAt && r.routeDate === routeImportDate);
                     if (activeDateRoutes.length === 0) {
                       alert('Nenhum mapa importado para esta data.');
                       return;
                     }
                     requestConfirm(
                       "⚠️ Apagar Mapas do Dia?",
-                      `Tem certeza que deseja apagar TODOS os ${activeDateRoutes.length} mapas importados, descarregamentos e auditorias para a data ${new Date(routeImportDate + 'T00:00:00').toLocaleDateString('pt-BR')}?`,
-                      () => {
+                      `Tem certeza que deseja apagar TODOS os ${activeDateRoutes.length} mapas importados, descarregamentos e auditorias da data ${new Date(routeImportDate + 'T00:00:00').toLocaleDateString('pt-BR')}?`,
+                      async () => {
+                        const routeIdsToDelete = activeDateRoutes.map(r => r.id);
                         const mapsNormToDelete = new Set(
                           activeDateRoutes.map(r => normalizeMapCode(r.routeMap).toUpperCase())
                         );
                         const mapsUpperToDelete = new Set(
                           activeDateRoutes.map(r => (r.routeMap || '').toUpperCase().trim())
                         );
-                        const platesToDelete = new Set(
-                          activeDateRoutes.map(r => (r.plate || '').toUpperCase().trim()).filter(Boolean)
-                        );
 
-                        // Also include any audits or carregamentos for this date
-                        (audits || []).forEach(a => {
-                          if (a.arrivalDate === routeImportDate) {
-                            if (a.routeMap) {
-                              mapsNormToDelete.add(normalizeMapCode(a.routeMap).toUpperCase());
-                              mapsUpperToDelete.add(a.routeMap.toUpperCase().trim());
-                            }
-                            if (a.plate) platesToDelete.add(a.plate.toUpperCase().trim());
-                          }
+                        const auditIdsToDelete = (audits || [])
+                          .filter(a => {
+                            if (a.arrivalDate === routeImportDate) return true;
+                            return activeDateRoutes.some(r => doesAuditMatchRoute(a, r));
+                          })
+                          .map(a => a.id);
+
+                        const carregIdsToDelete = (carregamentos || [])
+                          .filter(c => {
+                            const cDate = c.routeDate || (c.createdAt ? c.createdAt.split('T')[0] : '');
+                            if (cDate === routeImportDate) return true;
+                            const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
+                            const cUpper = (c.routeMap || '').toUpperCase().trim();
+                            const sameMap = mapsNormToDelete.has(cNorm) || mapsUpperToDelete.has(cUpper);
+                            return sameMap && (!cDate || datesMatchForQueue(routeImportDate, cDate));
+                          })
+                          .map(c => c.id);
+
+                        const valeIdsToDelete = (vales || [])
+                          .filter(v => {
+                            if (v.auditId && auditIdsToDelete.includes(v.auditId)) return true;
+                            const vDate = v.dataGeracao ? v.dataGeracao.split('T')[0] : '';
+                            const vNorm = normalizeMapCode(v.routeMap).toUpperCase();
+                            const vUpper = (v.routeMap || '').toUpperCase().trim();
+                            const sameMap = mapsNormToDelete.has(vNorm) || mapsUpperToDelete.has(vUpper);
+                            return (vDate === routeImportDate && sameMap) || (sameMap && (!vDate || datesMatchForQueue(routeImportDate, vDate)));
+                          })
+                          .map(v => v.id);
+
+                        const alertIdsToDelete = (fiscalAlerts || [])
+                          .filter(al => {
+                            const alDate = al.timestamp ? al.timestamp.split('T')[0] : '';
+                            const alNorm = normalizeMapCode(al.routeMap).toUpperCase();
+                            const alUpper = (al.routeMap || '').toUpperCase().trim();
+                            const sameMap = mapsNormToDelete.has(alNorm) || mapsUpperToDelete.has(alUpper);
+                            return sameMap && (!alDate || datesMatchForQueue(routeImportDate, alDate));
+                          })
+                          .map(al => al.id);
+
+                        await softDeleteMapCascade({
+                          routeIds: routeIdsToDelete,
+                          auditIds: auditIdsToDelete,
+                          carregamentoIds: carregIdsToDelete,
+                          valeIds: valeIdsToDelete,
+                          alertIds: alertIdsToDelete,
+                          actor: currentUser.name,
+                          logDetails: `Limpeza dos mapas do dia ${routeImportDate}. Rotas: ${routeIdsToDelete.length}, Auditorias: ${auditIdsToDelete.length}, Carregamentos: ${carregIdsToDelete.length}, Vales: ${valeIdsToDelete.length}.`
                         });
 
-                        (carregamentos || []).forEach(c => {
-                          if (c.routeDate === routeImportDate || c.createdAt?.startsWith(routeImportDate)) {
-                            if (c.routeMap) {
-                              mapsNormToDelete.add(normalizeMapCode(c.routeMap).toUpperCase());
-                              mapsUpperToDelete.add(c.routeMap.toUpperCase().trim());
-                            }
-                            if (c.plate) platesToDelete.add(c.plate.toUpperCase().trim());
-                          }
-                        });
-
-                        // 1. Update imported routes
-                        const updatedRoutes = (importedRoutes || []).filter(r => {
-                          const rMapNorm = normalizeMapCode(r.routeMap).toUpperCase();
-                          const rMapUpper = (r.routeMap || '').toUpperCase().trim();
-                          return r.routeDate !== routeImportDate && !mapsNormToDelete.has(rMapNorm) && !mapsUpperToDelete.has(rMapUpper);
-                        });
                         if (onSaveImportedRoutes) {
-                          onSaveImportedRoutes(updatedRoutes);
+                          onSaveImportedRoutes((importedRoutes || []).filter(r => !routeIdsToDelete.includes(r.id)));
                         }
-
-                        // 2. Update audits
-                        let updatedAudits = audits || [];
                         if (onSaveAudits && audits) {
-                          updatedAudits = audits.filter(a => {
-                            const aMapNorm = normalizeMapCode(a.routeMap).toUpperCase();
-                            const aMapUpper = (a.routeMap || '').toUpperCase().trim();
-                            const aPlateUpper = (a.plate || '').toUpperCase().trim();
-                            const isDateMatch = a.arrivalDate === routeImportDate;
-                            const isMapMatch = mapsNormToDelete.has(aMapNorm) || mapsUpperToDelete.has(aMapUpper);
-                            const isPlateMatch = aPlateUpper && platesToDelete.has(aPlateUpper);
-                            return !isDateMatch && !isMapMatch && !isPlateMatch;
-                          });
-                          onSaveAudits(updatedAudits);
+                          onSaveAudits(audits.filter(a => !auditIdsToDelete.includes(a.id)));
                         }
-
-                        // 3. Update carregamentos
-                        let updatedCarreg = carregamentos || [];
-                        if (onSaveCarregamentos && carregamentos) {
-                          updatedCarreg = carregamentos.filter(c => {
-                            const cMapNorm = normalizeMapCode(c.routeMap).toUpperCase();
-                            const cMapUpper = (c.routeMap || '').toUpperCase().trim();
-                            const cPlateUpper = (c.plate || '').toUpperCase().trim();
-                            const isDateMatch = c.routeDate === routeImportDate || c.createdAt?.startsWith(routeImportDate);
-                            const isMapMatch = mapsNormToDelete.has(cMapNorm) || mapsUpperToDelete.has(cMapUpper);
-                            const isPlateMatch = cPlateUpper && platesToDelete.has(cPlateUpper);
-                            return !isDateMatch && !isMapMatch && !isPlateMatch;
-                          });
-                          onSaveCarregamentos(updatedCarreg);
+                        if (onSaveCarregamentos && carregamentos && carregIdsToDelete.length > 0) {
+                          onSaveCarregamentos(carregamentos.filter(c => !carregIdsToDelete.includes(c.id)));
                         }
-
-                        // 4. Update vales
-                        let updatedVales = vales || [];
-                        if (onSaveVales && vales) {
-                          updatedVales = vales.filter(v => {
-                            const vMapNorm = normalizeMapCode(v.routeMap).toUpperCase();
-                            const vMapUpper = (v.routeMap || '').toUpperCase().trim();
-                            return !mapsNormToDelete.has(vMapNorm) && !mapsUpperToDelete.has(vMapUpper);
-                          });
-                          onSaveVales(updatedVales);
+                        if (onSaveVales && vales && valeIdsToDelete.length > 0) {
+                          onSaveVales(vales.filter(v => !valeIdsToDelete.includes(v.id)));
                         }
-
-                        // 5. Update fiscalAlerts
-                        let updatedAlerts = fiscalAlerts || [];
-                        if (onSaveAlerts && fiscalAlerts) {
-                          updatedAlerts = fiscalAlerts.filter(al => {
-                            const alMapNorm = normalizeMapCode(al.routeMap).toUpperCase();
-                            const alMapUpper = (al.routeMap || '').toUpperCase().trim();
-                            return !mapsNormToDelete.has(alMapNorm) && !mapsUpperToDelete.has(alMapUpper);
-                          });
-                          onSaveAlerts(updatedAlerts);
+                        if (onSaveAlerts && fiscalAlerts && alertIdsToDelete.length > 0) {
+                          onSaveAlerts(fiscalAlerts.filter(al => !alertIdsToDelete.includes(al.id)));
                         }
 
                         alert(`Todos os mapas, descarregamentos e auditorias da data selecionada foram excluídos.`);
@@ -6279,6 +6368,18 @@ export default function FiscalView({
                   <Trash2 className="h-3.5 w-3.5" />
                   <span>Limpar Mapas do Dia</span>
                 </button>
+
+                {(currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica') && (
+                  <button
+                    type="button"
+                    onClick={handleOpenRepairModal}
+                    className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-bold uppercase rounded-lg transition shadow-sm flex items-center space-x-1 cursor-pointer"
+                    title="Diagnosticar e reparar mapas finalizados sem registro de fechamento ou PDF"
+                  >
+                    <Wrench className="h-3.5 w-3.5" />
+                    <span>Reparar dados</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -6475,12 +6576,13 @@ export default function FiscalView({
             {/* Live Progress Metrics */}
             {(() => {
               const selectedRoutes = importedRoutes.filter(r => {
+                if (r.deletedAt || isRouteDeletedId(r.id)) return false;
                 const isToday = r.routeDate === routeImportDate;
-                const isOpen = r.status !== 'fechado' && !isRouteClosed(r.routeMap);
+                const isOpen = r.status !== 'fechado' && !isRouteClosed(r.routeMap, r.routeDate);
                 return isToday || isOpen;
               });
               const total = selectedRoutes.length;
-              const closed = selectedRoutes.filter(r => r.status === 'fechado' || isRouteClosed(r.routeMap)).length;
+              const closed = selectedRoutes.filter(r => r.status === 'fechado' || isRouteClosed(r.routeMap, r.routeDate)).length;
               const open = total - closed;
               const pct = total > 0 ? (closed / total) * 100 : 0;
 
@@ -6644,9 +6746,9 @@ export default function FiscalView({
                                     e.stopPropagation();
                                     requestConfirm(
                                       "❌ Excluir Mapa?",
-                                      `Tem certeza que deseja excluir permanentemente o mapa ${route.routeMap} (${route.plate}) e todos os seus registros de descarregamento e auditoria?`,
-                                      () => {
-                                        handleDeleteRouteComplete(route);
+                                      buildDeleteRouteConfirmMessage(route),
+                                      async () => {
+                                        await handleDeleteRouteComplete(route);
                                         alert(`Mapa ${route.routeMap} excluído com sucesso.`);
                                       }
                                     );
@@ -7004,7 +7106,20 @@ export default function FiscalView({
                       <SlidersHorizontal className="h-5 w-5 text-indigo-600 animate-spin-slow" />
                       <span>Monitoramento Integrado de Processos</span>
                     </h3>
-                    <span className="text-xxs font-mono text-slate-400 font-bold uppercase">Tempo Real</span>
+                    <div className="flex items-center space-x-2">
+                      {(currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica') && (
+                        <button
+                          type="button"
+                          onClick={handleOpenRepairModal}
+                          className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-bold uppercase rounded-lg transition shadow-xs flex items-center space-x-1 cursor-pointer"
+                          title="Diagnosticar e reparar mapas finalizados sem registro de fechamento ou PDF"
+                        >
+                          <Wrench className="h-3 w-3" />
+                          <span>Reparar dados</span>
+                        </button>
+                      )}
+                      <span className="text-xxs font-mono text-slate-400 font-bold uppercase">Tempo Real</span>
+                    </div>
                   </div>
 
                   <div className="space-y-4">
@@ -7083,17 +7198,17 @@ export default function FiscalView({
                     <span>Sendo Trabalhados</span>
                   </h3>
                   <span className="bg-amber-100 text-amber-800 text-xxs font-extrabold px-2 py-0.5 rounded-full font-mono">
-                    {importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).length} mapas
+                    {importedRoutes.filter(r => !r.deletedAt && r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap, r.routeDate)).length} mapas
                   </span>
                 </div>
 
                 <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
-                  {importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).length === 0 ? (
+                  {importedRoutes.filter(r => !r.deletedAt && r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap, r.routeDate)).length === 0 ? (
                     <div className="text-center py-8 text-xxs italic text-slate-400 bg-slate-50 border border-dashed rounded-lg">
                       Nenhum mapa sendo trabalhado.
                     </div>
                   ) : (
-                    importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).map(route => {
+                    importedRoutes.filter(r => !r.deletedAt && r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap, r.routeDate)).map(route => {
                       const isPendente = route.status === 'pendente' || !route.status;
                       const isConferindo = route.status === 'conferindo';
                       const isEmAnalise = route.status === 'em_analise';
@@ -7160,9 +7275,9 @@ export default function FiscalView({
                                   e.stopPropagation();
                                   requestConfirm(
                                     "❌ Excluir Mapa?",
-                                    `Tem certeza que deseja excluir permanentemente o mapa ${route.routeMap} (${route.plate}) e todos os seus registros de descarregamento e auditoria?`,
-                                    () => {
-                                      handleDeleteRouteComplete(route);
+                                    buildDeleteRouteConfirmMessage(route),
+                                    async () => {
+                                      await handleDeleteRouteComplete(route);
                                       alert(`Mapa ${route.routeMap} excluído com sucesso.`);
                                     }
                                   );
@@ -13500,6 +13615,124 @@ export default function FiscalView({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRepairModal && repairReport && (
+        <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                  <Wrench className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-sans font-extrabold text-slate-900 text-base uppercase">
+                    Reparar Dados de Conciliação
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Diagnóstico de mapas finalizados sem closedAt/pdfDownloaded, duplicidades e rotas abertas.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRepairModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200">
+                  <span className="text-[10px] font-bold uppercase text-amber-700 block">Finalizados s/ Fechamento</span>
+                  <span className="text-xl font-extrabold text-amber-900">{repairReport.fixedAudits.length}</span>
+                </div>
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
+                  <span className="text-[10px] font-bold uppercase text-rose-700 block">Grupos Duplicados (Lista)</span>
+                  <span className="text-xl font-extrabold text-rose-900">{repairReport.duplicateGroups.length}</span>
+                </div>
+                <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                  <span className="text-[10px] font-bold uppercase text-indigo-700 block">Rotas Abertas c/ Baixa</span>
+                  <span className="text-xl font-extrabold text-indigo-900">{repairReport.unclosedRoutes.length}</span>
+                </div>
+              </div>
+
+              {repairReport.repairedCount > 0 && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold">
+                  {repairReport.repairedCount} registro(s) atualizado(s) com sucesso (closedAt + pdfDownloaded: true).
+                </div>
+              )}
+
+              {repairReport.fixedAudits.length > 0 && (
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-slate-700 uppercase text-[11px]">
+                    Auditorias finalizadas sem closedAt / pdfDownloaded ({repairReport.fixedAudits.length})
+                  </h4>
+                  <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {repairReport.fixedAudits.map(item => (
+                      <div key={item.id} className="px-3 py-2 flex justify-between items-center font-mono text-[11px]">
+                        <span>Mapa {item.routeMap} ({item.arrivalDate || 'N/A'})</span>
+                        <span className="text-slate-500">closedAt: {new Date(item.closedAt).toLocaleString('pt-BR')}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {repairReport.duplicateGroups.length > 0 && (
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-rose-700 uppercase text-[11px]">
+                    Possíveis Duplicidades Ativas (Apenas Listagem — Não Excluídas)
+                  </h4>
+                  <div className="max-h-36 overflow-y-auto border border-rose-200 rounded-lg divide-y divide-rose-100 bg-rose-50/30">
+                    {repairReport.duplicateGroups.map(g => (
+                      <div key={g.key} className="px-3 py-2 space-y-0.5 text-[11px]">
+                        <div className="font-bold text-rose-900">Mapa {g.routeMap} — {g.arrivalDate || 'S/D'}</div>
+                        <div className="font-mono text-[10px] text-rose-700">{g.ids.join(' | ')}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {repairReport.unclosedRoutes.length > 0 && (
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-indigo-700 uppercase text-[11px]">
+                    Rotas ainda em aberto com auditoria já finalizada (Apenas Listagem)
+                  </h4>
+                  <div className="max-h-36 overflow-y-auto border border-indigo-200 rounded-lg divide-y divide-indigo-100 bg-indigo-50/30">
+                    {repairReport.unclosedRoutes.map(r => (
+                      <div key={r.id} className="px-3 py-2 flex justify-between font-mono text-[11px]">
+                        <span>Mapa {r.routeMap} ({r.routeDate})</span>
+                        <span className="text-indigo-700">{r.id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setShowRepairModal(false)}
+                className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 font-bold text-xs uppercase hover:bg-slate-100 cursor-pointer"
+              >
+                Fechar
+              </button>
+              <button
+                type="button"
+                onClick={handleRunDataRepair}
+                disabled={isRepairingData || repairReport.fixedAudits.length === 0}
+                className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs uppercase cursor-pointer"
+              >
+                {isRepairingData ? 'Reparando...' : `Aplicar Reparo (${repairReport.fixedAudits.length})`}
+              </button>
             </div>
           </div>
         </div>

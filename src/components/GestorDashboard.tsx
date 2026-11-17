@@ -4,7 +4,7 @@ import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Land
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, deduplicateUsersComprehensive, normalizePersonName, normalizeUserLogin } from '../data';
 import { DEFAULT_MANUAL_HTML } from './DefaultManualContent';
-import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig } from '../clientFirebase';
+import { isClientFirebaseActive, getGeminiKeyFromFirestore, saveGeminiKeyToFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, getActiveFirebaseConfig, switchActiveFirebaseConfig, markLegitimateAuditCreation, softDeleteMapCascade, doesAuditMatchRoute, datesMatchForQueue } from '../clientFirebase';
 import { DatabaseSwitcher } from './DatabaseSwitcher';
 import { triggerGlobalDatabaseSwitch } from '../utils/databaseScheduler';
 import ExportDataView from './ExportDataView';
@@ -277,6 +277,7 @@ export default function GestorDashboard({
       surplusActionStatus: 'prazo_envio_ok'
     };
 
+    markLegitimateAuditCreation(newSobraAudit.id);
     const updatedAudits = [newSobraAudit, ...audits];
     onSaveAudits(updatedAudits);
     
@@ -1341,82 +1342,69 @@ export default function GestorDashboard({
 
   const handleDeleteMapsByDate = () => {
     if (!selectedDeleteDate) return;
-    
-    const count = importedRoutes.filter(r => r.routeDate === selectedDeleteDate).length;
-    
+
     requestConfirm(
       "🗑️ Excluir Mapas do Dia?",
-      `Tem certeza que deseja excluir permanentemente todos os mapas importados, descarregamentos e auditorias na data ${new Date(selectedDeleteDate + 'T00:00:00').toLocaleDateString('pt-BR')}? Esta ação removerá as rotas, auditorias, descarregamentos e vales associados de forma definitiva.`,
-      () => {
+      `Tem certeza que deseja excluir todos os mapas importados, descarregamentos e auditorias da data ${new Date(selectedDeleteDate + 'T00:00:00').toLocaleDateString('pt-BR')}? Esta ação removerá as rotas, auditorias, descarregamentos e vales apenas dessa data.`,
+      async () => {
         const routesToDelete = importedRoutes.filter(r => r.routeDate === selectedDeleteDate);
+        const routeIdsToDelete = routesToDelete.map(r => r.id);
         const mapCodesToDelete = new Set(routesToDelete.map(r => (r.routeMap || '').toUpperCase().trim()));
         const normMapsToDelete = new Set(routesToDelete.map(r => normalizeMapCode(r.routeMap).toUpperCase()));
-        const platesToDelete = new Set(routesToDelete.map(r => (r.plate || '').toUpperCase().trim()).filter(Boolean));
 
-        // Also include map codes from audits or carregamentos for this date
-        audits.forEach(a => {
-          if (a.arrivalDate === selectedDeleteDate) {
-            if (a.routeMap) {
-              mapCodesToDelete.add(a.routeMap.toUpperCase().trim());
-              normMapsToDelete.add(normalizeMapCode(a.routeMap).toUpperCase());
-            }
-            if (a.plate) platesToDelete.add(a.plate.toUpperCase().trim());
+        const auditsToDelete = audits.filter(a => {
+          if (a.arrivalDate === selectedDeleteDate) return true;
+          return routesToDelete.some(r => doesAuditMatchRoute(a, r));
+        });
+        const auditIdsToDelete = auditsToDelete.map(a => a.id);
+
+        auditsToDelete.forEach(a => {
+          if (a.routeMap) {
+            mapCodesToDelete.add(a.routeMap.toUpperCase().trim());
+            normMapsToDelete.add(normalizeMapCode(a.routeMap).toUpperCase());
           }
         });
 
-        carregamentos.forEach(c => {
-          if (c.routeDate === selectedDeleteDate || c.createdAt?.startsWith(selectedDeleteDate)) {
-            if (c.routeMap) {
-              mapCodesToDelete.add(c.routeMap.toUpperCase().trim());
-              normMapsToDelete.add(normalizeMapCode(c.routeMap).toUpperCase());
-            }
-            if (c.plate) platesToDelete.add(c.plate.toUpperCase().trim());
-          }
-        });
-
-        // 1. Update imported routes
-        const updatedRoutes = importedRoutes.filter(r => {
-          const rMapNorm = normalizeMapCode(r.routeMap).toUpperCase();
-          const rMapUpper = (r.routeMap || '').toUpperCase().trim();
-          return r.routeDate !== selectedDeleteDate && !normMapsToDelete.has(rMapNorm) && !mapCodesToDelete.has(rMapUpper);
-        });
-        onSaveImportedRoutes(updatedRoutes);
-        
-        // 2. Update audits
-        const updatedAudits = audits.filter(a => {
-          const aMapNorm = normalizeMapCode(a.routeMap).toUpperCase();
-          const aMapUpper = (a.routeMap || '').toUpperCase().trim();
-          const aPlateUpper = (a.plate || '').toUpperCase().trim();
-          const isDateMatch = a.arrivalDate === selectedDeleteDate;
-          const isMapMatch = normMapsToDelete.has(aMapNorm) || mapCodesToDelete.has(aMapUpper);
-          const isPlateMatch = aPlateUpper && platesToDelete.has(aPlateUpper);
-          return !isDateMatch && !isMapMatch && !isPlateMatch;
-        });
-        onSaveAudits(updatedAudits);
-
-        // 3. Update carregamentos
-        let updatedCarreg = carregamentos;
-        if (onSaveCarregamentos) {
-          updatedCarreg = carregamentos.filter(c => {
+        const carregIdsToDelete = carregamentos
+          .filter(c => {
+            const cDate = c.routeDate || (c.createdAt ? c.createdAt.split('T')[0] : '');
+            if (cDate === selectedDeleteDate) return true;
             const cMapNorm = normalizeMapCode(c.routeMap).toUpperCase();
             const cMapUpper = (c.routeMap || '').toUpperCase().trim();
-            const cPlateUpper = (c.plate || '').toUpperCase().trim();
-            const isDateMatch = c.routeDate === selectedDeleteDate || c.createdAt?.startsWith(selectedDeleteDate);
-            const isMapMatch = normMapsToDelete.has(cMapNorm) || mapCodesToDelete.has(cMapUpper);
-            const isPlateMatch = cPlateUpper && platesToDelete.has(cPlateUpper);
-            return !isDateMatch && !isMapMatch && !isPlateMatch;
-          });
-          onSaveCarregamentos(updatedCarreg);
-        }
-        
-        // 4. Update vales
-        const updatedVales = vales.filter(v => {
-          const vMapNorm = normalizeMapCode(v.routeMap).toUpperCase();
-          const vMapUpper = (v.routeMap || '').toUpperCase().trim();
-          return !normMapsToDelete.has(vMapNorm) && !mapCodesToDelete.has(vMapUpper);
+            const sameMap = normMapsToDelete.has(cMapNorm) || mapCodesToDelete.has(cMapUpper);
+            return sameMap && (!cDate || datesMatchForQueue(selectedDeleteDate, cDate));
+          })
+          .map(c => c.id);
+
+        const valeIdsToDelete = vales
+          .filter(v => {
+            if (v.auditId && auditIdsToDelete.includes(v.auditId)) return true;
+            const vDate = v.dataGeracao ? v.dataGeracao.split('T')[0] : '';
+            const vMapNorm = normalizeMapCode(v.routeMap).toUpperCase();
+            const vMapUpper = (v.routeMap || '').toUpperCase().trim();
+            const sameMap = normMapsToDelete.has(vMapNorm) || mapCodesToDelete.has(vMapUpper);
+            return sameMap && (!vDate || datesMatchForQueue(selectedDeleteDate, vDate));
+          })
+          .map(v => v.id);
+
+        await softDeleteMapCascade({
+          routeIds: routeIdsToDelete,
+          auditIds: auditIdsToDelete,
+          carregamentoIds: carregIdsToDelete,
+          valeIds: valeIdsToDelete,
+          actor: currentUser.name,
+          logDetails: `Exclusão de mapas da data ${selectedDeleteDate} pelo Gestor. Rotas: ${routeIdsToDelete.length}, Auditorias: ${auditIdsToDelete.length}, Carregamentos: ${carregIdsToDelete.length}, Vales: ${valeIdsToDelete.length}.`
         });
-        onSaveVales(updatedVales);
-        
+
+        onSaveImportedRoutes(importedRoutes.filter(r => !routeIdsToDelete.includes(r.id)));
+        onSaveAudits(audits.filter(a => !auditIdsToDelete.includes(a.id)));
+        if (onSaveCarregamentos && carregIdsToDelete.length > 0) {
+          onSaveCarregamentos(carregamentos.filter(c => !carregIdsToDelete.includes(c.id)));
+        }
+        if (valeIdsToDelete.length > 0) {
+          onSaveVales(vales.filter(v => !valeIdsToDelete.includes(v.id)));
+        }
+
         alert(`Todos os mapas, descarregamentos e auditorias do dia ${new Date(selectedDeleteDate + 'T00:00:00').toLocaleDateString('pt-BR')} foram excluídos com sucesso.`);
         setSelectedDeleteDate('');
       }

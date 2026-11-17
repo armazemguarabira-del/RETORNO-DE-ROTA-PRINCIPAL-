@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { softDeleteMapCascade, doesAuditMatchRoute, datesMatchForQueue, isAuditDeletedId, isRouteDeletedId } from '../clientFirebase';
 import { 
   User, 
   Empilhador, 
@@ -304,16 +305,20 @@ export default function EmpilhadorView({
     return String(m).replace(/^0+/, '').trim();
   };
 
-  const isRouteClosedInAudits = (routeMap: string) => {
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = (routeMap || '').trim().toUpperCase();
     return audits.some(a => {
+      if (!a || a.deletedAt || isAuditDeletedId(a.id) || a.reopeningRequested) return false;
+      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado';
+      if (!isFinished) return false;
+      if (routeDate) {
+        return doesAuditMatchRoute(a, { routeMap, routeDate });
+      }
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
       const aUpper = (a.routeMap || '').trim().toUpperCase();
-      const isMatch = aNorm === norm || aUpper === upper ||
+      return aNorm === norm || aUpper === upper ||
         (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
-      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      return isMatch && isFinished && !a.reopeningRequested;
     });
   };
 
@@ -355,19 +360,15 @@ export default function EmpilhadorView({
 
     // 1. Process imported routes: include open/pending routes of the day, plus any route unloaded today
     (importedRoutes || []).forEach(r => {
+      if (!r || r.deletedAt || isRouteDeletedId(r.id)) return;
       const routeMapUpper = (r.routeMap || '').toUpperCase();
       const routeMapNorm = normalizeMapCode(r.routeMap).toUpperCase();
       const plateUpper = (r.plate || '').toUpperCase().trim();
       const key = `${routeMapUpper}_${plateUpper}`;
 
-      const matchingAudit = audits.find(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        if (aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper) return true;
-        if (a.unifiedMaps) {
-          return a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === routeMapNorm || m.toUpperCase() === routeMapUpper);
-        }
-        return false;
-      });
+      const matchingAudit = audits.find(a =>
+        a && !a.deletedAt && !isAuditDeletedId(a.id) && doesAuditMatchRoute(a, r)
+      );
 
       const matchingCarregamento = carregamentos.find(c => {
         const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
@@ -376,15 +377,13 @@ export default function EmpilhadorView({
       });
 
       const isFinalizedInAudit = matchingAudit && (
-        matchingAudit.status === 'finalizado_ok' || 
-        matchingAudit.status === 'finalizado_divergente' || 
-        (matchingAudit.status as string) === 'fechado' ||
-        (matchingAudit as any).pdfDownloaded === true || 
-        (matchingAudit as any).surplusFlowStatus === 'BAIXADO'
+        matchingAudit.status === 'finalizado_ok' ||
+        matchingAudit.status === 'finalizado_divergente' ||
+        (matchingAudit.status as string) === 'fechado'
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(r.routeMap) || (r.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isRouteClosedInAudits(r.routeMap, r.routeDate) || (r.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Descarregado hoje apenas se houver descarregamento registrado para o retorno de rota
       const isUnloadedToday = !!(
@@ -1122,41 +1121,68 @@ export default function EmpilhadorView({
   const handleDeleteVehicleFromQueue = (vehicle: ConnectedVehicle) => {
     requestConfirm(
       "❌ Excluir da Fila de Descarregamento?",
-      `Tem certeza que deseja remover o mapa ${vehicle.routeMap} (${vehicle.plate}) da fila de descarregamento? Todos os registros vinculados de descarregamento e rota serão excluídos.`,
-      () => {
+      `Tem certeza que deseja remover o mapa ${vehicle.routeMap} (${vehicle.plate}) da fila de descarregamento? Todos os registros vinculados de descarregamento e rota desta data serão excluídos.`,
+      async () => {
         const vMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
         const vMapUpper = (vehicle.routeMap || '').toUpperCase().trim();
         const vPlateUpper = (vehicle.plate || '').toUpperCase().trim();
+        const targetDate = vehicle.routeDate || '';
 
-        // 1. Remove from importedRoutes
-        const updatedRoutes = (importedRoutes || []).filter(r => {
-          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-          const rUpper = (r.routeMap || '').toUpperCase().trim();
-          const rPlate = (r.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && rNorm === vMapNorm) || (vMapUpper && rUpper === vMapUpper) || (!vMapNorm && vPlateUpper && rPlate === vPlateUpper);
-          return !isMatch;
-        });
-        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+        const routeIdsToDelete = (importedRoutes || [])
+          .filter(r => {
+            if (r.id === vehicle.id) return true;
+            const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+            const rUpper = (r.routeMap || '').toUpperCase().trim();
+            const rPlate = (r.plate || '').toUpperCase().trim();
+            const sameMapOrPlate = (vMapNorm && rNorm === vMapNorm) || (vMapUpper && rUpper === vMapUpper) || (!vMapNorm && vPlateUpper && rPlate === vPlateUpper);
+            if (!sameMapOrPlate) return false;
+            return !targetDate || !r.routeDate || r.routeDate === targetDate;
+          })
+          .map(r => r.id);
 
-        // 2. Remove from audits
-        const updatedAudits = (audits || []).filter(a => {
-          const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-          const aUpper = (a.routeMap || '').toUpperCase().trim();
-          const aPlate = (a.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && aNorm === vMapNorm) || (vMapUpper && aUpper === vMapUpper) || (!vMapNorm && vPlateUpper && aPlate === vPlateUpper);
-          return !isMatch;
-        });
-        if (onSaveAudits) onSaveAudits(updatedAudits);
+        const auditIdsToDelete = (audits || [])
+          .filter(a => {
+            if (a.id === vehicle.id) return true;
+            if (targetDate && vehicle.routeMap) {
+              return doesAuditMatchRoute(a, { routeMap: vehicle.routeMap, routeDate: targetDate });
+            }
+            const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+            const aUpper = (a.routeMap || '').toUpperCase().trim();
+            const aPlate = (a.plate || '').toUpperCase().trim();
+            return (vMapNorm && aNorm === vMapNorm) || (vMapUpper && aUpper === vMapUpper) || (!vMapNorm && vPlateUpper && aPlate === vPlateUpper);
+          })
+          .map(a => a.id);
 
-        // 3. Remove from carregamentos
-        const updatedCarreg = (carregamentos || []).filter(c => {
-          const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
-          const cUpper = (c.routeMap || '').toUpperCase().trim();
-          const cPlate = (c.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && cNorm === vMapNorm) || (vMapUpper && cUpper === vMapUpper) || (!vMapNorm && vPlateUpper && cPlate === vPlateUpper);
-          return !isMatch;
+        const carregIdsToDelete = (carregamentos || [])
+          .filter(c => {
+            if (c.id === vehicle.id) return true;
+            const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
+            const cUpper = (c.routeMap || '').toUpperCase().trim();
+            const cPlate = (c.plate || '').toUpperCase().trim();
+            const sameMapOrPlate = (vMapNorm && cNorm === vMapNorm) || (vMapUpper && cUpper === vMapUpper) || (!vMapNorm && vPlateUpper && cPlate === vPlateUpper);
+            if (!sameMapOrPlate) return false;
+            const cDate = c.routeDate || (c.createdAt ? c.createdAt.split('T')[0] : '');
+            return !targetDate || !cDate || datesMatchForQueue(targetDate, cDate);
+          })
+          .map(c => c.id);
+
+        await softDeleteMapCascade({
+          routeIds: routeIdsToDelete,
+          auditIds: auditIdsToDelete,
+          carregamentoIds: carregIdsToDelete,
+          actor: currentUser.name,
+          logDetails: `Exclusão pela Empilhadeira: mapa ${vehicle.routeMap} (${vehicle.plate}, data ${targetDate || 'N/A'}). Rotas: ${routeIdsToDelete.length}, Auditorias: ${auditIdsToDelete.length}, Carregamentos: ${carregIdsToDelete.length}.`
         });
-        if (onSaveCarregamentos) onSaveCarregamentos(updatedCarreg);
+
+        if (onSaveImportedRoutes) {
+          onSaveImportedRoutes((importedRoutes || []).filter(r => !routeIdsToDelete.includes(r.id)));
+        }
+        if (onSaveAudits) {
+          onSaveAudits((audits || []).filter(a => !auditIdsToDelete.includes(a.id)));
+        }
+        if (onSaveCarregamentos && carregIdsToDelete.length > 0) {
+          onSaveCarregamentos((carregamentos || []).filter(c => !carregIdsToDelete.includes(c.id)));
+        }
 
         alert(`Mapa ${vehicle.routeMap} (${vehicle.plate}) removido da fila de descarregamento com sucesso.`);
       }

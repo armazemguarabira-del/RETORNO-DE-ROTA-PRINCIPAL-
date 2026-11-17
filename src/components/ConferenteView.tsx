@@ -2,6 +2,16 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName, isAlertForRole, isAlertReadByUser } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
+import {
+  createAudit,
+  updateAuditGuarded,
+  updateRouteStatus,
+  softDeleteMapCascade,
+  isGuardConflictOrNotFound,
+  isAuditDeletedId,
+  doesAuditMatchRoute,
+  markLegitimateAuditCreation
+} from '../clientFirebase';
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
@@ -697,41 +707,70 @@ export default function ConferenteView({
     }
   }, [activeSession]);
 
-  // Keep activeSession in sync with updates from parent audits (real-time/collaboration sync, checking for conflicts)
+  const hasLoadedInitialAuditsRef = useRef<boolean>(false);
+  const justStartedSessionRef = useRef<{ id: string; at: number } | null>(null);
+
   useEffect(() => {
-    if (activeSession) {
-      const currentInAudits = audits.find(a => a.id === activeSession.id);
-      if (currentInAudits) {
-        if (JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
-          const hasCoreDiff = hasCoreAuditDiff(currentInAudits, activeSession);
-          const hasConflict = hasCoreDiff &&
-                              currentInAudits.updatedAt && 
-                              loadedSessionTime && 
-                              currentInAudits.updatedAt !== loadedSessionTime && 
-                              currentInAudits.lastUpdatedBy !== currentUser.name;
-          
-          if (!hasConflict) {
-            let mergedSession = hasCoreDiff
-              ? { ...currentInAudits }
-              : mergeRemoteMetadata(activeSession, currentInAudits);
-            if (!mergedSession.assets || mergedSession.assets.length === 0) {
-              const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
-              mergedSession.assets = assetsSource.map(asset => ({
-                assetId: asset.id,
-                assetName: asset.name,
-                cost: asset.cost,
-                physicalQty: 0
-              }));
-            }
-            setActiveSession(mergedSession);
-            setLoadedSessionTime(currentInAudits.updatedAt);
+    if (audits && audits.length > 0) {
+      hasLoadedInitialAuditsRef.current = true;
+    }
+  }, [audits]);
+
+  // Keep activeSession in sync with updates from parent audits (real-time/collaboration sync, checking for deletion/conflict)
+  useEffect(() => {
+    if (!activeSession) return;
+
+    if (isAuditDeletedId(activeSession.id) || activeSession.deletedAt) {
+      localStorage.removeItem('conferente_active_session_id');
+      setActiveSession(null);
+      setRefugoPhotos([]);
+      alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+      return;
+    }
+
+    const currentInAudits = audits.find(a => a.id === activeSession.id);
+    if (currentInAudits) {
+      if (currentInAudits.deletedAt || (currentInAudits.status !== 'em_aberto' && currentInAudits.status !== 'reconferencia')) {
+        localStorage.removeItem('conferente_active_session_id');
+        setActiveSession(null);
+        setRefugoPhotos([]);
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. A sessão local foi encerrada.');
+        return;
+      }
+
+      if (JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
+        const hasCoreDiff = hasCoreAuditDiff(currentInAudits, activeSession);
+        const hasConflict = hasCoreDiff &&
+                            currentInAudits.updatedAt && 
+                            loadedSessionTime && 
+                            currentInAudits.updatedAt !== loadedSessionTime && 
+                            currentInAudits.lastUpdatedBy !== currentUser.name;
+        
+        if (!hasConflict) {
+          let mergedSession = hasCoreDiff
+            ? { ...currentInAudits }
+            : mergeRemoteMetadata(activeSession, currentInAudits);
+          if (!mergedSession.assets || mergedSession.assets.length === 0) {
+            const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
+            mergedSession.assets = assetsSource.map(asset => ({
+              assetId: asset.id,
+              assetName: asset.name,
+              cost: asset.cost,
+              physicalQty: 0
+            }));
           }
+          setActiveSession(mergedSession);
+          setLoadedSessionTime(currentInAudits.updatedAt);
         }
-      } else {
-        // If the session is not found in the parent audits list, it might be due to temporary sync lag,
-        // local-only creations, or network latency on mobile. To prevent kicking the user out of their
-        // active screen (which they perceive as an automatic restart), we DO NOT set activeSession to null.
-        console.warn("[ConferenteView] Active session not found in parent audits. Retaining local session in memory.");
+      }
+    } else if (hasLoadedInitialAuditsRef.current) {
+      const justCreated = justStartedSessionRef.current;
+      const isGracePeriod = Boolean(justCreated && justCreated.id === activeSession.id && (Date.now() - justCreated.at) < 8000);
+      if (!isGracePeriod) {
+        localStorage.removeItem('conferente_active_session_id');
+        setActiveSession(null);
+        setRefugoPhotos([]);
+        alert('Este mapa foi excluído ou não está mais disponível no sistema. A sessão local foi encerrada.');
       }
     }
   }, [audits, activeSession?.id, loadedSessionTime, currentUser.name, activeAssets]);
@@ -813,6 +852,8 @@ export default function ConferenteView({
       if (savedSessionId) {
         const found = audits.find(a => 
           a.id === savedSessionId && 
+          !a.deletedAt &&
+          !isAuditDeletedId(a.id) &&
           (a.status === 'em_aberto' || a.status === 'reconferencia')
         );
         if (found) {
@@ -820,9 +861,12 @@ export default function ConferenteView({
           return;
         } else {
           localStorage.removeItem('conferente_active_session_id');
+          alert('O mapa da sessão anterior foi excluído ou já foi alterado por outro usuário.');
         }
       }
       const activeForUser = audits.find(a => 
+        !a.deletedAt &&
+        !isAuditDeletedId(a.id) &&
         (a.status === 'em_aberto' || a.status === 'reconferencia') && 
         a.conferenteId === currentUser.id
       );
@@ -832,14 +876,20 @@ export default function ConferenteView({
     }
   }, []);
 
-  const handleOpenSession = (audit: AuditSession) => {
+  const handleOpenSession = (audit: AuditSession, skipSave: boolean = false) => {
+    if (audit.deletedAt || isAuditDeletedId(audit.id) || (audit.status !== 'em_aberto' && audit.status !== 'reconferencia')) {
+      localStorage.removeItem('conferente_active_session_id');
+      alert('Este mapa foi excluído ou já foi alterado por outro usuário.');
+      return;
+    }
+
     const nowStr = new Date().toISOString();
     setLoadedSessionTime(audit.updatedAt);
     
     // Ensure exchanges are populated
     let initialExchanges = audit.exchanges;
     if (!initialExchanges || initialExchanges.length === 0) {
-      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === audit.routeMap.trim().toUpperCase());
+      const matchingRoute = importedRoutes.find(r => !r.deletedAt && r.routeMap.toUpperCase() === audit.routeMap.trim().toUpperCase());
       if (matchingRoute && matchingRoute.exchanges && matchingRoute.exchanges.length > 0) {
         initialExchanges = matchingRoute.exchanges;
       } else {
@@ -878,8 +928,28 @@ export default function ConferenteView({
     };
     
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === audit.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    if (!skipSave) {
+      updateAuditGuarded(
+        audit.id,
+        {
+          totalCountingDurationMs: accumulatedMs,
+          exchanges: initialExchanges,
+          assets: initialAssets,
+          ...(audit.isSuspended ? {} : { lastTimerStart: nowStr })
+        },
+        {
+          expectedStatus: ['em_aberto', 'reconferencia'],
+          actor: currentUser.name,
+          clearFields: audit.isSuspended ? ['lastTimerStart'] : []
+        }
+      ).catch((err) => {
+        if (isGuardConflictOrNotFound(err)) {
+          localStorage.removeItem('conferente_active_session_id');
+          setActiveSession(null);
+          alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+        }
+      });
+    }
   };
 
   const handleExitSession = () => {
@@ -1082,7 +1152,7 @@ export default function ConferenteView({
     });
   };
 
-  const handleStartNewSession = (e: React.FormEvent) => {
+  const handleStartNewSession = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!routeMap || !plate || !driverId || !arrivalKm) {
       alert('Por favor, preencha todos os campos obrigatórios (Mapa, Placa, Motorista e KM).');
@@ -1276,124 +1346,142 @@ export default function ConferenteView({
     const nowStr = new Date().toISOString();
     let sessionToActivate: AuditSession;
 
-    if (existingMemberAudit) {
-      const isReconferencia = existingMemberAudit.status === 'reconferencia';
-      sessionToActivate = {
-        ...existingMemberAudit,
-        routeMap: finalRouteMap,
-        unifiedMaps: unifiedMaps,
-        plate: finalPlate.toUpperCase(),
-        exchangePlate: exchangePlate.trim().toUpperCase() || existingMemberAudit.exchangePlate,
-        driverId: finalDriverId,
-        helperId: finalHelperId || existingMemberAudit.helperId,
-        arrivalKm: Number(arrivalKm) || existingMemberAudit.arrivalKm,
-        exchanges: initialExchanges.length > 0 ? initialExchanges : existingMemberAudit.exchanges,
-        status: isReconferencia ? 'reconferencia' : 'em_aberto',
-        history: [
-          ...(existingMemberAudit.history || []),
+    try {
+      if (existingMemberAudit) {
+        const isReconferencia = existingMemberAudit.status === 'reconferencia';
+        const expectedStatus: ('em_aberto' | 'reconferencia')[] = isReconferencia ? ['reconferencia'] : ['em_aberto'];
+        const unifyHistoryEntry = {
+          timestamp: nowStr,
+          action: 'Conferência Unificada',
+          user: currentUser.name,
+          details: `Mapas unificados na mesma conferência: ${finalRouteMap} (KM Chegada: ${arrivalKm})`
+        };
+
+        sessionToActivate = await updateAuditGuarded(
+          existingMemberAudit.id,
           {
-            timestamp: nowStr,
-            action: 'Conferência Unificada',
-            user: currentUser.name,
-            details: `Mapas unificados na mesma conferência: ${finalRouteMap} (KM Chegada: ${arrivalKm})`
+            routeMap: finalRouteMap,
+            unifiedMaps: unifiedMaps,
+            plate: finalPlate.toUpperCase(),
+            exchangePlate: exchangePlate.trim().toUpperCase() || existingMemberAudit.exchangePlate,
+            driverId: finalDriverId,
+            helperId: finalHelperId || existingMemberAudit.helperId,
+            arrivalKm: Number(arrivalKm) || existingMemberAudit.arrivalKm,
+            exchanges: initialExchanges.length > 0 ? initialExchanges : existingMemberAudit.exchanges
+          },
+          {
+            expectedStatus,
+            actor: currentUser.name,
+            appendHistoryEntry: unifyHistoryEntry
           }
-        ]
-      };
-
-      // Filter out duplicate member audits if any, and place updated session
-      const updatedAuditsList = audits.map(a => a.id === existingMemberAudit.id ? sessionToActivate : a)
-        .filter(a => {
-          if (a.id === sessionToActivate.id) return true;
-          const isOtherMemberDuplicate = (a.status === 'em_aberto' || a.status === 'reconferencia') &&
-            targetMapsUpper.includes(a.routeMap.toUpperCase());
-          return !isOtherMemberDuplicate;
-        });
-
-      onSaveAudits(updatedAuditsList);
-
-      if (onSaveImportedRoutes) {
-        const updatedRoutes = importedRoutes.map(r => {
-          const isMatched = r.routeMap.toUpperCase() === finalRouteMap ||
-            (targetMapsUpper.includes(r.routeMap.toUpperCase()));
-          if (isMatched) {
-            const newStatus: 'reconferir' | 'conferindo' = isReconferencia ? 'reconferir' : 'conferindo';
-            return { ...r, status: newStatus };
-          }
-          return r;
-        });
-        onSaveImportedRoutes(updatedRoutes);
-      }
-    } else {
-      const isBlitzRoute = targetMapsUpper.some(m => {
-        const mNorm = normalizeMapCode(m).toUpperCase();
-        const r = (importedRoutes || []).find(route =>
-          normalizeMapCode(route.routeMap).toUpperCase() === mNorm || route.routeMap.toUpperCase() === m
         );
-        return r?.isBlitz;
-      });
-      const primaryMatchedRoute = (importedRoutes || []).find(route =>
-        normalizeMapCode(route.routeMap).toUpperCase() === normalizeMapCode(finalRouteMap).toUpperCase() ||
-        route.routeMap.toUpperCase() === finalRouteMap.toUpperCase()
-      );
 
-      const newSession: AuditSession = {
-        id: 'aud_' + Date.now(),
-        routeMap: finalRouteMap,
-        unifiedMaps,
-        plate: finalPlate.toUpperCase(),
-        exchangePlate: exchangePlate.trim().toUpperCase() || undefined,
-        driverId: finalDriverId,
-        helperId: finalHelperId || undefined,
-        arrivalKm: Number(arrivalKm),
-        arrivalDate: new Date().toISOString().split('T')[0],
-        startTime: nowStr,
-        lastTimerStart: nowStr,
-        totalCountingDurationMs: 0,
-        isSuspended: false,
-        isBlitz: isBlitzRoute,
-        descarregamentoStatus: primaryMatchedRoute?.descarregamentoStatus,
-        unloadingStartTime: primaryMatchedRoute?.unloadingStartTime,
-        unloadingEndTime: primaryMatchedRoute?.unloadingEndTime,
-        dock: primaryMatchedRoute?.dock,
-        empilhadorId: primaryMatchedRoute?.empilhadorId,
-        empilhadorName: primaryMatchedRoute?.empilhadorName,
-        isPernoite: primaryMatchedRoute?.isPernoite,
-        totalPallets: primaryMatchedRoute?.totalPallets,
-        loadedPallets: primaryMatchedRoute?.loadedPallets,
-        unloadingNote: primaryMatchedRoute?.unloadingNote,
-        routeObservations: primaryMatchedRoute?.routeObservations,
-        status: 'em_aberto',
-        conferenteId: currentUser.id,
-        items: initialItems,
-        assets: initialAssets,
-        exchanges: initialExchanges,
-        history: [
-          {
-            timestamp: nowStr,
-            action: 'Conferência Física Iniciada',
-            user: currentUser.name,
-            details: `KM Chegada: ${arrivalKm}${unifiedMaps && unifiedMaps.length > 0 ? ` (Unificados: ${unifiedMaps.join(', ')})` : ''}`
-          }
-        ]
-      };
-      sessionToActivate = newSession;
-      onSaveAudits([newSession, ...audits]);
+        // Soft-delete duplicate drafts of other unified maps if any
+        const duplicateDraftIds = audits
+          .filter(a => {
+            if (a.id === sessionToActivate.id || a.deletedAt) return false;
+            return (a.status === 'em_aberto' || a.status === 'reconferencia') &&
+              targetMapsUpper.includes(a.routeMap.toUpperCase());
+          })
+          .map(a => a.id);
 
-      if (onSaveImportedRoutes) {
-        const updatedRoutes = importedRoutes.map(r => {
-          const isMatched = r.routeMap.toUpperCase() === finalRouteMap ||
-            (unifiedMaps && unifiedMaps.some(m => m.toUpperCase() === r.routeMap.toUpperCase()));
-          if (isMatched) {
-            return { ...r, status: 'conferindo' as const };
-          }
-          return r;
+        if (duplicateDraftIds.length > 0) {
+          await softDeleteMapCascade({
+            routeIds: [],
+            auditIds: duplicateDraftIds,
+            actor: currentUser.name,
+            logDetails: `Rascunhos unificados em ${finalRouteMap} (${sessionToActivate.id})`
+          });
+        }
+
+        const newRouteStatus: 'reconferir' | 'conferindo' = isReconferencia ? 'reconferir' : 'conferindo';
+        const matchedRoutes = importedRoutes.filter(r =>
+          !r.deletedAt &&
+          (r.routeMap.toUpperCase() === finalRouteMap || targetMapsUpper.includes(r.routeMap.toUpperCase())) &&
+          r.status !== 'fechado'
+        );
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, newRouteStatus, currentUser.name)));
+      } else {
+        const isBlitzRoute = targetMapsUpper.some(m => {
+          const mNorm = normalizeMapCode(m).toUpperCase();
+          const r = (importedRoutes || []).find(route =>
+            !route.deletedAt &&
+            (normalizeMapCode(route.routeMap).toUpperCase() === mNorm || route.routeMap.toUpperCase() === m)
+          );
+          return r?.isBlitz;
         });
-        onSaveImportedRoutes(updatedRoutes);
+        const primaryMatchedRoute = (importedRoutes || []).find(route =>
+          !route.deletedAt &&
+          (normalizeMapCode(route.routeMap).toUpperCase() === normalizeMapCode(finalRouteMap).toUpperCase() ||
+          route.routeMap.toUpperCase() === finalRouteMap.toUpperCase())
+        );
+
+        const newAuditId = 'aud_' + Date.now();
+        markLegitimateAuditCreation(newAuditId);
+
+        const newSession: AuditSession = {
+          id: newAuditId,
+          routeMap: finalRouteMap,
+          unifiedMaps,
+          plate: finalPlate.toUpperCase(),
+          exchangePlate: exchangePlate.trim().toUpperCase() || undefined,
+          driverId: finalDriverId,
+          helperId: finalHelperId || undefined,
+          arrivalKm: Number(arrivalKm),
+          arrivalDate: new Date().toISOString().split('T')[0],
+          startTime: nowStr,
+          lastTimerStart: nowStr,
+          totalCountingDurationMs: 0,
+          isSuspended: false,
+          isBlitz: isBlitzRoute,
+          descarregamentoStatus: primaryMatchedRoute?.descarregamentoStatus,
+          unloadingStartTime: primaryMatchedRoute?.unloadingStartTime,
+          unloadingEndTime: primaryMatchedRoute?.unloadingEndTime,
+          dock: primaryMatchedRoute?.dock,
+          empilhadorId: primaryMatchedRoute?.empilhadorId,
+          empilhadorName: primaryMatchedRoute?.empilhadorName,
+          isPernoite: primaryMatchedRoute?.isPernoite,
+          totalPallets: primaryMatchedRoute?.totalPallets,
+          loadedPallets: primaryMatchedRoute?.loadedPallets,
+          unloadingNote: primaryMatchedRoute?.unloadingNote,
+          routeObservations: primaryMatchedRoute?.routeObservations,
+          status: 'em_aberto',
+          conferenteId: currentUser.id,
+          items: initialItems,
+          assets: initialAssets,
+          exchanges: initialExchanges,
+          history: [
+            {
+              timestamp: nowStr,
+              action: 'Conferência Física Iniciada',
+              user: currentUser.name,
+              details: `KM Chegada: ${arrivalKm}${unifiedMaps && unifiedMaps.length > 0 ? ` (Unificados: ${unifiedMaps.join(', ')})` : ''}`
+            }
+          ]
+        };
+
+        justStartedSessionRef.current = { id: newAuditId, at: Date.now() };
+        sessionToActivate = await createAudit(newSession, currentUser.name);
+
+        const matchedRoutes = importedRoutes.filter(r =>
+          !r.deletedAt &&
+          r.status !== 'fechado' &&
+          (r.routeMap.toUpperCase() === finalRouteMap ||
+            (unifiedMaps && unifiedMaps.some(m => m.toUpperCase() === r.routeMap.toUpperCase())))
+        );
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'conferindo', currentUser.name)));
       }
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+      } else {
+        alert('Erro ao iniciar conferência: ' + (err?.message || 'Erro desconhecido'));
+      }
+      return;
     }
 
     setLoadedSessionTime(sessionToActivate.updatedAt || nowStr);
-    handleOpenSession(sessionToActivate);
+    handleOpenSession(sessionToActivate, true);
     
     // Clear form
     setRouteMap('');
@@ -1669,29 +1757,24 @@ export default function ConferenteView({
 
   const handleConfirmBlitz = () => {
     if (!activeSession) return;
-    
+
     const updatedSession: AuditSession = {
       ...activeSession,
       blitzBoxesChecked: 0,
       blitzAvariasFound: 0
     };
-    
-    // Update local state first
+
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
-    
-    // Hide the blitz modal
     setShowBlitzModal(false);
-    
-    // Now call the finalization routine
-    setTimeout(() => {
+
+    setTimeout(async () => {
       const isReconferindo = updatedSession.status === 'reconferencia';
+      const expectedStatus: ('em_aberto' | 'reconferencia')[] = isReconferindo ? ['reconferencia'] : ['em_aberto'];
       const now = new Date().toISOString();
-      const nextStatus = isReconferindo ? 'recontagem_finalizada' : 'conferido_fisico';
+      const nextStatus = isReconferindo ? ('recontagem_finalizada' as const) : ('conferido_fisico' as const);
       const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
-      const detailsText = isReconferindo 
-        ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova. Veículo em blitz.` 
+      const detailsText = isReconferindo
+        ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova. Veículo em blitz.`
         : `Aguardando validação fiscal. Veículo em blitz.`;
 
       let finalDurationMs = updatedSession.totalCountingDurationMs || 0;
@@ -1701,31 +1784,47 @@ export default function ConferenteView({
 
       const latestRemote = audits.find(a => a.id === activeSession.id);
       const baseWithRemoteMeta = mergeRemoteMetadata(updatedSession, latestRemote);
-      const finalizedSession: AuditSession = {
-        ...baseWithRemoteMeta,
-        items: getMergedFinalItems(baseWithRemoteMeta),
-        status: nextStatus,
-        reopeningRequested: false,
-        endTime: now,
-        lastTimerStart: undefined,
-        totalCountingDurationMs: finalDurationMs,
-        history: [
-          ...(baseWithRemoteMeta.history || []),
+      const mergedItems = getMergedFinalItems(baseWithRemoteMeta);
+
+      try {
+        await updateAuditGuarded(
+          activeSession.id,
           {
-            timestamp: now,
-            action: actionText,
-            user: currentUser.name,
-            details: detailsText
+            items: mergedItems,
+            assets: baseWithRemoteMeta.assets,
+            exchanges: baseWithRemoteMeta.exchanges,
+            refugos: baseWithRemoteMeta.refugos,
+            blitzBoxesChecked: 0,
+            blitzAvariasFound: 0,
+            status: nextStatus,
+            reopeningRequested: false,
+            endTime: now,
+            totalCountingDurationMs: finalDurationMs
+          },
+          {
+            expectedStatus,
+            actor: currentUser.name,
+            clearFields: ['lastTimerStart'],
+            appendHistoryEntry: {
+              timestamp: now,
+              action: actionText,
+              user: currentUser.name,
+              details: detailsText
+            }
           }
-        ]
-      };
+        );
+      } catch (err: any) {
+        if (isGuardConflictOrNotFound(err)) {
+          alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          setRefugoPhotos([]);
+          localStorage.removeItem('conferente_active_session_id');
+          setActiveSession(null);
+          return;
+        }
+        alert('Erro ao enviar conferência com blitz: ' + (err?.message || 'Erro desconhecido'));
+        return;
+      }
 
-      const finalAudits = audits.some(a => a.id === activeSession.id)
-        ? audits.map(a => a.id === activeSession.id ? finalizedSession : a)
-        : [finalizedSession, ...audits];
-      onSaveAudits(finalAudits);
-
-      // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor
       if (onSaveAlerts && fiscalAlerts) {
         const newAlert: FiscalAlert = {
           id: 'al_' + Date.now(),
@@ -1736,7 +1835,7 @@ export default function ConferenteView({
           read: false,
           readBy: [],
           title: isReconferindo ? 'Recontagem Finalizada (Blitz)' : 'Veículo Conferido (Blitz)',
-          message: isReconferindo 
+          message: isReconferindo
             ? `O conferente ${currentUser.name} finalizou a recontagem com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`
             : `O conferente ${currentUser.name} finalizou a conferência física com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
           targetRole: 'auxiliar_logistica',
@@ -1745,25 +1844,13 @@ export default function ConferenteView({
         onSaveAlerts([newAlert, ...fiscalAlerts]);
       }
 
-      // Update imported route status on client-side
-      if (onSaveImportedRoutes && importedRoutes) {
-        const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
-          ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
-          : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
-        const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
-
-        const updatedRoutes = importedRoutes.map(r => {
-          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-          const isMatched = rNorm === sessionMapNorm || targetMapCodes.includes(rNorm);
-          return isMatched ? { ...r, status: 'em_analise' as const } : r;
-        });
-        onSaveImportedRoutes(updatedRoutes);
+      if (importedRoutes && importedRoutes.length > 0) {
+        const matchedRoutes = importedRoutes.filter(r => doesAuditMatchRoute(updatedSession, r));
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
       }
 
-      // Show success feedback
       alert(`Conferência e Blitz finalizadas com sucesso! Rota ${activeSession.routeMap} enviada para conciliação fiscal.`);
-      
-      // Close session and remove saved active session
+
       setRefugoPhotos([]);
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
@@ -1775,11 +1862,7 @@ export default function ConferenteView({
     if (!activeSession) return;
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
-    const sessionMapNormBlitz = normalizeMapCode(activeSession.routeMap).toUpperCase();
-    const matchingRoute = importedRoutes.find(r =>
-      normalizeMapCode(r.routeMap).toUpperCase() === sessionMapNormBlitz ||
-      r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase()
-    );
+    const matchingRoute = importedRoutes.find(r => doesAuditMatchRoute(activeSession, r));
     if (matchingRoute?.isBlitz && activeSession.blitzBoxesChecked === undefined) {
       setBlitzBoxesChecked(10);
       setBlitzAvariasFound(0);
@@ -1788,6 +1871,7 @@ export default function ConferenteView({
     }
 
     const isReconferindo = activeSession.status === 'reconferencia';
+    const expectedStatus: ('em_aberto' | 'reconferencia')[] = isReconferindo ? ['reconferencia'] : ['em_aberto'];
 
     // If reconferência, photo is OBLIGATORY as proof for driver vales / confrontation
     if (isReconferindo && sessionPhotos.length === 0) {
@@ -1796,7 +1880,7 @@ export default function ConferenteView({
     }
 
     const now = new Date().toISOString();
-    const nextStatus = isReconferindo ? 'recontagem_finalizada' : 'conferido_fisico';
+    const nextStatus = isReconferindo ? ('recontagem_finalizada' as const) : ('conferido_fisico' as const);
     const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
     const detailsText = isReconferindo 
       ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova.` 
@@ -1834,30 +1918,44 @@ export default function ConferenteView({
 
     const latestRemoteFinish = audits.find(a => a.id === activeSession.id);
     const finishBaseWithMeta = mergeRemoteMetadata(activeSession, latestRemoteFinish);
-    const updatedSession: AuditSession = {
-      ...finishBaseWithMeta,
-      items: getMergedFinalItems(finishBaseWithMeta),
-      status: nextStatus,
-      reopeningRequested: false,
-      endTime: now,
-      lastTimerStart: undefined,
-      totalCountingDurationMs: finalDurationMs,
-      refugos: updatedRefugos,
-      history: [
-        ...(finishBaseWithMeta.history || []),
-        {
-          timestamp: now,
-          action: actionText,
-          user: currentUser.name,
-          details: detailsText
-        }
-      ]
-    };
+    const mergedItems = getMergedFinalItems(finishBaseWithMeta);
 
-    const updatedAudits = audits.some(a => a.id === activeSession.id)
-      ? audits.map(a => a.id === activeSession.id ? updatedSession : a)
-      : [updatedSession, ...audits];
-    onSaveAudits(updatedAudits);
+    try {
+      await updateAuditGuarded(
+        activeSession.id,
+        {
+          items: mergedItems,
+          assets: finishBaseWithMeta.assets,
+          exchanges: finishBaseWithMeta.exchanges,
+          refugos: updatedRefugos,
+          status: nextStatus,
+          reopeningRequested: false,
+          endTime: now,
+          totalCountingDurationMs: finalDurationMs
+        },
+        {
+          expectedStatus,
+          actor: currentUser.name,
+          clearFields: ['lastTimerStart'],
+          appendHistoryEntry: {
+            timestamp: now,
+            action: actionText,
+            user: currentUser.name,
+            details: detailsText
+          }
+        }
+      );
+    } catch (err: any) {
+      if (isGuardConflictOrNotFound(err)) {
+        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+        setRefugoPhotos([]);
+        localStorage.removeItem('conferente_active_session_id');
+        setActiveSession(null);
+        return;
+      }
+      alert('Erro ao enviar conferência física: ' + (err?.message || 'Erro desconhecido'));
+      return;
+    }
 
     // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor
     if (onSaveAlerts && fiscalAlerts) {
@@ -1879,19 +1977,10 @@ export default function ConferenteView({
       onSaveAlerts([newAlert, ...fiscalAlerts]);
     }
 
-    // Transition matching ImportedRoute to em_analise (green status)
-    if (onSaveImportedRoutes && importedRoutes) {
-      const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
-        ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
-        : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
-      const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
-
-      const updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const isMatched = rNorm === sessionMapNorm || targetMapCodes.includes(rNorm);
-        return isMatched ? { ...r, status: 'em_analise' as const } : r;
-      });
-      onSaveImportedRoutes(updatedRoutes);
+    // Transition matching ImportedRoute (by map + date) to em_analise
+    if (importedRoutes && importedRoutes.length > 0) {
+      const matchedRoutes = importedRoutes.filter(r => doesAuditMatchRoute(activeSession, r));
+      await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
     }
 
     alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
@@ -2311,17 +2400,13 @@ export default function ConferenteView({
     onSaveAlerts(updated);
   };
 
-  // Helper to determine if a route is closed based on audits
-  const isRouteClosedInAudits = (routeMap: string) => {
-    const norm = normalizeMapCode(routeMap).toUpperCase();
-    const upper = routeMap.trim().toUpperCase();
+  // Helper to determine if a route is closed based on audits (mapa + data + status)
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     return audits.some(a => {
-      const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-      const aUpper = a.routeMap.trim().toUpperCase();
-      const isMatch = aNorm === norm || aUpper === upper ||
-        (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
-      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      return isMatch && isFinished && !a.reopeningRequested;
+      if (a.deletedAt || isAuditDeletedId(a.id) || a.reopeningRequested) return false;
+      const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente';
+      if (!isFinished) return false;
+      return doesAuditMatchRoute(a, { routeMap, routeDate });
     });
   };
 
@@ -2349,30 +2434,22 @@ export default function ConferenteView({
 
     // 1. Process imported routes
     (importedRoutes || []).forEach(route => {
-      if (!route) return;
+      if (!route || route.deletedAt) return;
       const routeMapUpper = (route.routeMap || '').toUpperCase();
       const routeMapNorm = normalizeMapCode(route.routeMap || '').toUpperCase();
 
       const matchingAudit = (audits || []).find(a => {
-        if (!a) return false;
-        const aNorm = normalizeMapCode(a.routeMap || '').toUpperCase();
-        if (aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper) return true;
-        if (a.unifiedMaps) {
-          return a.unifiedMaps.some(m => normalizeMapCode(m || '').toUpperCase() === routeMapNorm || (m || '').toUpperCase() === routeMapUpper);
-        }
-        return false;
+        if (!a || a.deletedAt || isAuditDeletedId(a.id)) return false;
+        return doesAuditMatchRoute(a, route);
       });
 
       const isFinalizedInAudit = matchingAudit && (
         matchingAudit.status === 'finalizado_ok' || 
-        matchingAudit.status === 'finalizado_divergente' || 
-        (matchingAudit.status as string) === 'fechado' ||
-        (matchingAudit as any).pdfDownloaded === true || 
-        (matchingAudit as any).surplusFlowStatus === 'BAIXADO'
+        matchingAudit.status === 'finalizado_divergente'
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isRouteClosedInAudits(route.routeMap || '', route.routeDate) || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Only include routes that are truly open/pending for physical count
       if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {

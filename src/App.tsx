@@ -2,7 +2,31 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration } from './types';
 import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive } from './data';
 import { ImageDB } from './imageDb';
-import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, saveCollectionDiffsToFirestore, canonicalJson, getDocIdForCollection, CollectionDiff, deleteDocFromFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
+import {
+  isClientFirebaseActive,
+  fetchDirectlyFromFirestore,
+  saveDirectlyToFirestore,
+  saveCollectionDiffsToFirestore,
+  canonicalJson,
+  getDocIdForCollection,
+  CollectionDiff,
+  deleteDocFromFirestore,
+  subscribeToFirestore,
+  getClientAuthError,
+  getIsFirestoreQuotaExceeded,
+  setFirestoreQuotaExceeded,
+  getActiveFirebaseConfig,
+  switchActiveFirebaseConfig,
+  forceReconnect,
+  getDeletedAuditIds,
+  getDeletedRouteIds,
+  isAuditDeletedId,
+  isRouteDeletedId,
+  getRouteGeneration,
+  isLegitimateCreatedAudit,
+  isAllowedAuditStatusTransition,
+  doesAuditMatchRoute
+} from './clientFirebase';
 import Header from './components/Header';
 import ConferenteView from './components/ConferenteView';
 import FiscalView from './components/FiscalView';
@@ -24,6 +48,8 @@ export default function App() {
   const pendingUpdatesRef = useRef<any>({});
   const pendingDiffsRef = useRef<Record<string, { upsertMap: Map<string, any>; deleteSet: Set<string> }>>({});
   const pendingSnapshotDbRef = useRef<Record<string, any>>({});
+  const deletedAuditIdsRef = useRef<Set<string>>(getDeletedAuditIds());
+  const deletedRouteIdsRef = useRef<Set<string>>(getDeletedRouteIds());
   const latestCollectionRefs = useRef<Record<string, any[]>>({
     users: DEFAULT_USERS,
     drivers: [],
@@ -422,10 +448,13 @@ export default function App() {
         }
       }
 
-      for (const prevId of prevJsonById.keys()) {
-        if (!nextIds.has(prevId)) {
-          acc.upsertMap.delete(prevId);
-          acc.deleteSet.add(prevId);
+      const preventImplicitDiffDelete = refKey === 'audits' || refKey === 'importedRoutes';
+      if (!preventImplicitDiffDelete) {
+        for (const prevId of prevJsonById.keys()) {
+          if (!nextIds.has(prevId)) {
+            acc.upsertMap.delete(prevId);
+            acc.deleteSet.add(prevId);
+          }
         }
       }
 
@@ -604,15 +633,13 @@ export default function App() {
   const cleanImportedRoutes = (list: ImportedRoute[], currentAudits?: AuditSession[]): ImportedRoute[] => {
     if (!list) return [];
     const now = new Date().toISOString();
-    const effectiveAudits = currentAudits || audits || [];
-    return list.filter(Boolean).map(r => {
-      const normMap = normalizeMapCode(r.routeMap).toUpperCase();
+    const effectiveAudits = (currentAudits || audits || []).filter(a => a && !a.deletedAt && !isAuditDeletedId(a.id));
+    return list.filter(r => r && !r.deletedAt && !isRouteDeletedId(r.id)).map(r => {
       const isClosedByAudit = effectiveAudits.some(a => {
-        if (a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-        const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopened;
-        return matches && isCompleted;
+        if (a.reopeningRequested) return false;
+        const isCompleted = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente';
+        if (!isCompleted) return false;
+        return doesAuditMatchRoute(a, r);
       });
 
       return {
@@ -657,11 +684,9 @@ export default function App() {
       case 'finalizado_ok':
       case 'finalizado_divergente': return 4;
       case 'recontagem_finalizada':
-      case 'sobra_alinhada':
       case 'conferido_fisico': return 3;
-      case 'conferindo':
-      case 'recontagem_solicitada': return 2;
-      case 'pendente':
+      case 'reconferencia': return 2;
+      case 'em_aberto':
       default: return 1;
     }
   };
@@ -1219,21 +1244,87 @@ export default function App() {
   const handleSaveAudits = (newAudits: AuditSession[]) => {
     const timestamp = new Date().toISOString();
     const prevAudits = (latestCollectionRefs.current.audits as AuditSession[]) || audits;
-    const updatedAudits = newAudits.map(newAudit => {
-      const oldAudit = prevAudits.find(a => a.id === newAudit.id);
-      const oldFunctional = oldAudit ? { ...oldAudit, updatedAt: undefined, lastUpdatedBy: undefined } : null;
-      const newFunctional = { ...newAudit, updatedAt: undefined, lastUpdatedBy: undefined };
-      if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
-        return {
-          ...newAudit,
-          updatedAt: timestamp,
-          lastUpdatedBy: currentUser?.name || 'Sistema'
-        };
+    const prevById = new Map<string, AuditSession>();
+    prevAudits.forEach(a => {
+      if (a && a.id && !deletedAuditIdsRef.current.has(a.id) && !a.deletedAt) {
+        prevById.set(a.id, a);
       }
-      return newAudit;
     });
 
-    const cleaned = cleanAudits(updatedAudits);
+    const guardedList: AuditSession[] = [];
+    const seenIds = new Set<string>();
+
+    for (const candidate of newAudits || []) {
+      if (!candidate || !candidate.id) continue;
+      if (deletedAuditIdsRef.current.has(candidate.id) || isAuditDeletedId(candidate.id) || candidate.deletedAt) {
+        console.warn(`[Fase 1 Guard] Auditoria excluída ignorada em handleSaveAudits: ${candidate.id} (mapa ${candidate.routeMap})`);
+        continue;
+      }
+
+      const prev = prevById.get(candidate.id);
+      if (!prev) {
+        if (!isLegitimateCreatedAudit(candidate.id)) {
+          console.warn(`[Fase 1 Guard] Bloqueada criação implícita de auditoria inexistente fora de createAudit(): ${candidate.id} (mapa ${candidate.routeMap})`);
+          continue;
+        }
+        seenIds.add(candidate.id);
+        guardedList.push({
+          ...candidate,
+          updatedAt: candidate.updatedAt || timestamp,
+          lastUpdatedBy: candidate.lastUpdatedBy || currentUser?.name || 'Sistema'
+        });
+        continue;
+      }
+
+      // Verificar geração para impedir sobrescrita por estado antigo
+      if (
+        candidate.generation !== undefined &&
+        prev.generation !== undefined &&
+        candidate.generation < prev.generation
+      ) {
+        console.warn(`[Fase 1 Guard] Bloqueada sobrescrita por geração menor em auditoria ${candidate.id} (${candidate.generation} < ${prev.generation})`);
+        seenIds.add(prev.id);
+        guardedList.push(prev);
+        continue;
+      }
+
+      // Validar transição de status permitida a partir do último estado conhecido
+      if (
+        !isAllowedAuditStatusTransition(prev.status, candidate.status, {
+          prevReopenCycle: prev.reopenCycle,
+          nextReopenCycle: candidate.reopenCycle
+        })
+      ) {
+        console.warn(`[Fase 1 Guard] Bloqueada transição inválida de status em ${candidate.id} (mapa ${candidate.routeMap}): ${prev.status} -> ${candidate.status}`);
+        seenIds.add(prev.id);
+        guardedList.push(prev);
+        continue;
+      }
+
+      seenIds.add(candidate.id);
+      const oldFunctional = { ...prev, updatedAt: undefined, lastUpdatedBy: undefined };
+      const newFunctional = { ...candidate, updatedAt: undefined, lastUpdatedBy: undefined };
+      if (JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
+        guardedList.push({
+          ...candidate,
+          updatedAt: timestamp,
+          lastUpdatedBy: currentUser?.name || 'Sistema'
+        });
+      } else {
+        guardedList.push(prev);
+      }
+    }
+
+    // Preservar auditorias existentes no último estado remoto caso um closure antigo tenha omitido itens recentes
+    for (const prev of prevAudits) {
+      if (!prev || !prev.id) continue;
+      if (deletedAuditIdsRef.current.has(prev.id) || isAuditDeletedId(prev.id) || prev.deletedAt) continue;
+      if (!seenIds.has(prev.id)) {
+        guardedList.push(prev);
+      }
+    }
+
+    const cleaned = cleanAudits(guardedList);
     setAudits(cleaned);
     pushDatabaseToServer({ audits: cleaned });
   };
@@ -1253,25 +1344,73 @@ export default function App() {
     const timestamp = new Date().toISOString();
     const prevRoutes = (latestCollectionRefs.current.importedRoutes as ImportedRoute[]) || importedRoutes;
     const currentAudits = (latestCollectionRefs.current.audits as AuditSession[]) || audits;
-    const updatedRoutes = newRoutes.map(newRoute => {
-      const newMapKey = normalizeMapCode(newRoute.routeMap).toUpperCase();
-      const newDate = newRoute.routeDate || '';
-      const oldRoute = prevRoutes.find(r => 
-        normalizeMapCode(r.routeMap).toUpperCase() === newMapKey &&
-        (r.routeDate || '') === newDate
-      );
-      const oldFunctional = oldRoute ? { ...oldRoute, updatedAt: undefined } : null;
-      const newFunctional = { ...newRoute, updatedAt: undefined };
-      if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
-        return {
-          ...newRoute,
-          updatedAt: timestamp
-        };
-      }
-      return newRoute;
+
+    const prevByDocId = new Map<string, ImportedRoute>();
+    prevRoutes.forEach(r => {
+      if (!r || r.deletedAt || isRouteDeletedId(r.id)) return;
+      const dId = getDocIdForCollection('importedRoutes', r);
+      prevByDocId.set(dId, r);
     });
 
-    const cleaned = cleanImportedRoutes(updatedRoutes, currentAudits);
+    const guardedRoutes: ImportedRoute[] = [];
+    const seenDocIds = new Set<string>();
+
+    for (const candidate of newRoutes || []) {
+      if (!candidate) continue;
+      const docId = getDocIdForCollection('importedRoutes', candidate);
+      if (deletedRouteIdsRef.current.has(docId) || isRouteDeletedId(docId) || candidate.deletedAt) {
+        console.warn(`[Fase 1 Guard] Rota excluída ignorada em handleSaveImportedRoutes: ${docId}`);
+        continue;
+      }
+
+      const knownGen = getRouteGeneration(docId);
+      const prev = prevByDocId.get(docId);
+      const effectiveMinGen = Math.max(knownGen, Number(prev?.generation || 1));
+
+      if (candidate.generation !== undefined && candidate.generation < effectiveMinGen) {
+        console.warn(`[Fase 1 Guard] Bloqueada gravação com generation menor em rota ${docId} (${candidate.generation} < ${effectiveMinGen})`);
+        if (prev) {
+          seenDocIds.add(docId);
+          guardedRoutes.push(prev);
+        }
+        continue;
+      }
+
+      seenDocIds.add(docId);
+      if (!prev) {
+        guardedRoutes.push({
+          ...candidate,
+          id: docId,
+          generation: candidate.generation || effectiveMinGen,
+          updatedAt: candidate.updatedAt || timestamp,
+          lastUpdatedBy: candidate.lastUpdatedBy || currentUser?.name || 'Sistema'
+        });
+      } else {
+        const oldFunctional = { ...prev, updatedAt: undefined, lastUpdatedBy: undefined };
+        const newFunctional = { ...candidate, updatedAt: undefined, lastUpdatedBy: undefined };
+        if (JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
+          guardedRoutes.push({
+            ...candidate,
+            id: docId,
+            generation: candidate.generation || prev.generation || effectiveMinGen,
+            updatedAt: timestamp,
+            lastUpdatedBy: currentUser?.name || 'Sistema'
+          });
+        } else {
+          guardedRoutes.push(prev);
+        }
+      }
+    }
+
+    // Preservar rotas não excluídas que não estavam no closure local antigo
+    for (const [docId, prev] of prevByDocId.entries()) {
+      if (deletedRouteIdsRef.current.has(docId) || isRouteDeletedId(docId)) continue;
+      if (!seenDocIds.has(docId)) {
+        guardedRoutes.push(prev);
+      }
+    }
+
+    const cleaned = cleanImportedRoutes(guardedRoutes, currentAudits);
     setImportedRoutes(cleaned);
     pushDatabaseToServer({ importedRoutes: cleaned });
   };
