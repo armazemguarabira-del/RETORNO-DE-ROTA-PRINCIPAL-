@@ -484,9 +484,15 @@ async function startServer() {
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
     sseClients.add(res);
-    res.write(`data: ${JSON.stringify({ db: currentDb })}
+    if (req.query.includeDb === "1") {
+      res.write(`data: ${JSON.stringify({ db: currentDb })}
 
 `);
+    } else {
+      res.write(`data: ${JSON.stringify({ connected: true })}
+
+`);
+    }
     const heartbeat = setInterval(() => {
       try {
         res.write(": heartbeat\n\n");
