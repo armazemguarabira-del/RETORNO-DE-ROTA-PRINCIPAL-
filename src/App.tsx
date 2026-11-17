@@ -17,7 +17,7 @@ import {
   setFirestoreQuotaExceeded,
   getActiveFirebaseConfig,
   switchActiveFirebaseConfig,
-  forceReconnect,
+  ensureFirestoreConnected,
   getDeletedAuditIds,
   getDeletedRouteIds,
   isAuditDeletedId,
@@ -45,6 +45,8 @@ import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2
 
 export default function App() {
   const lastWriteTime = useRef<number>(0);
+  const lastWriteTimeByColRef = useRef<Record<string, number>>({});
+  const cachedJsonByColRef = useRef<Record<string, Map<string, string>>>({});
   const pendingUpdatesRef = useRef<any>({});
   const pendingDiffsRef = useRef<Record<string, { upsertMap: Map<string, any>; deleteSet: Set<string> }>>({});
   const pendingSnapshotDbRef = useRef<Record<string, any>>({});
@@ -252,8 +254,7 @@ export default function App() {
         return;
       }
       if (document.visibilityState === 'visible') {
-        console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real com Firestore...');
-        forceReconnect();
+        ensureFirestoreConnected();
         // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
         if (!isClientFirebaseActive()) {
           fetch('/api/db')
@@ -419,17 +420,25 @@ export default function App() {
     blitzEntries?: BlitzRefugoEntry[];
     zeroBreakDeclarations?: ZeroBreakDeclaration[];
   }) => {
-    lastWriteTime.current = Date.now();
+    const nowWriteTs = Date.now();
+    lastWriteTime.current = nowWriteTs;
+    const useFirebase = isClientFirebaseActive();
 
-    // Compute exact per-document diffs against the last known state of each updated collection
+    // Compute exact per-document diffs against the last known state of each updated collection (with O(1) ref fast-path)
     const recordCollectionDiff = (refKey: string, nextItems: any[]) => {
+      lastWriteTimeByColRef.current[refKey] = nowWriteTs;
       const prevItems = latestCollectionRefs.current[refKey] || [];
-      const prevJsonById = new Map<string, string>();
+      const prevById = new Map<string, any>();
       for (const prevItem of prevItems) {
         if (!prevItem) continue;
         const docId = getDocIdForCollection(refKey, prevItem);
-        prevJsonById.set(docId, canonicalJson(prevItem));
+        prevById.set(docId, prevItem);
       }
+
+      if (!cachedJsonByColRef.current[refKey]) {
+        cachedJsonByColRef.current[refKey] = new Map<string, string>();
+      }
+      const jsonCache = cachedJsonByColRef.current[refKey];
 
       const nextIds = new Set<string>();
       if (!pendingDiffsRef.current[refKey]) {
@@ -441,19 +450,34 @@ export default function App() {
         if (!nextItem) continue;
         const docId = getDocIdForCollection(refKey, nextItem);
         nextIds.add(docId);
+
+        const prevItem = prevById.get(docId);
+        // Fast-path: se a referência do objeto não mudou, o documento está idêntico
+        if (prevItem === nextItem && jsonCache.has(docId)) {
+          continue;
+        }
+
+        let prevJson = jsonCache.get(docId);
+        if (prevJson === undefined && prevItem) {
+          prevJson = canonicalJson(prevItem);
+          jsonCache.set(docId, prevJson);
+        }
+
         const nextJson = canonicalJson(nextItem);
-        if (prevJsonById.get(docId) !== nextJson) {
+        if (prevJson !== nextJson) {
           acc.upsertMap.set(docId, nextItem);
           acc.deleteSet.delete(docId);
+          jsonCache.set(docId, nextJson);
         }
       }
 
       const preventImplicitDiffDelete = refKey === 'audits' || refKey === 'importedRoutes';
       if (!preventImplicitDiffDelete) {
-        for (const prevId of prevJsonById.keys()) {
+        for (const prevId of prevById.keys()) {
           if (!nextIds.has(prevId)) {
             acc.upsertMap.delete(prevId);
             acc.deleteSet.add(prevId);
+            jsonCache.delete(prevId);
           }
         }
       }
@@ -480,18 +504,26 @@ export default function App() {
       recordCollectionDiff('carregamentoProcesses', nextCarreg);
     }
 
-    // Accumulate updates for /api/db fallback
-    pendingUpdatesRef.current = {
-      ...pendingUpdatesRef.current,
-      ...updates
-    };
+    // Só acumula arrays completos para /api/db se o Firestore não estiver ativo
+    if (!useFirebase) {
+      pendingUpdatesRef.current = {
+        ...pendingUpdatesRef.current,
+        ...updates
+      };
+    } else if (typeof updates.customManual === 'string') {
+      lastWriteTimeByColRef.current.customManual = nowWriteTs;
+      pendingUpdatesRef.current = {
+        ...pendingUpdatesRef.current,
+        customManual: updates.customManual
+      };
+    }
 
     // Clear previous timeout to debounce the server call
     if (pushTimeoutRef.current) {
       clearTimeout(pushTimeoutRef.current);
     }
 
-    // Flush quickly (150ms) so multi-collection actions inside one click are batched cleanly without lag
+    // Flush rápido (50ms) para agrupar ações do mesmo clique mantendo resposta imediata entre usuários
     pushTimeoutRef.current = setTimeout(async () => {
       const payload = { ...pendingUpdatesRef.current };
       pendingUpdatesRef.current = {};
@@ -546,31 +578,30 @@ export default function App() {
         };
 
         if (isClientFirebaseActive()) {
-          let fsSuccess = false;
+          // Firestore é a fonte da verdade em tempo real: gravar apenas diffs no Firestore, sem bloquear em POST /api/db com arrays inteiros
           try {
-            fsSuccess = await saveCollectionDiffsToFirestore(diffsSnapshot, customManualVal);
+            success = await saveCollectionDiffsToFirestore(diffsSnapshot, customManualVal);
           } catch (err) {
             console.warn('[ClientFirebase] Erro ao sincronizar diffs com o Firestore:', err);
+            success = false;
           }
-
-          let srvSuccess = false;
-          try {
-            srvSuccess = await saveToServer(payload);
-          } catch (err) {
-            // Expected fallback on static hosts like GitHub Pages
-          }
-
-          success = fsSuccess || srvSuccess;
         } else {
           success = await saveToServer(payload);
         }
 
         if (!success) {
           console.error('Failed to push batched database updates to server after all attempts.');
-          pendingUpdatesRef.current = {
-            ...payload,
-            ...pendingUpdatesRef.current
-          };
+          if (!isClientFirebaseActive()) {
+            pendingUpdatesRef.current = {
+              ...payload,
+              ...pendingUpdatesRef.current
+            };
+          } else if (customManualVal !== undefined) {
+            pendingUpdatesRef.current = {
+              ...pendingUpdatesRef.current,
+              customManual: customManualVal
+            };
+          }
           for (const [k, d] of Object.entries(diffsSnapshot)) {
             if (!pendingDiffsRef.current[k]) {
               pendingDiffsRef.current[k] = { upsertMap: new Map<string, any>(), deleteSet: new Set<string>() };
@@ -595,7 +626,7 @@ export default function App() {
           }
         }
       }
-    }, 150);
+    }, 50);
   };
 
   // Helper to repair missing or broken product descriptions
@@ -694,9 +725,8 @@ export default function App() {
   const applyDirectDb = (db: any, bypassCooldown: boolean = false) => {
     if (!db) return;
 
-    // Protection: If a local write was performed in the last 1.5 seconds, defer remote override to protect local user inputs/imports
-    if (!bypassCooldown && Date.now() - lastWriteTime.current < 1500) {
-      console.log("[AppSync] Ignorando atualização remota temporariamente para proteger escrita local recente.");
+    // Proteção curta (apenas quando não está usando Firestore com cooldown por coleção)
+    if (!bypassCooldown && !isClientFirebaseActive() && Date.now() - lastWriteTime.current < 400) {
       return;
     }
 
@@ -961,14 +991,33 @@ export default function App() {
       if (isClientFirebaseActive()) {
         console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore (Plano Blaze)...");
         unsubscribe = subscribeToFirestore((db) => {
-          // If there was a recent local write on this client, accumulate snapshot updates per collection
-          // so rapid multi-collection snapshots are NEVER dropped during cooldown
-          const elapsed = Date.now() - lastWriteTime.current;
-          if (elapsed < 1500) {
-            pendingSnapshotDbRef.current = {
-              ...pendingSnapshotDbRef.current,
-              ...db,
-            };
+          // Aplica imediatamente todas as coleções que NÃO estão no meio de uma escrita local nos últimos 250ms;
+          // apenas coleções com escrita local ativa aguardam o flush curto (máx 250ms) para evitar oscilações.
+          const nowTs = Date.now();
+          const immediateDb: Record<string, any> = {};
+          let maxRemainingCooldown = 0;
+
+          for (const [colKey, val] of Object.entries(db)) {
+            const lastColWrite = lastWriteTimeByColRef.current[colKey] || 0;
+            const elapsedCol = nowTs - lastColWrite;
+            const hasPendingLocalFlush = Boolean(pendingDiffsRef.current[colKey]?.upsertMap?.size || pendingDiffsRef.current[colKey]?.deleteSet?.size);
+            if (hasPendingLocalFlush || elapsedCol < 250) {
+              pendingSnapshotDbRef.current[colKey] = val;
+              const rem = hasPendingLocalFlush ? 100 : Math.max(40, 250 - elapsedCol);
+              if (rem > maxRemainingCooldown) maxRemainingCooldown = rem;
+            } else {
+              if (colKey in pendingSnapshotDbRef.current) {
+                delete pendingSnapshotDbRef.current[colKey];
+              }
+              immediateDb[colKey] = val;
+            }
+          }
+
+          if (Object.keys(immediateDb).length > 0) {
+            applyDirectDb(immediateDb, true);
+          }
+
+          if (maxRemainingCooldown > 0) {
             if (pendingSnapshotTimeout) clearTimeout(pendingSnapshotTimeout);
             pendingSnapshotTimeout = setTimeout(() => {
               pendingSnapshotTimeout = null;
@@ -977,20 +1026,8 @@ export default function App() {
               if (Object.keys(mergedDb).length > 0) {
                 applyDirectDb(mergedDb, true);
               }
-            }, Math.max(150, 1550 - elapsed));
-            return;
+            }, maxRemainingCooldown);
           }
-          if (Object.keys(pendingSnapshotDbRef.current).length > 0) {
-            const mergedDb = { ...pendingSnapshotDbRef.current, ...db };
-            pendingSnapshotDbRef.current = {};
-            if (pendingSnapshotTimeout) {
-              clearTimeout(pendingSnapshotTimeout);
-              pendingSnapshotTimeout = null;
-            }
-            applyDirectDb(mergedDb, true);
-            return;
-          }
-          applyDirectDb(db);
         });
       }
     };
@@ -1031,8 +1068,8 @@ export default function App() {
     let reconnectTimeout: any = null;
 
     const connectSSE = () => {
-      console.log("Conectando ao canal de sincronização de eventos do servidor (SSE)...");
-      eventSource = new EventSource('/api/db/events');
+      const sseUrl = isClientFirebaseActive() ? '/api/db/events' : '/api/db/events?includeDb=1';
+      eventSource = new EventSource(sseUrl);
 
       eventSource.onmessage = (event) => {
         try {
@@ -1302,6 +1339,10 @@ export default function App() {
       }
 
       seenIds.add(candidate.id);
+      if (prev === candidate) {
+        guardedList.push(prev);
+        continue;
+      }
       const oldFunctional = { ...prev, updatedAt: undefined, lastUpdatedBy: undefined };
       const newFunctional = { ...candidate, updatedAt: undefined, lastUpdatedBy: undefined };
       if (JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
@@ -1385,6 +1426,8 @@ export default function App() {
           updatedAt: candidate.updatedAt || timestamp,
           lastUpdatedBy: candidate.lastUpdatedBy || currentUser?.name || 'Sistema'
         });
+      } else if (prev === candidate) {
+        guardedRoutes.push(prev);
       } else {
         const oldFunctional = { ...prev, updatedAt: undefined, lastUpdatedBy: undefined };
         const newFunctional = { ...candidate, updatedAt: undefined, lastUpdatedBy: undefined };

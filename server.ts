@@ -525,8 +525,12 @@ async function startServer() {
 
     sseClients.add(res);
 
-    // Initial state push
-    res.write(`data: ${JSON.stringify({ db: currentDb })}\n\n`);
+    // Initial state push only when requested (non-Firestore fallback mode)
+    if (req.query.includeDb === '1') {
+      res.write(`data: ${JSON.stringify({ db: currentDb })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({ connected: true })}\n\n`);
+    }
 
     // Heartbeat every 15s to keep connection open
     const heartbeat = setInterval(() => {

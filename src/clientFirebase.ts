@@ -1680,6 +1680,29 @@ export function forceReconnect(): void {
   subscribeToFirestore(activeOnUpdateCallback);
 }
 
+/**
+ * Garante que os listeners estão ativos ao voltar para a aba sem destruir
+ * conexões saudáveis (evita re-download completo de todas as coleções ao trocar de aba).
+ */
+export function ensureFirestoreConnected(): void {
+  if (!activeOnUpdateCallback) return;
+  const activeCount = Object.keys(activeUnsubscribes).length;
+  const isStale = lastSuccessfulSyncTime > 0 && (Date.now() - lastSuccessfulSyncTime > 180000);
+  if (activeCount < TRACKED_COLLECTIONS.length || isStale) {
+    forceReconnect();
+  }
+}
+
+let lastSyncEventDispatchedAt = 0;
+function emitSyncedEventThrottled() {
+  if (typeof window === "undefined") return;
+  const now = Date.now();
+  if (now - lastSyncEventDispatchedAt >= 1000) {
+    lastSyncEventDispatchedAt = now;
+    window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
+  }
+}
+
 let g1163RestorePromise: Promise<boolean> | null = null;
 let g1163RestoreCompleted = false;
 let g1163ShouldKeepFallback = true;
@@ -1795,9 +1818,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
           if (myGeneration !== reconnectGeneration) return;
           resetCollectionRetryState(colName);
           markSyncSuccess();
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
-          }
+          emitSyncedEventThrottled();
           if (docSnap.exists()) {
             const data = docSnap.data();
             combinedDb.customManual = data.html || data.content || "";
@@ -1816,13 +1837,48 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
         activeUnsubscribes[colName] = unsub;
       } else {
         const collRef = collection(db, colName);
+        const itemsById = new Map<string, any>();
+        let isInitialized = false;
+
+        const normalizeDocForCol = (docId: string, data: any) => {
+          const itemWithId = { ...data, id: docId };
+          if (colName === "audits") {
+            latestAuditMetaById.set(docId, {
+              status: data.status,
+              rev: Number(data.rev || 0),
+              generation: Number(data.generation || 1),
+              reopenCycle: Number(data.reopenCycle || 0),
+              deletedAt: data.deletedAt
+            });
+            if (data.deletedAt) {
+              deletedAuditIds.add(docId);
+            } else {
+              deletedAuditIds.delete(docId);
+            }
+            return {
+              ...itemWithId,
+              items: Array.isArray(data.items) ? data.items : [],
+              assets: Array.isArray(data.assets) ? data.assets : [],
+              history: Array.isArray(data.history) ? data.history : [],
+              unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
+            };
+          }
+          if (colName === "importedRoutes") {
+            latestRouteGenerationById.set(docId, Number(data.generation || 1));
+            if (data.deletedAt) {
+              deletedRouteIds.add(docId);
+            } else {
+              deletedRouteIds.delete(docId);
+            }
+          }
+          return itemWithId;
+        };
+
         const unsub = onSnapshot(collRef, (snapshot) => {
           if (myGeneration !== reconnectGeneration) return;
           resetCollectionRetryState(colName);
           markSyncSuccess();
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: lastSuccessfulSyncTime } }));
-          }
+          emitSyncedEventThrottled();
 
           // Seed defaults directly to Firestore ONLY if primary static collections are completely empty and confirmed by server (not local cache)
           if (!snapshot.metadata.fromCache && snapshot.empty && (colName === "users" || colName === "drivers" || colName === "vehicles" || colName === "products" || colName === "activeAssets")) {
@@ -1860,59 +1916,52 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
 
-          const currentServerIds = new Set<string>();
-          const rawItems = snapshot.docs.map((d) => {
-            const data = d.data();
-            const docId = d.id;
-            currentServerIds.add(docId);
-            const itemWithId = { ...data, id: docId };
-            colCache.set(docId, canonicalJson(itemWithId));
-
-            if (colName === "audits") {
-              latestAuditMetaById.set(docId, {
-                status: data.status,
-                rev: Number(data.rev || 0),
-                generation: Number(data.generation || 1),
-                reopenCycle: Number(data.reopenCycle || 0),
-                deletedAt: data.deletedAt
-              });
-              if (data.deletedAt) {
-                deletedAuditIds.add(docId);
-              } else {
-                deletedAuditIds.delete(docId);
+          if (!isInitialized) {
+            isInitialized = true;
+            itemsById.clear();
+            const currentServerIds = new Set<string>();
+            for (const d of snapshot.docs) {
+              const data = d.data();
+              const docId = d.id;
+              currentServerIds.add(docId);
+              colCache.set(docId, canonicalJson({ ...data, id: docId }));
+              const normalized = normalizeDocForCol(docId, data);
+              if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
+                continue;
               }
-              return {
-                ...itemWithId,
-                items: Array.isArray(data.items) ? data.items : [],
-                assets: Array.isArray(data.assets) ? data.assets : [],
-                history: Array.isArray(data.history) ? data.history : [],
-                unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
-              };
+              itemsById.set(docId, normalized);
             }
-
-            if (colName === "importedRoutes") {
-              latestRouteGenerationById.set(docId, Number(data.generation || 1));
-              if (data.deletedAt) {
-                deletedRouteIds.add(docId);
-              } else {
-                deletedRouteIds.delete(docId);
+            for (const cachedId of Array.from(colCache.keys())) {
+              if (!currentServerIds.has(cachedId)) {
+                colCache.delete(cachedId);
               }
             }
-
-            return itemWithId;
-          });
-
-          // Filtrar tombstones (deletedAt) antes de entregar ao React (Audits & ImportedRoutes)
-          const items = (colName === "audits" || colName === "importedRoutes")
-            ? rawItems.filter((it: any) => !it.deletedAt)
-            : rawItems;
-
-          // Clean up cache for physically deleted docs
-          for (const cachedId of Array.from(colCache.keys())) {
-            if (!currentServerIds.has(cachedId)) {
-              colCache.delete(cachedId);
+          } else {
+            const changes = snapshot.docChanges();
+            if (changes.length === 0) {
+              return;
+            }
+            for (const change of changes) {
+              const docId = change.doc.id;
+              if (change.type === "removed") {
+                itemsById.delete(docId);
+                colCache.delete(docId);
+                if (colName === "audits") latestAuditMetaById.delete(docId);
+                if (colName === "importedRoutes") latestRouteGenerationById.delete(docId);
+              } else {
+                const data = change.doc.data();
+                colCache.set(docId, canonicalJson({ ...data, id: docId }));
+                const normalized = normalizeDocForCol(docId, data);
+                if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
+                  itemsById.delete(docId);
+                } else {
+                  itemsById.set(docId, normalized);
+                }
+              }
             }
           }
+
+          const items = Array.from(itemsById.values());
 
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;
