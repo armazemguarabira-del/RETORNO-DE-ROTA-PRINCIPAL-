@@ -3094,24 +3094,46 @@ export default function FiscalView({
     // Must be in conferido_fisico or recontagem_finalizada
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
 
-    // Check if matching route (same map & matching date) is already closed/finalized
-    const isRouteClosedInImports = importedRoutes.some(r =>
+    // Se existir alguma rota ainda aberta/em análise para esta auditoria na mesma data, não oculta
+    const hasOpenMatchingRoute = importedRoutes.some(r =>
       !r.deletedAt &&
       !isRouteDeletedId(r.id) &&
-      r.status === 'fechado' &&
-      doesAuditMatchRoute(a, r)
+      r.status !== 'fechado' &&
+      doesAuditMatchRoute(a, r, { strictSameDate: true })
     );
+
+    // Check if matching route (mesma data exata ou fechada após o início desta auditoria) is already closed/finalized
+    const isRouteClosedInImports = !hasOpenMatchingRoute && importedRoutes.some(r => {
+      if (r.deletedAt || isRouteDeletedId(r.id) || r.status !== 'fechado') return false;
+      if (doesAuditMatchRoute(a, r, { strictSameDate: true })) {
+        return true;
+      }
+      if (doesAuditMatchRoute(a, r)) {
+        const routeUpdatedAt = r.updatedAt || '';
+        const auditStart = a.startTime || '';
+        return Boolean(routeUpdatedAt && auditStart && routeUpdatedAt >= auditStart);
+      }
+      return false;
+    });
     if (isRouteClosedInImports) return false;
 
-    // Check if another audit session for the same map AND same arrivalDate is already finished
+    // Check if another audit session for the same map AND same day is already finished
+    const getAuditDay = (session: AuditSession) =>
+      session.arrivalDate ||
+      (session.startTime ? session.startTime.slice(0, 10) : '') ||
+      (session.endTime ? session.endTime.slice(0, 10) : '');
+
     const normMap = normalizeMapCode(a.routeMap).toUpperCase();
+    const aDay = getAuditDay(a);
     const isAuditClosedInOthers = audits.some(other => {
       if (!other || other.id === a.id || other.deletedAt || isAuditDeletedId(other.id) || other.reopeningRequested) return false;
       const otherNorm = normalizeMapCode(other.routeMap).toUpperCase();
       const isMapMatch = otherNorm === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-      const sameDate = !a.arrivalDate || !other.arrivalDate || other.arrivalDate === a.arrivalDate;
+      if (!isMapMatch) return false;
+      const oDay = getAuditDay(other);
+      const sameDate = Boolean(aDay && oDay && oDay === aDay);
       const isFinished = other.status === 'finalizado_ok' || other.status === 'finalizado_divergente';
-      return isMapMatch && sameDate && isFinished;
+      return sameDate && isFinished;
     });
     if (isAuditClosedInOthers) return false;
 

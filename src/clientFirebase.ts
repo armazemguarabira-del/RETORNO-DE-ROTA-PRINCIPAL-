@@ -17,7 +17,8 @@ import {
   runTransaction,
   updateDoc,
   increment,
-  deleteField
+  deleteField,
+  enableNetwork
 } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import firebaseConfig from "../firebase-applet-config.json";
@@ -261,6 +262,51 @@ export function isLegitimateCreatedAudit(auditId: string): boolean {
   return Boolean(auditId && legitimateCreatedAuditIds.has(auditId));
 }
 
+// Coordenação entre gravações transacionais (updateAuditGuarded / createAudit / reopenAudit / updateRouteStatus)
+// e a fila de diffs em lote (saveCollectionDiffsToFirestore) para impedir regressão de status por closures antigos.
+const activeTransactionalAuditIds = new Set<string>();
+const activeTransactionalRouteIds = new Set<string>();
+let activeDiffFlushPromise: Promise<boolean> | null = null;
+
+async function waitForActiveDiffFlush(): Promise<void> {
+  if (!activeDiffFlushPromise) return;
+  try {
+    await Promise.race([
+      activeDiffFlushPromise,
+      new Promise<void>((resolve) => setTimeout(resolve, 1500))
+    ]);
+  } catch {
+    // ignore flush wait errors
+  }
+}
+
+function notifyCancelPendingDocDiff(colName: "audits" | "importedRoutes", docId: string): void {
+  if (typeof window === "undefined" || !docId) return;
+  window.dispatchEvent(
+    new CustomEvent("logiroute_cancel_pending_doc_diff", {
+      detail: { colName, docId }
+    })
+  );
+}
+
+function notifyDocMutated(colName: "audits" | "importedRoutes", item: any): void {
+  if (typeof window === "undefined" || !item) return;
+  window.dispatchEvent(
+    new CustomEvent("logiroute_doc_mutated", {
+      detail: { colName, item }
+    })
+  );
+  if ("BroadcastChannel" in window) {
+    try {
+      const ch = new BroadcastChannel("logiroute_realtime_sync");
+      ch.postMessage({ type: "DOC_MUTATED", colName, item });
+      ch.close();
+    } catch {
+      // ignore broadcast errors
+    }
+  }
+}
+
 export function normalizeMapCodeClient(mapCode: any): string {
   if (mapCode === undefined || mapCode === null) return "";
   return String(mapCode).trim().replace(/^0+/, "");
@@ -376,6 +422,7 @@ let clientAuthError: string | null = null;
 let lastAuthAttemptTime = 0;
 const AUTH_COOLDOWN_MS = 25000;
 let lastSuccessfulSyncTime = 0;
+const lastSyncByCollection: Record<string, number> = {};
 
 export function getLastSuccessfulSyncTime(): number {
   return lastSuccessfulSyncTime;
@@ -484,8 +531,12 @@ function scheduleAutoRecovery(kind: 'permission' | 'quota') {
 // Reseta os contadores de backoff quando uma sincronização bem-sucedida
 // acontece, para que um problema pontual não deixe o próximo backoff mais
 // lento do que precisa ser.
-function markSyncSuccess() {
-  lastSuccessfulSyncTime = Date.now();
+function markSyncSuccess(colName?: string) {
+  const now = Date.now();
+  lastSuccessfulSyncTime = now;
+  if (colName) {
+    lastSyncByCollection[colName] = now;
+  }
   if (permissionRetryAttempts > 0 || quotaRetryAttempts > 0) {
     permissionRetryAttempts = 0;
     quotaRetryAttempts = 0;
@@ -966,6 +1017,48 @@ export async function saveCollectionDiffsToFirestore(
           const cleanItem = JSON.parse(JSON.stringify(rawItem));
           const docId = getDocIdForCollection(targetCol, cleanItem);
           cleanItem.id = docId;
+
+          if (targetCol === "audits") {
+            if (isAuditDeletedId(docId) || cleanItem.deletedAt || activeTransactionalAuditIds.has(docId)) {
+              console.warn(`[SyncGuard] Ignorado diff concorrente/excluído em audits/${docId}`);
+              continue;
+            }
+            const meta = latestAuditMetaById.get(docId);
+            if (meta) {
+              if (meta.deletedAt) {
+                console.warn(`[SyncGuard] Ignorado diff em auditoria já excluída: ${docId}`);
+                continue;
+              }
+              if (
+                !isAllowedAuditStatusTransition(meta.status, cleanItem.status, {
+                  prevReopenCycle: meta.reopenCycle,
+                  nextReopenCycle: cleanItem.reopenCycle
+                })
+              ) {
+                console.warn(`[SyncGuard] Bloqueada regressão/transição inválida via diff em ${docId}: ${meta.status} -> ${cleanItem.status}`);
+                continue;
+              }
+              if (meta.rev > 0 && cleanItem.rev !== undefined && Number(cleanItem.rev) < meta.rev) {
+                console.warn(`[SyncGuard] Bloqueado diff com revisão antiga em ${docId}: rev ${cleanItem.rev} < ${meta.rev}`);
+                continue;
+              }
+              if (Number(cleanItem.reopenCycle || 0) < meta.reopenCycle) {
+                console.warn(`[SyncGuard] Bloqueado diff com reopenCycle antigo em ${docId}`);
+                continue;
+              }
+            }
+          } else if (targetCol === "importedRoutes") {
+            if (isRouteDeletedId(docId) || cleanItem.deletedAt || activeTransactionalRouteIds.has(docId)) {
+              console.warn(`[SyncGuard] Ignorado diff concorrente/excluído em importedRoutes/${docId}`);
+              continue;
+            }
+            const knownGen = getRouteGeneration(docId);
+            if (cleanItem.generation !== undefined && Number(cleanItem.generation) < knownGen) {
+              console.warn(`[SyncGuard] Bloqueado diff com generation menor em importedRoutes/${docId}`);
+              continue;
+            }
+          }
+
           const newJson = canonicalJson(cleanItem);
           if (colCache.get(docId) !== newJson) {
             allOps.push({ type: "set", targetCol, id: docId, data: cleanItem, json: newJson });
@@ -1014,14 +1107,21 @@ export async function saveCollectionDiffsToFirestore(
       return true;
     })();
 
-    const timeoutPromise = new Promise<boolean>((resolve) => {
-      setTimeout(() => {
-        console.warn("[ClientFirebase] saveCollectionDiffsToFirestore atingiu timeout de 15s (escrita pendente na fila offline local).");
-        resolve(true);
-      }, 15000);
-    });
+    activeDiffFlushPromise = savePromise;
+    try {
+      const timeoutPromise = new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          console.warn("[ClientFirebase] saveCollectionDiffsToFirestore atingiu timeout de 15s (escrita pendente na fila offline local).");
+          resolve(true);
+        }, 15000);
+      });
 
-    return await Promise.race([savePromise, timeoutPromise]);
+      return await Promise.race([savePromise, timeoutPromise]);
+    } finally {
+      if (activeDiffFlushPromise === savePromise) {
+        activeDiffFlushPromise = null;
+      }
+    }
   } catch (err) {
     console.warn("[ClientFirebase] Erro ao persistir diffs no Firestore:", err);
     if (isPermissionError(err)) checkPermissionError(err);
@@ -1078,6 +1178,7 @@ export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean 
 export async function createAudit(audit: AuditSession, actor: string): Promise<AuditSession> {
   const docId = getDocIdForCollection("audits", audit);
   markLegitimateAuditCreation(docId);
+  notifyCancelPendingDocDiff("audits", docId);
 
   const nowIso = new Date().toISOString();
   const baseAudit: AuditSession = sanitizeForFirestore({
@@ -1100,25 +1201,32 @@ export async function createAudit(audit: AuditSession, actor: string): Promise<A
       generation: baseAudit.generation || 1,
       reopenCycle: baseAudit.reopenCycle || 0
     });
+    notifyDocMutated("audits", baseAudit);
     return baseAudit;
   }
 
-  await runTransaction(db, async (tx) => {
-    const docRef = doc(db, "audits", docId);
-    const snap = await tx.get(docRef);
-    if (snap.exists()) {
-      const existing = snap.data() as any;
-      if (!existing.deletedAt) {
-        throw new FirestoreConflictError(
-          `Já existe uma conferência ativa para o mapa ${audit.routeMap}.`,
-          existing.status
-        );
+  activeTransactionalAuditIds.add(docId);
+  try {
+    await waitForActiveDiffFlush();
+    await runTransaction(db, async (tx) => {
+      const docRef = doc(db, "audits", docId);
+      const snap = await tx.get(docRef);
+      if (snap.exists()) {
+        const existing = snap.data() as any;
+        if (!existing.deletedAt) {
+          throw new FirestoreConflictError(
+            `Já existe uma conferência ativa para o mapa ${audit.routeMap}.`,
+            existing.status
+          );
+        }
+        baseAudit.generation = Number(existing.generation || 1) + 1;
+        baseAudit.rev = Number(existing.rev || 0) + 1;
       }
-      baseAudit.generation = Number(existing.generation || 1) + 1;
-      baseAudit.rev = Number(existing.rev || 0) + 1;
-    }
-    tx.set(docRef, baseAudit);
-  });
+      tx.set(docRef, baseAudit);
+    });
+  } finally {
+    activeTransactionalAuditIds.delete(docId);
+  }
 
   deletedAuditIds.delete(docId);
   latestAuditMetaById.set(docId, {
@@ -1128,6 +1236,7 @@ export async function createAudit(audit: AuditSession, actor: string): Promise<A
     reopenCycle: baseAudit.reopenCycle || 0
   });
   getColCache("audits").set(docId, canonicalJson(baseAudit));
+  notifyDocMutated("audits", baseAudit);
   return baseAudit;
 }
 
@@ -1191,6 +1300,7 @@ export async function createRoute(route: ImportedRoute, actor: string): Promise<
   deletedRouteIds.delete(docId);
   latestRouteGenerationById.set(docId, finalRoute.generation || 1);
   getColCache("importedRoutes").set(docId, canonicalJson(finalRoute));
+  notifyDocMutated("importedRoutes", finalRoute);
   return finalRoute;
 }
 
@@ -1206,6 +1316,7 @@ export async function updateAuditGuarded(
 ): Promise<AuditSession> {
   const nowIso = new Date().toISOString();
   const db = getClientFirestore();
+  notifyCancelPendingDocDiff("audits", auditId);
 
   if (!db) {
     if (isAuditDeletedId(auditId)) {
@@ -1222,71 +1333,82 @@ export async function updateAuditGuarded(
     for (const k of opts.clearFields || []) {
       delete (localPatch as any)[k];
     }
-    return {
+    const localRes = {
       ...(localPatch as any),
       id: auditId,
       updatedAt: nowIso,
       lastUpdatedBy: opts.actor
     } as AuditSession;
+    notifyDocMutated("audits", localRes);
+    return localRes;
   }
 
   let resultingAudit: AuditSession | null = null;
+  activeTransactionalAuditIds.add(auditId);
 
-  await runTransaction(db, async (tx) => {
-    const docRef = doc(db, "audits", auditId);
-    const snap = await tx.get(docRef);
-    if (!snap.exists()) {
-      throw new FirestoreNotFoundError("Este mapa não existe mais no banco de dados.");
-    }
-    const data = snap.data() as any;
-    if (data.deletedAt) {
-      throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
-    }
-    if (!opts.expectedStatus.includes(data.status)) {
-      throw new FirestoreConflictError(
-        `Este mapa já foi alterado por outro usuário (status atual: ${data.status}).`,
-        data.status
-      );
-    }
+  try {
+    // Aguarda qualquer flush de digitação já em curso e garante que nenhum diff pendente sobrescreva o status
+    await waitForActiveDiffFlush();
+    notifyCancelPendingDocDiff("audits", auditId);
 
-    const baseHistory = Array.isArray(data.history) ? [...data.history] : [];
-    const nextHistory = opts.appendHistoryEntry
-      ? [...baseHistory, opts.appendHistoryEntry]
-      : Array.isArray(patch.history)
-        ? patch.history
-        : baseHistory;
+    await runTransaction(db, async (tx) => {
+      const docRef = doc(db, "audits", auditId);
+      const snap = await tx.get(docRef);
+      if (!snap.exists()) {
+        throw new FirestoreNotFoundError("Este mapa não existe mais no banco de dados.");
+      }
+      const data = snap.data() as any;
+      if (data.deletedAt) {
+        throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+      }
+      if (!opts.expectedStatus.includes(data.status)) {
+        throw new FirestoreConflictError(
+          `Este mapa já foi alterado por outro usuário (status atual: ${data.status}).`,
+          data.status
+        );
+      }
 
-    const cleanPatch = sanitizeForFirestore({
-      ...patch,
-      history: nextHistory,
-      updatedAt: nowIso,
-      lastUpdatedBy: opts.actor
-    }) as Record<string, any>;
+      const baseHistory = Array.isArray(data.history) ? [...data.history] : [];
+      const nextHistory = opts.appendHistoryEntry
+        ? [...baseHistory, opts.appendHistoryEntry]
+        : Array.isArray(patch.history)
+          ? patch.history
+          : baseHistory;
 
-    delete cleanPatch.id;
+      const cleanPatch = sanitizeForFirestore({
+        ...patch,
+        history: nextHistory,
+        updatedAt: nowIso,
+        lastUpdatedBy: opts.actor
+      }) as Record<string, any>;
 
-    const txUpdatePayload: Record<string, any> = {
-      ...cleanPatch,
-      rev: increment(1)
-    };
+      delete cleanPatch.id;
 
-    for (const fieldKey of opts.clearFields || []) {
-      txUpdatePayload[fieldKey] = deleteField();
-    }
+      const txUpdatePayload: Record<string, any> = {
+        ...cleanPatch,
+        rev: increment(1)
+      };
 
-    tx.update(docRef, txUpdatePayload);
+      for (const fieldKey of opts.clearFields || []) {
+        txUpdatePayload[fieldKey] = deleteField();
+      }
 
-    const nextObj: Record<string, any> = {
-      ...data,
-      ...cleanPatch,
-      id: auditId,
-      rev: Number(data.rev || 0) + 1
-    };
-    for (const fieldKey of opts.clearFields || []) {
-      delete nextObj[fieldKey];
-    }
-    resultingAudit = nextObj as AuditSession;
-  });
+      tx.update(docRef, txUpdatePayload);
+
+      const nextObj: Record<string, any> = {
+        ...data,
+        ...cleanPatch,
+        id: auditId,
+        rev: Number(data.rev || 0) + 1
+      };
+      for (const fieldKey of opts.clearFields || []) {
+        delete nextObj[fieldKey];
+      }
+      resultingAudit = nextObj as AuditSession;
+    });
+  } finally {
+    activeTransactionalAuditIds.delete(auditId);
+  }
 
   if (!resultingAudit) {
     throw new FirestoreConflictError("Falha ao concluir a transação de atualização.");
@@ -1300,6 +1422,7 @@ export async function updateAuditGuarded(
     reopenCycle: Number(finalRes.reopenCycle || 0)
   });
   getColCache("audits").set(auditId, canonicalJson(finalRes));
+  notifyDocMutated("audits", finalRes);
   return finalRes;
 }
 
@@ -1312,13 +1435,17 @@ export async function updateRouteStatus(
   if (!routeId) return false;
   const db = getClientFirestore();
   const nowIso = new Date().toISOString();
+  notifyCancelPendingDocDiff("importedRoutes", routeId);
 
   if (!db) {
     return true;
   }
 
+  activeTransactionalRouteIds.add(routeId);
   try {
-    let updated = false;
+    await waitForActiveDiffFlush();
+    notifyCancelPendingDocDiff("importedRoutes", routeId);
+    let updatedRoute: ImportedRoute | null = null;
     await runTransaction(db, async (tx) => {
       const docRef = doc(db, "importedRoutes", routeId);
       const snap = await tx.get(docRef);
@@ -1329,19 +1456,35 @@ export async function updateRouteStatus(
       const cleanExtra = extraPatch ? sanitizeForFirestore(extraPatch) : {};
       delete (cleanExtra as any).id;
 
-      tx.update(docRef, {
+      const patchFields = {
         ...cleanExtra,
         status,
         updatedAt: nowIso,
-        ...(actor ? { lastUpdatedBy: actor } : {}),
+        ...(actor ? { lastUpdatedBy: actor } : {})
+      };
+
+      tx.update(docRef, {
+        ...patchFields,
         rev: increment(1)
       });
-      updated = true;
+      updatedRoute = {
+        ...data,
+        ...patchFields,
+        id: routeId,
+        rev: Number(data.rev || 0) + 1
+      } as ImportedRoute;
     });
-    return updated;
+    if (updatedRoute) {
+      getColCache("importedRoutes").set(routeId, canonicalJson(updatedRoute));
+      notifyDocMutated("importedRoutes", updatedRoute);
+      return true;
+    }
+    return false;
   } catch (err) {
     console.warn(`[ClientFirebase] Erro ao atualizar status da rota ${routeId}:`, err);
     return false;
+  } finally {
+    activeTransactionalRouteIds.delete(routeId);
   }
 }
 
@@ -1371,84 +1514,91 @@ export async function reopenAudit(
   let reopenedResult: AuditSession | null = null;
   const uniqueRouteIds = Array.from(new Set((opts.routeIds || []).filter(Boolean)));
 
-  await runTransaction(db, async (tx) => {
-    const auditRef = doc(db, "audits", auditId);
-    const auditSnap = await tx.get(auditRef);
-    if (!auditSnap.exists() || auditSnap.data()?.deletedAt) {
-      throw new FirestoreNotFoundError("Este mapa não foi encontrado ou foi excluído.");
-    }
-    const data = auditSnap.data() as any;
-    if (data.status !== "finalizado_ok" && data.status !== "finalizado_divergente") {
-      throw new FirestoreConflictError(
-        `Somente mapas finalizados podem ser reabertos (status atual: ${data.status}).`,
-        data.status
-      );
-    }
-
-    // Ler rotas vinculadas (no máx 1-2 docs da mesma data/unificação) antes de gravar
-    const routeSnaps = await Promise.all(
-      uniqueRouteIds.map((rId) => tx.get(doc(db, "importedRoutes", rId)))
-    );
-
-    const nextCycle = Number(data.reopenCycle || 0) + 1;
-    const nextHistory = [...(Array.isArray(data.history) ? data.history : []), historyEntry];
-
-    const auditUpdate: Record<string, any> = {
-      status: "conferido_fisico",
-      reopeningRequested: false,
-      reopened: true,
-      reopenCycle: nextCycle,
-      reopenedAt: nowIso,
-      reopenedBy: opts.actor,
-      reopeningJustification: opts.justification,
-      pdfDownloaded: false,
-      financeiroCiente: false,
-      baixaConcluida: false,
-      history: nextHistory,
-      updatedAt: nowIso,
-      lastUpdatedBy: opts.actor,
-      rev: increment(1),
-      surplusFlowStatus: deleteField(),
-      closedAt: deleteField(),
-      closedBy: deleteField()
-    };
-
-    tx.update(auditRef, auditUpdate);
-
-    routeSnaps.forEach((rSnap) => {
-      if (rSnap.exists() && !rSnap.data()?.deletedAt) {
-        tx.update(rSnap.ref, {
-          status: "em_analise",
-          updatedAt: nowIso,
-          lastUpdatedBy: opts.actor,
-          rev: increment(1)
-        });
+  notifyCancelPendingDocDiff("audits", auditId);
+  activeTransactionalAuditIds.add(auditId);
+  try {
+    await waitForActiveDiffFlush();
+    await runTransaction(db, async (tx) => {
+      const auditRef = doc(db, "audits", auditId);
+      const auditSnap = await tx.get(auditRef);
+      if (!auditSnap.exists() || auditSnap.data()?.deletedAt) {
+        throw new FirestoreNotFoundError("Este mapa não foi encontrado ou foi excluído.");
       }
-    });
+      const data = auditSnap.data() as any;
+      if (data.status !== "finalizado_ok" && data.status !== "finalizado_divergente") {
+        throw new FirestoreConflictError(
+          `Somente mapas finalizados podem ser reabertos (status atual: ${data.status}).`,
+          data.status
+        );
+      }
 
-    const nextState: Record<string, any> = {
-      ...data,
-      id: auditId,
-      status: "conferido_fisico",
-      reopeningRequested: false,
-      reopened: true,
-      reopenCycle: nextCycle,
-      reopenedAt: nowIso,
-      reopenedBy: opts.actor,
-      reopeningJustification: opts.justification,
-      pdfDownloaded: false,
-      financeiroCiente: false,
-      baixaConcluida: false,
-      history: nextHistory,
-      updatedAt: nowIso,
-      lastUpdatedBy: opts.actor,
-      rev: Number(data.rev || 0) + 1
-    };
-    delete nextState.surplusFlowStatus;
-    delete nextState.closedAt;
-    delete nextState.closedBy;
-    reopenedResult = nextState as AuditSession;
-  });
+      // Ler rotas vinculadas (no máx 1-2 docs da mesma data/unificação) antes de gravar
+      const routeSnaps = await Promise.all(
+        uniqueRouteIds.map((rId) => tx.get(doc(db, "importedRoutes", rId)))
+      );
+
+      const nextCycle = Number(data.reopenCycle || 0) + 1;
+      const nextHistory = [...(Array.isArray(data.history) ? data.history : []), historyEntry];
+
+      const auditUpdate: Record<string, any> = {
+        status: "conferido_fisico",
+        reopeningRequested: false,
+        reopened: true,
+        reopenCycle: nextCycle,
+        reopenedAt: nowIso,
+        reopenedBy: opts.actor,
+        reopeningJustification: opts.justification,
+        pdfDownloaded: false,
+        financeiroCiente: false,
+        baixaConcluida: false,
+        history: nextHistory,
+        updatedAt: nowIso,
+        lastUpdatedBy: opts.actor,
+        rev: increment(1),
+        surplusFlowStatus: deleteField(),
+        closedAt: deleteField(),
+        closedBy: deleteField()
+      };
+
+      tx.update(auditRef, auditUpdate);
+
+      routeSnaps.forEach((rSnap) => {
+        if (rSnap.exists() && !rSnap.data()?.deletedAt) {
+          tx.update(rSnap.ref, {
+            status: "em_analise",
+            updatedAt: nowIso,
+            lastUpdatedBy: opts.actor,
+            rev: increment(1)
+          });
+        }
+      });
+
+      const nextState: Record<string, any> = {
+        ...data,
+        id: auditId,
+        status: "conferido_fisico",
+        reopeningRequested: false,
+        reopened: true,
+        reopenCycle: nextCycle,
+        reopenedAt: nowIso,
+        reopenedBy: opts.actor,
+        reopeningJustification: opts.justification,
+        pdfDownloaded: false,
+        financeiroCiente: false,
+        baixaConcluida: false,
+        history: nextHistory,
+        updatedAt: nowIso,
+        lastUpdatedBy: opts.actor,
+        rev: Number(data.rev || 0) + 1
+      };
+      delete nextState.surplusFlowStatus;
+      delete nextState.closedAt;
+      delete nextState.closedBy;
+      reopenedResult = nextState as AuditSession;
+    });
+  } finally {
+    activeTransactionalAuditIds.delete(auditId);
+  }
 
   if (!reopenedResult) {
     throw new FirestoreConflictError("Falha ao reabrir o mapa.");
@@ -1462,6 +1612,7 @@ export async function reopenAudit(
     reopenCycle: Number(finalAudit.reopenCycle || 1)
   });
   getColCache("audits").set(auditId, canonicalJson(finalAudit));
+  notifyDocMutated("audits", finalAudit);
   return finalAudit;
 }
 
@@ -1482,12 +1633,19 @@ export async function softDeleteMapCascade(params: {
   const uniqueAlerts = Array.from(new Set((params.alertIds || []).filter(Boolean)));
   const uniqueCarreg = Array.from(new Set((params.carregamentoIds || []).filter(Boolean)));
 
-  uniqueRoutes.forEach((id) => deletedRouteIds.add(id));
-  uniqueAudits.forEach((id) => deletedAuditIds.add(id));
+  uniqueRoutes.forEach((id) => {
+    deletedRouteIds.add(id);
+    notifyCancelPendingDocDiff("importedRoutes", id);
+  });
+  uniqueAudits.forEach((id) => {
+    deletedAuditIds.add(id);
+    notifyCancelPendingDocDiff("audits", id);
+  });
 
   if (!db) return true;
 
   try {
+    await waitForActiveDiffFlush();
     const batch = writeBatch(db);
 
     uniqueRoutes.forEach((id) => {
@@ -1642,6 +1800,16 @@ function attachReattachRequestListener() {
   window.addEventListener('firestore_request_reattach', () => {
     forceReconnect();
   });
+  // Quando a conexão volta de uma queda de Wi-Fi/4G, desperta o canal do Firestore imediatamente
+  window.addEventListener('online', () => {
+    const db = getClientFirestore();
+    if (db) {
+      enableNetwork(db).catch(() => {});
+    }
+    if (activeOnUpdateCallback) {
+      forceReconnect();
+    }
+  });
 }
 
 const WATCHDOG_INTERVAL_MS = 60000;
@@ -1652,10 +1820,9 @@ function startConnectionWatchdog() {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
     if (typeof document !== "undefined" && document.visibilityState !== 'visible') return;
     if (!activeOnUpdateCallback) return;
-    // Only re-attach if listeners were unexpectedly lost or cleared
     const activeCount = Object.keys(activeUnsubscribes).length;
-    if (activeCount === 0 && TRACKED_COLLECTIONS.length > 0) {
-      console.warn(`[ClientFirebase] Listeners do Firestore vazios. Restaurando escuta em tempo real...`);
+    if (activeCount < TRACKED_COLLECTIONS.length) {
+      console.warn(`[ClientFirebase] Listeners incompletos (${activeCount}/${TRACKED_COLLECTIONS.length}). Restaurando escuta em tempo real...`);
       forceReconnect();
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -1668,28 +1835,32 @@ function stopConnectionWatchdog() {
   }
 }
 
-/**
- * Força o encerramento e a reconstrução de TODOS os listeners em tempo
- * real, reaproveitando o último callback registrado. Chamada automaticamente
- * pelo watchdog e ao restaurar permissão/cota/autenticação, e também deve
- * ser chamada manualmente quando o app volta ao primeiro plano
- * (ver o handler de visibilitychange em App.tsx).
- */
 export function forceReconnect(): void {
   if (!activeOnUpdateCallback) return;
   subscribeToFirestore(activeOnUpdateCallback);
 }
 
 /**
- * Garante que os listeners estão ativos ao voltar para a aba sem destruir
- * conexões saudáveis (evita re-download completo de todas as coleções ao trocar de aba).
+ * Desperta o canal de rede do Firestore ao voltar para a aba e garante que
+ * todas as coleções continuam inscritas (sem destruir listeners saudáveis).
  */
-export function ensureFirestoreConnected(): void {
+export function ensureFirestoreConnected(hiddenDurationMs: number = 0): void {
   if (!activeOnUpdateCallback) return;
   const activeCount = Object.keys(activeUnsubscribes).length;
-  const isStale = lastSuccessfulSyncTime > 0 && (Date.now() - lastSuccessfulSyncTime > 180000);
-  if (activeCount < TRACKED_COLLECTIONS.length || isStale) {
+  const auditsLastSync = lastSyncByCollection["audits"] || 0;
+  const routesLastSync = lastSyncByCollection["importedRoutes"] || 0;
+  const criticalSilent =
+    hiddenDurationMs > 45000 &&
+    (auditsLastSync === 0 || routesLastSync === 0 || Date.now() - Math.max(auditsLastSync, routesLastSync) > 120000);
+
+  if (activeCount < TRACKED_COLLECTIONS.length || criticalSilent) {
     forceReconnect();
+    return;
+  }
+
+  const db = getClientFirestore();
+  if (db) {
+    enableNetwork(db).catch(() => {});
   }
 }
 
@@ -1817,7 +1988,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
         const unsub = onSnapshot(docRef, (docSnap) => {
           if (myGeneration !== reconnectGeneration) return;
           resetCollectionRetryState(colName);
-          markSyncSuccess();
+          markSyncSuccess("customManual");
           emitSyncedEventThrottled();
           if (docSnap.exists()) {
             const data = docSnap.data();
@@ -1877,7 +2048,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
         const unsub = onSnapshot(collRef, (snapshot) => {
           if (myGeneration !== reconnectGeneration) return;
           resetCollectionRetryState(colName);
-          markSyncSuccess();
+          markSyncSuccess(colName);
           emitSyncedEventThrottled();
 
           // Seed defaults directly to Firestore ONLY if primary static collections are completely empty and confirmed by server (not local cache)

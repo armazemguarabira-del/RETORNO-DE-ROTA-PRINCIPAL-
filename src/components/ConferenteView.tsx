@@ -10,8 +10,18 @@ import {
   isGuardConflictOrNotFound,
   isAuditDeletedId,
   doesAuditMatchRoute,
-  markLegitimateAuditCreation
+  markLegitimateAuditCreation,
+  isClientFirebaseActive,
+  saveDocToFirestore
 } from '../clientFirebase';
+
+const getTodayLocalDateStr = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
@@ -149,6 +159,7 @@ export default function ConferenteView({
 
   // Navigation / active sub-view
   const [activeSession, setActiveSession] = useState<AuditSession | null>(null);
+  const [isFinishingAudit, setIsFinishingAudit] = useState<boolean>(false);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -397,7 +408,7 @@ export default function ConferenteView({
     const effectiveStartTime = guiaStartTime || `${startH}:${startM}`;
     const effectiveEndTime = guiaEndTime || `${endH}:${endM}`;
 
-    const todayDateStr = new Date().toISOString().split('T')[0];
+    const todayDateStr = getTodayLocalDateStr();
     const startTimeIso = `${todayDateStr}T${effectiveStartTime}:00.000Z`;
     const endTimeIso = `${todayDateStr}T${effectiveEndTime}:00.000Z`;
 
@@ -777,7 +788,11 @@ export default function ConferenteView({
 
   // Auto-repair empty assets array in activeSession for resilience
   useEffect(() => {
-    if (activeSession) {
+    if (
+      activeSession &&
+      !isFinishingAudit &&
+      (activeSession.status === 'em_aberto' || activeSession.status === 'reconferencia')
+    ) {
       if (!activeSession.assets || activeSession.assets.length === 0) {
         console.log("Repairing activeSession: assets array is empty or undefined");
         const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
@@ -795,7 +810,7 @@ export default function ConferenteView({
         onSaveAudits(updatedAudits);
       }
     }
-  }, [activeSession, activeAssets, audits, onSaveAudits]);
+  }, [activeSession, activeAssets, audits, onSaveAudits, isFinishingAudit]);
 
   const loadSessionPhotos = async (auditId: string) => {
     try {
@@ -1428,7 +1443,7 @@ export default function ConferenteView({
           driverId: finalDriverId,
           helperId: finalHelperId || undefined,
           arrivalKm: Number(arrivalKm),
-          arrivalDate: new Date().toISOString().split('T')[0],
+          arrivalDate: getTodayLocalDateStr(),
           startTime: nowStr,
           lastTimerStart: nowStr,
           totalCountingDurationMs: 0,
@@ -1755,8 +1770,8 @@ export default function ConferenteView({
     onSaveAudits(updatedAudits);
   };
 
-  const handleConfirmBlitz = () => {
-    if (!activeSession) return;
+  const handleConfirmBlitz = async () => {
+    if (!activeSession || isFinishingAudit) return;
 
     const updatedSession: AuditSession = {
       ...activeSession,
@@ -1764,10 +1779,10 @@ export default function ConferenteView({
       blitzAvariasFound: 0
     };
 
+    setIsFinishingAudit(true);
     setActiveSession(updatedSession);
-    setShowBlitzModal(false);
 
-    setTimeout(async () => {
+    try {
       const isReconferindo = updatedSession.status === 'reconferencia';
       const expectedStatus: ('em_aberto' | 'reconferencia')[] = isReconferindo ? ['reconferencia'] : ['em_aberto'];
       const now = new Date().toISOString();
@@ -1816,6 +1831,7 @@ export default function ConferenteView({
       } catch (err: any) {
         if (isGuardConflictOrNotFound(err)) {
           alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          setShowBlitzModal(false);
           setRefugoPhotos([]);
           localStorage.removeItem('conferente_active_session_id');
           setActiveSession(null);
@@ -1825,41 +1841,49 @@ export default function ConferenteView({
         return;
       }
 
-      if (onSaveAlerts && fiscalAlerts) {
-        const newAlert: FiscalAlert = {
-          id: 'al_' + Date.now(),
-          routeMap: activeSession.routeMap,
-          plate: activeSession.plate,
-          status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
-          timestamp: now,
-          read: false,
-          readBy: [],
-          title: isReconferindo ? 'Recontagem Finalizada (Blitz)' : 'Veículo Conferido (Blitz)',
-          message: isReconferindo
-            ? `O conferente ${currentUser.name} finalizou a recontagem com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`
-            : `O conferente ${currentUser.name} finalizou a conferência física com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
-          targetRole: 'auxiliar_logistica',
-          targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
-        };
-        onSaveAlerts([newAlert, ...fiscalAlerts]);
-      }
+      const newAlert: FiscalAlert = {
+        id: 'al_' + Date.now(),
+        routeMap: activeSession.routeMap,
+        plate: activeSession.plate,
+        status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
+        timestamp: now,
+        read: false,
+        readBy: [],
+        title: isReconferindo ? 'Recontagem Finalizada (Blitz)' : 'Veículo Conferido (Blitz)',
+        message: isReconferindo
+          ? `O conferente ${currentUser.name} finalizou a recontagem com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`
+          : `O conferente ${currentUser.name} finalizou a conferência física com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
+        targetRole: 'auxiliar_logistica',
+        targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
+      };
 
-      if (importedRoutes && importedRoutes.length > 0) {
-        const matchedRoutes = importedRoutes.filter(r => doesAuditMatchRoute(updatedSession, r));
+      const matchedRoutes = (importedRoutes || []).filter(r => doesAuditMatchRoute(updatedSession, r));
+      if (isClientFirebaseActive()) {
+        await Promise.all([
+          saveDocToFirestore('fiscalAlerts', newAlert),
+          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name))
+        ]);
+      } else {
+        if (onSaveAlerts && fiscalAlerts) {
+          onSaveAlerts([newAlert, ...fiscalAlerts]);
+        }
         await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
       }
 
+      setShowBlitzModal(false);
       alert(`Conferência e Blitz finalizadas com sucesso! Rota ${activeSession.routeMap} enviada para conciliação fiscal.`);
 
       setRefugoPhotos([]);
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
-    }, 100);
+    } finally {
+      setIsFinishingAudit(false);
+    }
   };
 
   // Action: Complete physical conference & save
   const handleFinishPhysicalAudit = async () => {
-    if (!activeSession) return;
+    if (!activeSession || isFinishingAudit) return;
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
     const matchingRoute = importedRoutes.find(r => doesAuditMatchRoute(activeSession, r));
@@ -1879,86 +1903,87 @@ export default function ConferenteView({
       return;
     }
 
-    const now = new Date().toISOString();
-    const nextStatus = isReconferindo ? ('recontagem_finalizada' as const) : ('conferido_fisico' as const);
-    const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
-    const detailsText = isReconferindo 
-      ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova.` 
-      : 'Aguardando validação fiscal';
-
-    let finalDurationMs = activeSession.totalCountingDurationMs || 0;
-    if (!activeSession.isSuspended && activeSession.lastTimerStart) {
-      finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
-    }
-
-    // Auto-associate any captured refugoPhotos to the refugos in the session
-    let updatedRefugos = [...(activeSession.refugos || [])];
-    if (refugoPhotos.length > 0 && updatedRefugos.length > 0) {
-      const savedPhotoIds: string[] = [];
-      for (let pIdx = 0; pIdx < refugoPhotos.length; pIdx++) {
-        const photo = refugoPhotos[pIdx];
-        const savedRecord = await savePhotoRecordToDb(
-          photo,
-          `ref_batch_${Date.now()}_${pIdx}`,
-          `Refugo e Avarias (${updatedRefugos.length} itens)`,
-          'refugo'
-        );
-        if (savedRecord) {
-          savedPhotoIds.push(savedRecord.id);
-        }
-      }
-
-      if (savedPhotoIds.length > 0) {
-        updatedRefugos = updatedRefugos.map((ref, index) => {
-          const photoId = savedPhotoIds[index % savedPhotoIds.length] || savedPhotoIds[0];
-          return { ...ref, photoId, photoUrl: undefined };
-        });
-      }
-    }
-
-    const latestRemoteFinish = audits.find(a => a.id === activeSession.id);
-    const finishBaseWithMeta = mergeRemoteMetadata(activeSession, latestRemoteFinish);
-    const mergedItems = getMergedFinalItems(finishBaseWithMeta);
-
+    setIsFinishingAudit(true);
     try {
-      await updateAuditGuarded(
-        activeSession.id,
-        {
-          items: mergedItems,
-          assets: finishBaseWithMeta.assets,
-          exchanges: finishBaseWithMeta.exchanges,
-          refugos: updatedRefugos,
-          status: nextStatus,
-          reopeningRequested: false,
-          endTime: now,
-          totalCountingDurationMs: finalDurationMs
-        },
-        {
-          expectedStatus,
-          actor: currentUser.name,
-          clearFields: ['lastTimerStart'],
-          appendHistoryEntry: {
-            timestamp: now,
-            action: actionText,
-            user: currentUser.name,
-            details: detailsText
-          }
+      const now = new Date().toISOString();
+      const nextStatus = isReconferindo ? ('recontagem_finalizada' as const) : ('conferido_fisico' as const);
+      const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
+      const detailsText = isReconferindo 
+        ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova.` 
+        : 'Aguardando validação fiscal';
+
+      let finalDurationMs = activeSession.totalCountingDurationMs || 0;
+      if (!activeSession.isSuspended && activeSession.lastTimerStart) {
+        finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
+      }
+
+      // Auto-associate any captured refugoPhotos to the refugos in the session (em paralelo)
+      let updatedRefugos = [...(activeSession.refugos || [])];
+      if (refugoPhotos.length > 0 && updatedRefugos.length > 0) {
+        const photoRecords = await Promise.all(
+          refugoPhotos.map((photo, pIdx) =>
+            savePhotoRecordToDb(
+              photo,
+              `ref_batch_${Date.now()}_${pIdx}`,
+              `Refugo e Avarias (${updatedRefugos.length} itens)`,
+              'refugo'
+            )
+          )
+        );
+        const savedPhotoIds = photoRecords
+          .filter((r): r is PhotoRecord => Boolean(r))
+          .map(r => r.id);
+
+        if (savedPhotoIds.length > 0) {
+          updatedRefugos = updatedRefugos.map((ref, index) => {
+            const photoId = savedPhotoIds[index % savedPhotoIds.length] || savedPhotoIds[0];
+            return { ...ref, photoId, photoUrl: undefined };
+          });
         }
-      );
-    } catch (err: any) {
-      if (isGuardConflictOrNotFound(err)) {
-        alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
-        setRefugoPhotos([]);
-        localStorage.removeItem('conferente_active_session_id');
-        setActiveSession(null);
+      }
+
+      const latestRemoteFinish = audits.find(a => a.id === activeSession.id);
+      const finishBaseWithMeta = mergeRemoteMetadata(activeSession, latestRemoteFinish);
+      const mergedItems = getMergedFinalItems(finishBaseWithMeta);
+
+      try {
+        await updateAuditGuarded(
+          activeSession.id,
+          {
+            items: mergedItems,
+            assets: finishBaseWithMeta.assets,
+            exchanges: finishBaseWithMeta.exchanges,
+            refugos: updatedRefugos,
+            status: nextStatus,
+            reopeningRequested: false,
+            endTime: now,
+            totalCountingDurationMs: finalDurationMs
+          },
+          {
+            expectedStatus,
+            actor: currentUser.name,
+            clearFields: ['lastTimerStart'],
+            appendHistoryEntry: {
+              timestamp: now,
+              action: actionText,
+              user: currentUser.name,
+              details: detailsText
+            }
+          }
+        );
+      } catch (err: any) {
+        if (isGuardConflictOrNotFound(err)) {
+          alert('Este mapa foi excluído ou já foi alterado por outro usuário. Nada foi enviado.');
+          setRefugoPhotos([]);
+          localStorage.removeItem('conferente_active_session_id');
+          setActiveSession(null);
+          return;
+        }
+        alert('Erro ao enviar conferência física: ' + (err?.message || 'Erro desconhecido'));
         return;
       }
-      alert('Erro ao enviar conferência física: ' + (err?.message || 'Erro desconhecido'));
-      return;
-    }
 
-    // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor
-    if (onSaveAlerts && fiscalAlerts) {
+      // Create notification alert for Auxiliar de Logistica, Financeiro & Gestor + transition ImportedRoute to em_analise
       const newAlert: FiscalAlert = {
         id: 'al_' + Date.now(),
         routeMap: activeSession.routeMap,
@@ -1974,19 +1999,27 @@ export default function ConferenteView({
         targetRole: 'auxiliar_logistica',
         targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
       };
-      onSaveAlerts([newAlert, ...fiscalAlerts]);
-    }
 
-    // Transition matching ImportedRoute (by map + date) to em_analise
-    if (importedRoutes && importedRoutes.length > 0) {
-      const matchedRoutes = importedRoutes.filter(r => doesAuditMatchRoute(activeSession, r));
-      await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
-    }
+      const matchedRoutes = (importedRoutes || []).filter(r => doesAuditMatchRoute(activeSession, r));
+      if (isClientFirebaseActive()) {
+        await Promise.all([
+          saveDocToFirestore('fiscalAlerts', newAlert),
+          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name))
+        ]);
+      } else {
+        if (onSaveAlerts && fiscalAlerts) {
+          onSaveAlerts([newAlert, ...fiscalAlerts]);
+        }
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
+      }
 
-    alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
-    setRefugoPhotos([]);
-    localStorage.removeItem('conferente_active_session_id');
-    setActiveSession(null);
+      alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
+      setRefugoPhotos([]);
+      localStorage.removeItem('conferente_active_session_id');
+      setActiveSession(null);
+    } finally {
+      setIsFinishingAudit(false);
+    }
   };
 
   // Webcam stream handlers
@@ -4911,8 +4944,9 @@ export default function ConferenteView({
                 
                 <button
                   type="button"
+                  disabled={isFinishingAudit}
                   onClick={handleFinishPhysicalAudit}
-                  className={`w-full text-white font-bold py-3.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center space-x-2 text-base cursor-pointer ${
+                  className={`w-full text-white font-bold py-3.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center space-x-2 text-base cursor-pointer disabled:opacity-60 disabled:cursor-wait ${
                     activeSession.status === 'reconferencia' && sessionPhotos.length === 0
                       ? 'bg-red-400 cursor-not-allowed opacity-80'
                       : 'bg-emerald-600 hover:bg-emerald-700'
@@ -4920,7 +4954,11 @@ export default function ConferenteView({
                 >
                   <UserCheck className="h-5 w-5" />
                   <span>
-                    {activeSession.status === 'reconferencia' ? 'Enviar Reconferência Física' : 'Enviar Conferência Física'}
+                    {isFinishingAudit
+                      ? 'Enviando conferência...'
+                      : activeSession.status === 'reconferencia'
+                        ? 'Enviar Reconferência Física'
+                        : 'Enviar Conferência Física'}
                   </span>
                 </button>
               </div>
@@ -5112,17 +5150,19 @@ export default function ConferenteView({
             <div className="flex items-center justify-end space-x-2 p-3 sm:p-4 border-t border-slate-100 shrink-0 bg-slate-50">
               <button
                 type="button"
+                disabled={isFinishingAudit}
                 onClick={() => setShowBlitzModal(false)}
-                className="w-1/3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
+                className="w-1/3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition disabled:opacity-50"
               >
                 Voltar
               </button>
               <button
                 type="button"
+                disabled={isFinishingAudit}
                 onClick={handleConfirmBlitz}
-                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition shadow-sm uppercase font-sans text-center"
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition shadow-sm uppercase font-sans text-center disabled:opacity-60 disabled:cursor-wait"
               >
-                Finalizar com Blitz
+                {isFinishingAudit ? 'Enviando Blitz...' : 'Finalizar com Blitz'}
               </button>
             </div>
           </div>

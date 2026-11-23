@@ -247,14 +247,21 @@ export default function App() {
   // e busca apenas do servidor local (/api/db) com custo ZERO no Firestore.
   useEffect(() => {
     let hasMounted = false;
+    let hiddenAt = 0;
     const handleVisibilityChange = () => {
       // Ignora o primeiro instante da montagem da página
       if (!hasMounted) {
         hasMounted = true;
         return;
       }
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
       if (document.visibilityState === 'visible') {
-        ensureFirestoreConnected();
+        const hiddenDurationMs = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
+        hiddenAt = 0;
+        ensureFirestoreConnected(hiddenDurationMs);
         // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
         if (!isClientFirebaseActive()) {
           fetch('/api/db')
@@ -1150,7 +1157,7 @@ export default function App() {
     };
   }, [clientPermissionDenied]);
 
-  // Real-time synchronization across tabs of the SAME browser
+  // Real-time synchronization across tabs of the SAME browser + coordination with transactional helpers
   useEffect(() => {
     const channel = typeof window !== 'undefined' && 'BroadcastChannel' in window
       ? new BroadcastChannel('logiroute_realtime_sync')
@@ -1171,15 +1178,95 @@ export default function App() {
       }
     };
 
+    const cancelPendingDocDiff = (colName: string, docId: string) => {
+      if (!colName || !docId) return;
+      const acc = pendingDiffsRef.current[colName];
+      if (acc) {
+        acc.upsertMap.delete(docId);
+        acc.deleteSet.delete(docId);
+      }
+    };
+
+    const applyMutatedDocLocally = (colName: string, rawItem: any) => {
+      if (!rawItem || !colName) return;
+      const docId = getDocIdForCollection(colName, rawItem);
+      cancelPendingDocDiff(colName, docId);
+
+      if (!cachedJsonByColRef.current[colName]) {
+        cachedJsonByColRef.current[colName] = new Map<string, string>();
+      }
+
+      if (colName === 'audits') {
+        const cleanedItem = cleanAudits([rawItem])[0];
+        if (!cleanedItem) return;
+        const prevList = (latestCollectionRefs.current.audits as AuditSession[]) || [];
+        const existing = prevList.find(a => a && a.id === docId);
+        if (
+          existing &&
+          existing.rev !== undefined &&
+          cleanedItem.rev !== undefined &&
+          Number(cleanedItem.rev) < Number(existing.rev)
+        ) {
+          return;
+        }
+        const nextList = existing
+          ? prevList.map(a => (a && a.id === docId ? cleanedItem : a))
+          : [cleanedItem, ...prevList];
+        latestCollectionRefs.current.audits = nextList;
+        cachedJsonByColRef.current.audits.set(docId, canonicalJson(cleanedItem));
+        setAudits(nextList);
+      } else if (colName === 'importedRoutes') {
+        const cleanedItem = cleanImportedRoutes([rawItem], latestCollectionRefs.current.audits)[0];
+        if (!cleanedItem) return;
+        const prevList = (latestCollectionRefs.current.importedRoutes as ImportedRoute[]) || [];
+        const existing = prevList.find(r => getDocIdForCollection('importedRoutes', r) === docId);
+        if (
+          existing &&
+          existing.rev !== undefined &&
+          cleanedItem.rev !== undefined &&
+          Number(cleanedItem.rev) < Number(existing.rev)
+        ) {
+          return;
+        }
+        const nextList = existing
+          ? prevList.map(r => (getDocIdForCollection('importedRoutes', r) === docId ? cleanedItem : r))
+          : [cleanedItem, ...prevList];
+        latestCollectionRefs.current.importedRoutes = nextList;
+        cachedJsonByColRef.current.importedRoutes.set(docId, canonicalJson(cleanedItem));
+        setImportedRoutes(nextList);
+      }
+    };
+
+    const handleCancelPendingEvent = (e: any) => {
+      const detail = e?.detail;
+      if (detail?.colName && detail?.docId) {
+        cancelPendingDocDiff(detail.colName, detail.docId);
+      }
+    };
+
+    const handleDocMutatedEvent = (e: any) => {
+      const detail = e?.detail;
+      if (detail?.colName && detail?.item) {
+        applyMutatedDocLocally(detail.colName, detail.item);
+      }
+    };
+
+    window.addEventListener('logiroute_cancel_pending_doc_diff', handleCancelPendingEvent);
+    window.addEventListener('logiroute_doc_mutated', handleDocMutatedEvent);
+
     if (channel) {
       channel.onmessage = (event) => {
         if (event.data && event.data.type === 'RESET_PLATFORM') {
           reloadServerState();
+        } else if (event.data && event.data.type === 'DOC_MUTATED' && event.data.colName && event.data.item) {
+          applyMutatedDocLocally(event.data.colName, event.data.item);
         }
       };
     }
 
     return () => {
+      window.removeEventListener('logiroute_cancel_pending_doc_diff', handleCancelPendingEvent);
+      window.removeEventListener('logiroute_doc_mutated', handleDocMutatedEvent);
       if (channel) channel.close();
     };
   }, []);
@@ -1313,13 +1400,16 @@ export default function App() {
         continue;
       }
 
-      // Verificar geração para impedir sobrescrita por estado antigo
+      // Verificar geração e revisão para impedir sobrescrita por estado antigo
       if (
-        candidate.generation !== undefined &&
-        prev.generation !== undefined &&
-        candidate.generation < prev.generation
+        (candidate.generation !== undefined &&
+          prev.generation !== undefined &&
+          candidate.generation < prev.generation) ||
+        (candidate.rev !== undefined &&
+          prev.rev !== undefined &&
+          Number(candidate.rev) < Number(prev.rev))
       ) {
-        console.warn(`[Fase 1 Guard] Bloqueada sobrescrita por geração menor em auditoria ${candidate.id} (${candidate.generation} < ${prev.generation})`);
+        console.warn(`[Fase 1 Guard] Bloqueada sobrescrita por geração/revisão menor em auditoria ${candidate.id}`);
         seenIds.add(prev.id);
         guardedList.push(prev);
         continue;
