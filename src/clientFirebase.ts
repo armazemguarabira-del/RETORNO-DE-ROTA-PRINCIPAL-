@@ -5,7 +5,11 @@ import {
   memoryLocalCache,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
+  query,
+  where,
   setDoc,
   deleteDoc,
   collection,
@@ -265,18 +269,37 @@ export function isLegitimateCreatedAudit(auditId: string): boolean {
 // e a fila de diffs em lote (saveCollectionDiffsToFirestore) para impedir regressão de status por closures antigos.
 const activeTransactionalAuditIds = new Set<string>();
 const activeTransactionalRouteIds = new Set<string>();
-let activeDiffFlushPromise: Promise<boolean> | null = null;
+const activeDiffFlushByCol = new Map<string, Set<Promise<boolean>>>();
 
-async function waitForActiveDiffFlush(): Promise<void> {
-  if (!activeDiffFlushPromise) return;
+async function waitForActiveDiffFlush(colName?: string): Promise<void> {
+  let promises: Promise<boolean>[] = [];
+  if (colName) {
+    const setForCol = activeDiffFlushByCol.get(colName);
+    if (setForCol && setForCol.size > 0) {
+      promises = Array.from(setForCol);
+    }
+  } else {
+    activeDiffFlushByCol.forEach((setForCol) => {
+      setForCol.forEach((p) => promises.push(p));
+    });
+  }
+  if (promises.length === 0) return;
   try {
     await Promise.race([
-      activeDiffFlushPromise,
+      Promise.all(promises),
       new Promise<void>((resolve) => setTimeout(resolve, 1500))
     ]);
   } catch {
     // ignore flush wait errors
   }
+}
+
+export function getTodayLocalDateStrClient(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function notifyCancelPendingDocDiff(colName: "audits" | "importedRoutes", docId: string): void {
@@ -995,6 +1018,15 @@ export async function saveCollectionDiffsToFirestore(
 ): Promise<boolean> {
   const db = getClientFirestore();
   if (!db) return false;
+  const diffCols = new Set<string>();
+  Object.keys(diffs || {}).forEach((rawKey) => {
+    const mapped = COLLECTION_MAP[rawKey] || rawKey;
+    if (mapped && mapped !== "customManual") diffCols.add(mapped);
+  });
+  if (customManualHtml !== undefined) {
+    diffCols.add("customManual");
+  }
+
   try {
     const savePromise = (async () => {
       if (customManualHtml !== undefined) {
@@ -1112,20 +1144,34 @@ export async function saveCollectionDiffsToFirestore(
       return true;
     })();
 
-    activeDiffFlushPromise = savePromise;
+    diffCols.forEach((col) => {
+      let setForCol = activeDiffFlushByCol.get(col);
+      if (!setForCol) {
+        setForCol = new Set();
+        activeDiffFlushByCol.set(col, setForCol);
+      }
+      setForCol.add(savePromise);
+    });
+
     try {
       const timeoutPromise = new Promise<boolean>((resolve) => {
         setTimeout(() => {
-          console.warn("[ClientFirebase] saveCollectionDiffsToFirestore atingiu timeout de 15s (escrita pendente na fila offline local).");
+          console.warn("[ClientFirebase] saveCollectionDiffsToFirestore atingiu timeout de 15s (escrita pendente na fila local).");
           resolve(true);
         }, 15000);
       });
 
       return await Promise.race([savePromise, timeoutPromise]);
     } finally {
-      if (activeDiffFlushPromise === savePromise) {
-        activeDiffFlushPromise = null;
-      }
+      diffCols.forEach((col) => {
+        const setForCol = activeDiffFlushByCol.get(col);
+        if (setForCol) {
+          setForCol.delete(savePromise);
+          if (setForCol.size === 0) {
+            activeDiffFlushByCol.delete(col);
+          }
+        }
+      });
     }
   } catch (err) {
     console.warn("[ClientFirebase] Erro ao persistir diffs no Firestore:", err);
@@ -1212,7 +1258,7 @@ export async function createAudit(audit: AuditSession, actor: string): Promise<A
 
   activeTransactionalAuditIds.add(docId);
   try {
-    await waitForActiveDiffFlush();
+    await waitForActiveDiffFlush("audits");
     await runTransaction(db, async (tx) => {
       const docRef = doc(db, "audits", docId);
       const snap = await tx.get(docRef);
@@ -1309,6 +1355,73 @@ export async function createRoute(route: ImportedRoute, actor: string): Promise<
   return finalRoute;
 }
 
+export async function upsertImportedRoutesBatch(
+  routes: ImportedRoute[],
+  actor: string
+): Promise<ImportedRoute[]> {
+  if (!routes || routes.length === 0) return [];
+  const nowIso = new Date().toISOString();
+  const db = getClientFirestore();
+
+  const prepared = routes.map((route) => {
+    const docId = getDocIdForCollection("importedRoutes", route);
+    const knownGen = getRouteGeneration(docId);
+    const nextGen = Math.max(Number(route.generation || 1), knownGen);
+    const nextRev = Number(route.rev || 0) + 1;
+    const cleanRoute: ImportedRoute = sanitizeForFirestore({
+      ...route,
+      id: docId,
+      generation: nextGen,
+      rev: nextRev,
+      updatedAt: nowIso,
+      lastUpdatedBy: actor
+    });
+    delete cleanRoute.deletedAt;
+    delete cleanRoute.deletedBy;
+    return { docId, cleanRoute };
+  });
+
+  if (!db) {
+    prepared.forEach(({ docId, cleanRoute }) => {
+      deletedRouteIds.delete(docId);
+      latestRouteGenerationById.set(docId, cleanRoute.generation || 1);
+      notifyDocMutated("importedRoutes", cleanRoute);
+    });
+    return prepared.map((p) => p.cleanRoute);
+  }
+
+  await waitForActiveDiffFlush("importedRoutes");
+  const batchSize = 350;
+  for (let i = 0; i < prepared.length; i += batchSize) {
+    const chunk = prepared.slice(i, i + batchSize);
+    const batch = writeBatch(db);
+    chunk.forEach(({ docId, cleanRoute }) => {
+      notifyCancelPendingDocDiff("importedRoutes", docId);
+      const docRef = doc(db, "importedRoutes", docId);
+      batch.set(
+        docRef,
+        {
+          ...cleanRoute,
+          deletedAt: deleteField(),
+          deletedBy: deleteField()
+        },
+        { merge: true }
+      );
+    });
+    await batch.commit();
+  }
+
+  const colCache = getColCache("importedRoutes");
+  prepared.forEach(({ docId, cleanRoute }) => {
+    deletedRouteIds.delete(docId);
+    latestRouteGenerationById.set(docId, cleanRoute.generation || 1);
+    colCache.set(docId, canonicalJson(cleanRoute));
+    notifyDocMutated("importedRoutes", cleanRoute);
+  });
+
+  return prepared.map((p) => p.cleanRoute);
+}
+
 export async function updateAuditGuarded(
   auditId: string,
   patch: Partial<AuditSession> & Record<string, any>,
@@ -1352,8 +1465,8 @@ export async function updateAuditGuarded(
   activeTransactionalAuditIds.add(auditId);
 
   try {
-    // Aguarda qualquer flush de digitação já em curso e garante que nenhum diff pendente sobrescreva o status
-    await waitForActiveDiffFlush();
+    // Aguarda qualquer flush de digitação já em curso em audits e garante que nenhum diff pendente sobrescreva o status
+    await waitForActiveDiffFlush("audits");
     notifyCancelPendingDocDiff("audits", auditId);
 
     await runTransaction(db, async (tx) => {
@@ -1448,7 +1561,7 @@ export async function updateRouteStatus(
 
   activeTransactionalRouteIds.add(routeId);
   try {
-    await waitForActiveDiffFlush();
+    await waitForActiveDiffFlush("importedRoutes");
     notifyCancelPendingDocDiff("importedRoutes", routeId);
     let updatedRoute: ImportedRoute | null = null;
     await runTransaction(db, async (tx) => {
@@ -1522,7 +1635,7 @@ export async function reopenAudit(
   notifyCancelPendingDocDiff("audits", auditId);
   activeTransactionalAuditIds.add(auditId);
   try {
-    await waitForActiveDiffFlush();
+    await waitForActiveDiffFlush("audits");
     await runTransaction(db, async (tx) => {
       const auditRef = doc(db, "audits", auditId);
       const auditSnap = await tx.get(auditRef);
@@ -1755,25 +1868,78 @@ export async function batchRepairFinalizedAudits(
   return repairedCount;
 }
 
-// --- Gerente de reconexão dos listeners em tempo real ----------------------
-// ANTES: cada uma das 15 coleções tinha um único onSnapshot que, ao dar
-// erro (rede instável, stream expirado, permission-denied pontual etc.),
-// simplesmente MORRIA - o SDK do Firestore não tenta de novo sozinho depois
-// que o callback de erro do onSnapshot é chamado, e nada aqui reanexava o
-// listener. Isso fazia com que, "depois de um tempo", uma ou mais coleções
-// parassem de atualizar silenciosamente (sem nenhum aviso na tela), até o
-// usuário recarregar o app manualmente.
-//
-// Agora cada coleção tem sua própria reanexação com backoff exponencial
-// (1s, 2s, 4s... até 30s), independente das outras, e existe um watchdog
-// que força a reconexão completa se nenhuma sincronização acontecer por
-// muito tempo (cobre o caso raro do stream travar sem chamar o erro).
+// --- Gerente de reconexão e sincronização incremental em tempo real ------
 let reconnectGeneration = 0;
 let activeOnUpdateCallback: ((db: any) => void) | null = null;
 let activeUnsubscribes: Record<string, () => void> = {};
 const COLLECTION_RETRY_STATE: Record<string, { attempts: number; timer: any }> = {};
 let watchdogInterval: any = null;
 let reattachRequestListenerAttached = false;
+
+const CRITICAL_REALTIME_COLS = [
+  "audits",
+  "importedRoutes",
+  "fiscalAlerts",
+  "carregamentoProcesses",
+  "vales"
+] as const;
+
+const liveItemsByCol: Record<string, Map<string, any>> = {};
+const initializedCols = new Set<string>();
+const maxServerTsByCol: Record<string, string> = {};
+
+function getLiveMapForCol(colName: string): Map<string, any> {
+  if (!liveItemsByCol[colName]) {
+    liveItemsByCol[colName] = new Map<string, any>();
+  }
+  return liveItemsByCol[colName];
+}
+
+function recordServerTimestamp(colName: string, data: any) {
+  if (!data) return;
+  const tsVal = colName === "fiscalAlerts" ? (data.timestamp || data.updatedAt) : data.updatedAt;
+  if (typeof tsVal === "string" && tsVal.length >= 10) {
+    const prev = maxServerTsByCol[colName];
+    if (!prev || tsVal > prev) {
+      maxServerTsByCol[colName] = tsVal;
+    }
+  }
+}
+
+function normalizeDocForColGlobal(colName: string, docId: string, data: any) {
+  const itemWithId = { ...data, id: docId };
+  recordServerTimestamp(colName, data);
+  if (colName === "audits") {
+    latestAuditMetaById.set(docId, {
+      status: data.status,
+      rev: Number(data.rev || 0),
+      generation: Number(data.generation || 1),
+      reopenCycle: Number(data.reopenCycle || 0),
+      deletedAt: data.deletedAt
+    });
+    if (data.deletedAt) {
+      deletedAuditIds.add(docId);
+    } else {
+      deletedAuditIds.delete(docId);
+    }
+    return {
+      ...itemWithId,
+      items: Array.isArray(data.items) ? data.items : [],
+      assets: Array.isArray(data.assets) ? data.assets : [],
+      history: Array.isArray(data.history) ? data.history : [],
+      unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : []
+    };
+  }
+  if (colName === "importedRoutes") {
+    latestRouteGenerationById.set(docId, Number(data.generation || 1));
+    if (data.deletedAt) {
+      deletedRouteIds.add(docId);
+    } else {
+      deletedRouteIds.delete(docId);
+    }
+  }
+  return itemWithId;
+}
 
 function resetCollectionRetryState(colName: string) {
   const prev = COLLECTION_RETRY_STATE[colName];
@@ -1799,6 +1965,165 @@ function scheduleCollectionRetry(colName: string, generation: number, attach: (c
 let lastForceReconnectAt = 0;
 const MIN_RECONNECT_COOLDOWN_MS = 10000;
 
+let incrementalSyncInFlight: Promise<boolean> | null = null;
+let lastIncrementalSyncAt = 0;
+const MIN_INCREMENTAL_SYNC_GAP_MS = 3000;
+
+/**
+ * Busca apenas documentos modificados recentemente no servidor (getDocsFromServer)
+ * para detectar mudanças imediatamente mesmo se o WebChannel de escuta passiva
+ * tiver sido desacelerado pelo navegador em segundo plano.
+ */
+export async function syncCriticalCollectionsIncremental(
+  cols: readonly string[] = CRITICAL_REALTIME_COLS,
+  force: boolean = false
+): Promise<boolean> {
+  if (!activeOnUpdateCallback) return false;
+  if (typeof navigator !== "undefined" && !navigator.onLine) return false;
+  const db = getClientFirestore();
+  if (!db) return false;
+
+  const now = Date.now();
+  if (!force && now - lastIncrementalSyncAt < MIN_INCREMENTAL_SYNC_GAP_MS) {
+    return false;
+  }
+  if (incrementalSyncInFlight) {
+    return await incrementalSyncInFlight;
+  }
+
+  lastIncrementalSyncAt = now;
+  const runPromise = (async () => {
+    let anyUpdate = false;
+    const patchPayload: Record<string, any> = {};
+
+    await Promise.all(
+      cols.map(async (colName) => {
+        if (!initializedCols.has(colName)) return;
+        try {
+          const tsField = colName === "fiscalAlerts" ? "timestamp" : "updatedAt";
+          const lastTs = maxServerTsByCol[colName];
+          const cursorMs = lastTs
+            ? Math.max(0, new Date(lastTs).getTime() - 5 * 60 * 1000)
+            : Date.now() - 30 * 60 * 1000;
+          const cursorIso = new Date(cursorMs).toISOString();
+
+          const q = query(collection(db, colName), where(tsField, ">=", cursorIso));
+          const snap = await getDocsFromServer(q);
+          if (snap.empty) return;
+
+          const itemsById = getLiveMapForCol(colName);
+          const colCache = getColCache(COLLECTION_MAP[colName] || colName);
+          let colChanged = false;
+
+          for (const d of snap.docs) {
+            const data = d.data();
+            const docId = d.id;
+            const normalized = normalizeDocForColGlobal(colName, docId, data);
+
+            if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
+              if (itemsById.has(docId)) {
+                itemsById.delete(docId);
+                colChanged = true;
+              }
+              colCache.set(docId, canonicalJson({ ...data, id: docId }));
+            } else {
+              const newJson = canonicalJson({ ...data, id: docId });
+              const prevNormalized = itemsById.get(docId);
+              if (!prevNormalized || colCache.get(docId) !== newJson) {
+                itemsById.set(docId, normalized);
+                colCache.set(docId, newJson);
+                colChanged = true;
+              }
+            }
+          }
+
+          if (colChanged) {
+            patchPayload[colName] = Array.from(itemsById.values());
+            anyUpdate = true;
+          }
+          markSyncSuccess(colName);
+        } catch (err) {
+          if (isPermissionError(err)) checkPermissionError(err);
+        }
+      })
+    );
+
+    if (anyUpdate && activeOnUpdateCallback) {
+      activeOnUpdateCallback(patchPayload);
+      emitSyncedEventThrottled();
+    }
+    return anyUpdate;
+  })();
+
+  incrementalSyncInFlight = runPromise;
+  try {
+    return await runPromise;
+  } finally {
+    if (incrementalSyncInFlight === runPromise) {
+      incrementalSyncInFlight = null;
+    }
+  }
+}
+
+/**
+ * Atualização imediata direto do servidor para as coleções operacionais críticas
+ * (usada nos botões "Atualizar" da Conciliação e "Forçar Sincronização Agora").
+ */
+export async function refreshFirestoreSyncNow(): Promise<boolean> {
+  const db = getClientFirestore();
+  if (!db) return false;
+
+  if (activeOnUpdateCallback) {
+    const activeCount = Object.keys(activeUnsubscribes).length;
+    if (activeCount < TRACKED_COLLECTIONS.length) {
+      forceReconnect(true);
+    }
+  }
+
+  try {
+    const patchPayload: Record<string, any> = {};
+
+    await Promise.all(
+      CRITICAL_REALTIME_COLS.map(async (colName) => {
+        const snap = await getDocsFromServer(collection(db, colName));
+        const itemsById = getLiveMapForCol(colName);
+        const colCache = getColCache(COLLECTION_MAP[colName] || colName);
+
+        itemsById.clear();
+        colCache.clear();
+        initializedCols.add(colName);
+
+        for (const d of snap.docs) {
+          const data = d.data();
+          const docId = d.id;
+          colCache.set(docId, canonicalJson({ ...data, id: docId }));
+          const normalized = normalizeDocForColGlobal(colName, docId, data);
+          if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
+            continue;
+          }
+          itemsById.set(docId, normalized);
+        }
+
+        patchPayload[colName] = Array.from(itemsById.values());
+        markSyncSuccess(colName);
+      })
+    );
+
+    if (activeOnUpdateCallback) {
+      activeOnUpdateCallback(patchPayload);
+    } else if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("force_database_apply", { detail: patchPayload }));
+    }
+    emitSyncedEventThrottled();
+    return true;
+  } catch (err) {
+    console.warn("[ClientFirebase] Erro em refreshFirestoreSyncNow:", err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    else if (isQuotaError(err)) checkQuotaError(err);
+    return false;
+  }
+}
+
 function attachReattachRequestListener() {
   if (reattachRequestListenerAttached || typeof window === "undefined") return;
   reattachRequestListenerAttached = true;
@@ -1809,16 +2134,19 @@ function attachReattachRequestListener() {
     forceReconnect(true);
   });
   // Quando a conexão volta de uma queda de Wi-Fi/4G, só reanexa se algum listener caiu
+  // e dispara um catch-up incremental imediato das coleções críticas.
   window.addEventListener('online', () => {
     if (!activeOnUpdateCallback) return;
     const activeCount = Object.keys(activeUnsubscribes).length;
     if (activeCount < TRACKED_COLLECTIONS.length) {
       forceReconnect();
+    } else {
+      syncCriticalCollectionsIncremental(CRITICAL_REALTIME_COLS, true).catch(() => {});
     }
   });
 }
 
-const WATCHDOG_INTERVAL_MS = 60000;
+const WATCHDOG_INTERVAL_MS = 12000;
 
 function startConnectionWatchdog() {
   if (watchdogInterval || typeof window === "undefined") return;
@@ -1830,7 +2158,10 @@ function startConnectionWatchdog() {
     if (activeCount < TRACKED_COLLECTIONS.length) {
       console.warn(`[ClientFirebase] Listeners incompletos (${activeCount}/${TRACKED_COLLECTIONS.length}). Restaurando escuta em tempo real...`);
       forceReconnect();
+      return;
     }
+    // Catch-up incremental silencioso (consulta apenas docs com updatedAt >= cursor-5min)
+    syncCriticalCollectionsIncremental(CRITICAL_REALTIME_COLS, false).catch(() => {});
   }, WATCHDOG_INTERVAL_MS);
 }
 
@@ -1852,14 +2183,18 @@ export function forceReconnect(bypassCooldown: boolean = false): void {
 }
 
 /**
- * Garante que todas as coleções continuam inscritas ao voltar para a aba,
- * sem destruir listeners saudáveis nem chamar enableNetwork em paralelo aos streams.
+ * Garante que todas as coleções continuam inscritas ao voltar para a aba/janela
+ * e faz catch-up incremental no servidor sem destruir listeners saudáveis.
  */
-export function ensureFirestoreConnected(_hiddenDurationMs: number = 0): void {
+export function ensureFirestoreConnected(hiddenDurationMs: number = 0): void {
   if (!activeOnUpdateCallback) return;
   const activeCount = Object.keys(activeUnsubscribes).length;
   if (activeCount < TRACKED_COLLECTIONS.length) {
     forceReconnect();
+    return;
+  }
+  if (hiddenDurationMs >= 2000) {
+    syncCriticalCollectionsIncremental(CRITICAL_REALTIME_COLS, hiddenDurationMs >= 10000).catch(() => {});
   }
 }
 
@@ -1953,6 +2288,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
   Object.values(activeUnsubscribes).forEach((unsub) => { try { unsub(); } catch (e) {} });
   activeUnsubscribes = {};
   Object.values(COLLECTION_RETRY_STATE).forEach((s) => { if (s.timer) clearTimeout(s.timer); });
+  initializedCols.clear();
 
   console.log("[ClientFirebase] Inscrevendo para atualizações em tempo real nas coleções do Firestore...");
 
@@ -2007,42 +2343,8 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
         activeUnsubscribes[colName] = unsub;
       } else {
         const collRef = collection(db, colName);
-        const itemsById = new Map<string, any>();
+        const itemsById = getLiveMapForCol(colName);
         let isInitialized = false;
-
-        const normalizeDocForCol = (docId: string, data: any) => {
-          const itemWithId = { ...data, id: docId };
-          if (colName === "audits") {
-            latestAuditMetaById.set(docId, {
-              status: data.status,
-              rev: Number(data.rev || 0),
-              generation: Number(data.generation || 1),
-              reopenCycle: Number(data.reopenCycle || 0),
-              deletedAt: data.deletedAt
-            });
-            if (data.deletedAt) {
-              deletedAuditIds.add(docId);
-            } else {
-              deletedAuditIds.delete(docId);
-            }
-            return {
-              ...itemWithId,
-              items: Array.isArray(data.items) ? data.items : [],
-              assets: Array.isArray(data.assets) ? data.assets : [],
-              history: Array.isArray(data.history) ? data.history : [],
-              unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
-            };
-          }
-          if (colName === "importedRoutes") {
-            latestRouteGenerationById.set(docId, Number(data.generation || 1));
-            if (data.deletedAt) {
-              deletedRouteIds.add(docId);
-            } else {
-              deletedRouteIds.delete(docId);
-            }
-          }
-          return itemWithId;
-        };
 
         const unsub = onSnapshot(collRef, (snapshot) => {
           if (myGeneration !== reconnectGeneration) return;
@@ -2085,25 +2387,31 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
 
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
+          const skipCacheHash = colName === "auditLogs";
 
           if (!isInitialized) {
             isInitialized = true;
+            initializedCols.add(colName);
             itemsById.clear();
             const currentServerIds = new Set<string>();
             for (const d of snapshot.docs) {
               const data = d.data();
               const docId = d.id;
               currentServerIds.add(docId);
-              colCache.set(docId, canonicalJson({ ...data, id: docId }));
-              const normalized = normalizeDocForCol(docId, data);
+              if (!skipCacheHash) {
+                colCache.set(docId, canonicalJson({ ...data, id: docId }));
+              }
+              const normalized = normalizeDocForColGlobal(colName, docId, data);
               if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
                 continue;
               }
               itemsById.set(docId, normalized);
             }
-            for (const cachedId of Array.from(colCache.keys())) {
-              if (!currentServerIds.has(cachedId)) {
-                colCache.delete(cachedId);
+            if (!skipCacheHash) {
+              for (const cachedId of Array.from(colCache.keys())) {
+                if (!currentServerIds.has(cachedId)) {
+                  colCache.delete(cachedId);
+                }
               }
             }
           } else {
@@ -2120,8 +2428,10 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
                 if (colName === "importedRoutes") latestRouteGenerationById.delete(docId);
               } else {
                 const data = change.doc.data();
-                colCache.set(docId, canonicalJson({ ...data, id: docId }));
-                const normalized = normalizeDocForCol(docId, data);
+                if (!skipCacheHash) {
+                  colCache.set(docId, canonicalJson({ ...data, id: docId }));
+                }
+                const normalized = normalizeDocForColGlobal(colName, docId, data);
                 if ((colName === "audits" || colName === "importedRoutes") && (normalized as any).deletedAt) {
                   itemsById.delete(docId);
                 } else {
@@ -2210,7 +2520,7 @@ function handleSubscriptionError(error: any, colName: string, generation: number
   }
 }
 
-export async function fetchDirectlyFromFirestore(): Promise<any> {
+export async function fetchDirectlyFromFirestore(forceServer: boolean = false): Promise<any> {
   const db = getClientFirestore();
   if (!db) return null;
 
@@ -2242,47 +2552,23 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
       try {
         if (colName === "customManual") {
           const docRef = doc(db, "customManual", "main");
-          const snap = await getDoc(docRef);
+          const snap = forceServer ? await getDocFromServer(docRef) : await getDoc(docRef);
           if (snap.exists()) {
             const data = snap.data();
             combinedDb.customManual = data.html || data.content || "";
           }
         } else {
           const collRef = collection(db, colName);
-          const snap = await getDocs(collRef);
+          const snap = forceServer ? await getDocsFromServer(collRef) : await getDocs(collRef);
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
+          const skipCacheHash = colName === "auditLogs";
           const rawItems = snap.docs.map((d) => {
             const data = d.data();
-            colCache.set(d.id, JSON.stringify(data));
-            if (colName === "audits") {
-              latestAuditMetaById.set(d.id, {
-                status: data.status,
-                rev: Number(data.rev || 0),
-                generation: Number(data.generation || 1),
-                reopenCycle: Number(data.reopenCycle || 0),
-                deletedAt: data.deletedAt
-              });
-              if (data.deletedAt) deletedAuditIds.add(d.id);
-              else deletedAuditIds.delete(d.id);
-              return {
-                ...data,
-                id: d.id,
-                items: Array.isArray(data.items) ? data.items : [],
-                assets: Array.isArray(data.assets) ? data.assets : [],
-                history: Array.isArray(data.history) ? data.history : [],
-                unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
-              };
+            if (!skipCacheHash) {
+              colCache.set(d.id, canonicalJson({ ...data, id: d.id }));
             }
-            if (colName === "importedRoutes") {
-              latestRouteGenerationById.set(d.id, Number(data.generation || 1));
-              if (data.deletedAt) deletedRouteIds.add(d.id);
-              else deletedRouteIds.delete(d.id);
-            }
-            return {
-              ...data,
-              id: d.id
-            };
+            return normalizeDocForColGlobal(colName, d.id, data);
           });
           const items = (colName === "audits" || colName === "importedRoutes")
             ? rawItems.filter((it: any) => !it.deletedAt)

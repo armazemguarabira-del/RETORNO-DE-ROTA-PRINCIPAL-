@@ -242,12 +242,26 @@ export default function App() {
     };
   }, []);
 
-  // Trata o ciclo de vida do app ao voltar ao primeiro plano (aba visível ou retorno do app minimizado).
-  // Usa forceReconnect() para revalidar os ouvintes onSnapshot (que aproveitam o cache local do IndexedDB sem custos extras)
-  // e busca apenas do servidor local (/api/db) com custo ZERO no Firestore.
+  // Trata o ciclo de vida do app ao voltar ao primeiro plano (aba visível, foco de janela ou retorno do app minimizado).
   useEffect(() => {
     let hasMounted = false;
     let hiddenAt = 0;
+    let lastFocusSyncAt = 0;
+
+    const triggerCatchUp = (hiddenDurationMs: number) => {
+      ensureFirestoreConnected(hiddenDurationMs);
+      if (!isClientFirebaseActive()) {
+        fetch('/api/db')
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.success && data?.db) {
+              applyDirectDb(data.db);
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
     const handleVisibilityChange = () => {
       // Ignora o primeiro instante da montagem da página
       if (!hasMounted) {
@@ -261,27 +275,27 @@ export default function App() {
       if (document.visibilityState === 'visible') {
         const hiddenDurationMs = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
         hiddenAt = 0;
-        ensureFirestoreConnected(hiddenDurationMs);
-        // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
-        if (!isClientFirebaseActive()) {
-          fetch('/api/db')
-            .then(res => res.ok ? res.json() : null)
-            .then(data => {
-              if (data?.success && data?.db) {
-                applyDirectDb(data.db);
-              }
-            })
-            .catch(() => {});
-        }
+        lastFocusSyncAt = Date.now();
+        triggerCatchUp(hiddenDurationMs);
       }
+    };
+
+    const handleWindowFocus = () => {
+      if (!hasMounted) return;
+      const now = Date.now();
+      if (now - lastFocusSyncAt < 4000) return;
+      lastFocusSyncAt = now;
+      triggerCatchUp(3000);
     };
 
     // Marca como montado após o primeiro frame
     const timer = setTimeout(() => { hasMounted = true; }, 1000);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
     return () => {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 

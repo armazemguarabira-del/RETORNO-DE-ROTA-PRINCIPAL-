@@ -160,6 +160,43 @@ export default function ConferenteView({
   // Navigation / active sub-view
   const [activeSession, setActiveSession] = useState<AuditSession | null>(null);
   const [isFinishingAudit, setIsFinishingAudit] = useState<boolean>(false);
+  const isFinishingAuditRef = useRef<boolean>(false);
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDraftAuditRef = useRef<AuditSession | null>(null);
+  const latestAuditsRef = useRef<AuditSession[]>(audits);
+  latestAuditsRef.current = audits;
+
+  const cancelPendingDraftSave = () => {
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
+    pendingDraftAuditRef.current = null;
+  };
+
+  const scheduleDraftAuditSave = (updatedSession: AuditSession) => {
+    pendingDraftAuditRef.current = updatedSession;
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+    }
+    draftSaveTimerRef.current = setTimeout(() => {
+      draftSaveTimerRef.current = null;
+      const pending = pendingDraftAuditRef.current;
+      pendingDraftAuditRef.current = null;
+      if (pending && !isFinishingAuditRef.current) {
+        const updatedAudits = latestAuditsRef.current.map(a => a.id === pending.id ? pending : a);
+        onSaveAudits(updatedAudits);
+      }
+    }, 500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+      }
+    };
+  }, []);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -729,9 +766,10 @@ export default function ConferenteView({
 
   // Keep activeSession in sync with updates from parent audits (real-time/collaboration sync, checking for deletion/conflict)
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession || isFinishingAuditRef.current) return;
 
     if (isAuditDeletedId(activeSession.id) || activeSession.deletedAt) {
+      cancelPendingDraftSave();
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
       setRefugoPhotos([]);
@@ -742,10 +780,16 @@ export default function ConferenteView({
     const currentInAudits = audits.find(a => a.id === activeSession.id);
     if (currentInAudits) {
       if (currentInAudits.deletedAt || (currentInAudits.status !== 'em_aberto' && currentInAudits.status !== 'reconferencia')) {
+        cancelPendingDraftSave();
         localStorage.removeItem('conferente_active_session_id');
         setActiveSession(null);
         setRefugoPhotos([]);
         alert('Este mapa foi excluído ou já foi alterado por outro usuário. A sessão local foi encerrada.');
+        return;
+      }
+
+      if (pendingDraftAuditRef.current && pendingDraftAuditRef.current.id === activeSession.id) {
+        // Não sobrescreve a digitação local ainda em debounce com o snapshot anterior
         return;
       }
 
@@ -778,6 +822,7 @@ export default function ConferenteView({
       const justCreated = justStartedSessionRef.current;
       const isGracePeriod = Boolean(justCreated && justCreated.id === activeSession.id && (Date.now() - justCreated.at) < 8000);
       if (!isGracePeriod) {
+        cancelPendingDraftSave();
         localStorage.removeItem('conferente_active_session_id');
         setActiveSession(null);
         setRefugoPhotos([]);
@@ -969,6 +1014,7 @@ export default function ConferenteView({
 
   const handleExitSession = () => {
     if (!activeSession) return;
+    cancelPendingDraftSave();
     
     let updatedSession = { ...activeSession };
     if (!activeSession.isSuspended && activeSession.lastTimerStart) {
@@ -1041,8 +1087,7 @@ export default function ConferenteView({
       blitzAvariasFound: avarias
     };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDraftAuditSave(updatedSession);
   };
 
   const findMapInfo = (mCode: string) => {
@@ -1660,8 +1705,7 @@ export default function ConferenteView({
 
     const updatedSession = { ...activeSession, items: updatedItems };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDraftAuditSave(updatedSession);
   };
 
   const handleUpdateAssetQty = (assetId: string, val: number) => {
@@ -1706,8 +1750,7 @@ export default function ConferenteView({
 
     const updatedSession = { ...activeSession, assets: updatedAssets };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDraftAuditSave(updatedSession);
   };
 
   const handleUpdateRefugo = (assetId: string, qtyVal: string, reasonVal: string) => {
@@ -1738,8 +1781,7 @@ export default function ConferenteView({
     
     const updatedSession = { ...activeSession, refugos: updatedRefugos };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDraftAuditSave(updatedSession);
   };
 
   const handleRemoveProduct = (code: string) => {
@@ -1771,7 +1813,7 @@ export default function ConferenteView({
   };
 
   const handleConfirmBlitz = async () => {
-    if (!activeSession || isFinishingAudit) return;
+    if (!activeSession || isFinishingAudit || isFinishingAuditRef.current) return;
 
     const updatedSession: AuditSession = {
       ...activeSession,
@@ -1779,6 +1821,8 @@ export default function ConferenteView({
       blitzAvariasFound: 0
     };
 
+    isFinishingAuditRef.current = true;
+    cancelPendingDraftSave();
     setIsFinishingAudit(true);
     setActiveSession(updatedSession);
 
@@ -1878,12 +1922,13 @@ export default function ConferenteView({
       setActiveSession(null);
     } finally {
       setIsFinishingAudit(false);
+      isFinishingAuditRef.current = false;
     }
   };
 
   // Action: Complete physical conference & save
   const handleFinishPhysicalAudit = async () => {
-    if (!activeSession || isFinishingAudit) return;
+    if (!activeSession || isFinishingAudit || isFinishingAuditRef.current) return;
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
     const matchingRoute = importedRoutes.find(r => doesAuditMatchRoute(activeSession, r));
@@ -1903,6 +1948,8 @@ export default function ConferenteView({
       return;
     }
 
+    isFinishingAuditRef.current = true;
+    cancelPendingDraftSave();
     setIsFinishingAudit(true);
     try {
       const now = new Date().toISOString();
@@ -2019,6 +2066,7 @@ export default function ConferenteView({
       setActiveSession(null);
     } finally {
       setIsFinishingAudit(false);
+      isFinishingAuditRef.current = false;
     }
   };
 

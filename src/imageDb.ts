@@ -125,23 +125,31 @@ export class ImageDB {
         }
       }
 
-      // ALWAYS replicate to the backend server API to ensure photos are cached on disk,
-      // registered in the server database cache, and available for PDF generation & non-client-firebase users.
-      try {
-        const res = await fetch('/api/photos', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ photo: newRecord })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.photo) {
-            syncedPhotoData = data.photo;
-            isSynced = true;
+      // Replicate to the backend server API to ensure photos are cached on disk & available for PDF generation.
+      // When Firestore direct write already succeeded, run the server backup in the background so it doesn't delay audit completion.
+      const replicateToServerApi = async () => {
+        try {
+          const res = await fetch('/api/photos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ photo: newRecord })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.photo) {
+              syncedPhotoData = data.photo;
+              isSynced = true;
+            }
           }
+        } catch (srvErr) {
+          console.warn('[ImageDB] Falha na réplica para a API de fotos do servidor:', srvErr);
         }
-      } catch (srvErr) {
-        console.warn('[ImageDB] Falha na réplica para a API de fotos do servidor:', srvErr);
+      };
+
+      if (isSynced) {
+        void replicateToServerApi();
+      } else {
+        await replicateToServerApi();
       }
 
       if (isSynced) {
