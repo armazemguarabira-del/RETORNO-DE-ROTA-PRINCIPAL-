@@ -25,7 +25,6 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 
   override componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("ErrorBoundary caught an error:", error, errorInfo);
-    tryRecoverFromFirestoreAssertion(error);
   }
 
   override render() {
@@ -75,67 +74,9 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 }
 
-let isRecoveringFirestoreAssertion = false;
-
-function isFirestoreAssertionError(errLike: unknown): boolean {
-  const msg = errLike instanceof Error ? `${errLike.message}\n${errLike.stack || ''}` : String(errLike || '');
-  return (
-    msg.includes('INTERNAL ASSERTION FAILED') ||
-    msg.includes('(ID: b815)') ||
-    msg.includes('(ID: ca9)')
-  );
-}
-
-function tryRecoverFromFirestoreAssertion(errLike: unknown): boolean {
-  if (typeof window === 'undefined' || !isFirestoreAssertionError(errLike)) {
-    return false;
-  }
-  try {
-    sessionStorage.setItem('firestore_memory_fallback', '1');
-    if (sessionStorage.getItem('firestore_b815_recovered') === '1' || isRecoveringFirestoreAssertion) {
-      return true;
-    }
-    isRecoveringFirestoreAssertion = true;
-    sessionStorage.setItem('firestore_b815_recovered', '1');
-    console.warn('[FirestoreRecovery] Estado interno do Firestore corrompido detectado (b815/ca9). Alternando para cache em memória e limpando IndexedDB...');
-
-    const cleanupAndReload = async () => {
-      try {
-        if ('indexedDB' in window && typeof (window.indexedDB as any).databases === 'function') {
-          const dbs = await (window.indexedDB as any).databases();
-          if (Array.isArray(dbs)) {
-            await Promise.all(
-              dbs
-                .filter((d: any) => typeof d?.name === 'string' && d.name.toLowerCase().includes('firestore'))
-                .map((d: any) => new Promise<void>((resolve) => {
-                  try {
-                    const req = window.indexedDB.deleteDatabase(d.name);
-                    req.onsuccess = () => resolve();
-                    req.onerror = () => resolve();
-                    req.onblocked = () => resolve();
-                  } catch {
-                    resolve();
-                  }
-                }))
-            );
-          }
-        }
-      } catch {}
-      window.location.reload();
-    };
-
-    cleanupAndReload();
-  } catch {}
-  return true;
-}
-
 // Global safety handler for ambient/unhandled errors
 if (typeof window !== 'undefined') {
   window.addEventListener('error', (event: ErrorEvent) => {
-    if (tryRecoverFromFirestoreAssertion(event?.error || event?.message)) {
-      try { event.preventDefault(); } catch {}
-      return;
-    }
     if (!event || event.message === 'Script error.' || !event.error) {
       console.warn("Ambient non-fatal script error intercepted:", event?.message);
       return;
@@ -144,10 +85,6 @@ if (typeof window !== 'undefined') {
   });
 
   window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-    if (tryRecoverFromFirestoreAssertion(event?.reason)) {
-      try { event.preventDefault(); } catch {}
-      return;
-    }
     console.warn("Unhandled Promise Rejection captured (non-fatal):", event.reason);
     try {
       event.preventDefault();

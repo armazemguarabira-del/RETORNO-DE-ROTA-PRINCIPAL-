@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { softDeleteMapCascade, doesAuditMatchRoute, datesMatchForQueue, isAuditDeletedId, isRouteDeletedId, createRoute, getTodayLocalDateStrClient, isGuardConflictOrNotFound } from '../clientFirebase';
+import { softDeleteMapCascade, doesAuditMatchRoute, datesMatchForQueue, isAuditDeletedId, isRouteDeletedId } from '../clientFirebase';
 import { 
   User, 
   Empilhador, 
@@ -270,7 +270,7 @@ export default function EmpilhadorView({
   };
 
   // Helper date normalization
-  const todayStr = useMemo(() => getTodayLocalDateStrClient(), []);
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   const calculateCiclo = (routeDateStr?: string): 'D0' | 'D1' | 'D2' | 'D3' | 'D4+' => {
     if (!routeDateStr) return 'D0';
@@ -983,19 +983,17 @@ export default function EmpilhadorView({
   };
 
   // HANDLER: ADD NEW PLATE MANUALLY
-  const handleAddNewPlate = async (e: React.FormEvent) => {
+  const handleAddNewPlate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPlate.trim()) return;
 
     const formattedPlate = newPlate.toUpperCase().trim();
-    const rawMapNum = newRouteMap.trim() || `${Math.floor(10000 + Math.random() * 90000)}`;
-    const mapNum = rawMapNum.replace(/^0+/, '') || rawMapNum;
+    const mapNum = newRouteMap.trim() || `${Math.floor(10000 + Math.random() * 90000)}`;
     const driver = newDriverName.trim() || 'Não informado';
     const nowIso = new Date().toISOString();
-    const stableId = `${mapNum.replace(/[^a-zA-Z0-9_-]/g, '_')}_${todayStr}`;
 
     const newRoute: ImportedRoute = {
-      id: stableId,
+      id: `manual_route_${Date.now()}`,
       routeMap: mapNum,
       plate: formattedPlate,
       driverId: driver,
@@ -1003,7 +1001,6 @@ export default function EmpilhadorView({
       routeDate: todayStr,
       status: 'pendente',
       importedAt: nowIso,
-      updatedAt: nowIso,
       itemsCount: 0,
       totalPallets: newTotalPallets || 8,
       loadedPallets: 0,
@@ -1014,25 +1011,15 @@ export default function EmpilhadorView({
       isPernoite: false
     };
 
-    try {
-      const createdRoute = await createRoute(newRoute, currentUser.name);
-      const updatedRoutes = [createdRoute, ...importedRoutes.filter(r => r.id !== createdRoute.id)];
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+    const updatedRoutes = [newRoute, ...importedRoutes];
+    if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
 
-      setShowAddPlateModal(false);
-      setNewPlate('');
-      setNewRouteMap('');
-      setNewDriverName('');
-      setNewTotalPallets(8);
-      setNewIsBlitz(false);
-    } catch (err: any) {
-      if (isGuardConflictOrNotFound(err)) {
-        alert(err.message);
-      } else {
-        console.error('[EmpilhadorView] Erro ao adicionar placa/mapa:', err);
-        alert('Falha ao adicionar mapa manualmente. Verifique sua conexão e tente novamente.');
-      }
-    }
+    setShowAddPlateModal(false);
+    setNewPlate('');
+    setNewRouteMap('');
+    setNewDriverName('');
+    setNewTotalPallets(8);
+    setNewIsBlitz(false);
   };
 
   // Open Edit Times Modal
@@ -1992,7 +1979,7 @@ export default function EmpilhadorView({
                     onChange={(e) => setChecklistEmpilhadorId(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    {Array.from(new Map(empilhadores.map(o => [o.id, o])).values()).map(op => (
+                    {empilhadores.map(op => (
                       <option key={op.id} value={op.id}>
                         {op.name} ({op.forkliftCode || 'EMP'})
                       </option>
@@ -2271,7 +2258,7 @@ export default function EmpilhadorView({
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
                   >
                     <option value="">Nenhum</option>
-                    {Array.from(new Map(empilhadores.map(o => [o.id, o])).values()).map(op => (
+                    {empilhadores.map(op => (
                       <option key={op.id} value={op.id}>{op.name} ({op.forkliftCode})</option>
                     ))}
                   </select>

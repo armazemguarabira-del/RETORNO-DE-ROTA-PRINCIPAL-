@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
-import { isClientFirebaseActive, saveDirectlyToFirestore, createRoute, upsertImportedRoutesBatch, updateAuditGuarded, updateRouteStatus, reopenAudit, softDeleteMapCascade, markAuditPdfDownloadedDoc, batchRepairFinalizedAudits, isGuardConflictOrNotFound, isAuditDeletedId, isRouteDeletedId, doesAuditMatchRoute, datesMatchForQueue, markLegitimateAuditCreation, saveDocToFirestore, refreshFirestoreSyncNow } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore, createRoute, updateAuditGuarded, updateRouteStatus, reopenAudit, softDeleteMapCascade, markAuditPdfDownloadedDoc, batchRepairFinalizedAudits, isGuardConflictOrNotFound, isAuditDeletedId, isRouteDeletedId, doesAuditMatchRoute, datesMatchForQueue, markLegitimateAuditCreation, saveDocToFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users, Wrench } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
@@ -2705,7 +2705,7 @@ export default function FiscalView({
 
   const handleFileImport = (file: File, isMerge: boolean = false) => {
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       const text = e.target?.result as string;
       if (!text) return;
 
@@ -2886,27 +2886,6 @@ export default function FiscalView({
         }
         return r;
       });
-
-      const activeDateRoutesToPersist = mergedRoutes.filter(r =>
-        r.routeDate === routeImportDate ||
-        (!r.routeDate && r.importedAt && r.importedAt.startsWith(routeImportDate))
-      );
-
-      if (activeDateRoutesToPersist.length > 0) {
-        try {
-          const persistedList = await upsertImportedRoutesBatch(activeDateRoutesToPersist, currentUser.name);
-          const persistedByKey = new Map<string, ImportedRoute>();
-          persistedList.forEach(pr => {
-            persistedByKey.set(`${normalizeMapCode(pr.routeMap).toUpperCase()}_${pr.routeDate || ''}`, pr);
-          });
-          mergedRoutes = mergedRoutes.map(r => {
-            const key = `${normalizeMapCode(r.routeMap).toUpperCase()}_${r.routeDate || ''}`;
-            return persistedByKey.get(key) || r;
-          });
-        } catch (err) {
-          console.warn('[FiscalView] Aviso ao persistir lote de rotas importadas via Firestore:', err);
-        }
-      }
 
       if (onSaveImportedRoutes) {
         onSaveImportedRoutes(mergedRoutes);
@@ -3100,7 +3079,6 @@ export default function FiscalView({
   // History search / filters
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ok' | 'divergentes' | 'reabertos'>('all');
-  const [isRefreshingPendingQueue, setIsRefreshingPendingQueue] = useState(false);
 
   // Pending for fiscal verification (filtering out maps that are already closed or downloaded)
   const pendingAudits = audits.filter(a => {
@@ -3116,27 +3094,30 @@ export default function FiscalView({
     // Must be in conferido_fisico or recontagem_finalizada
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
 
-    const aRefTime = a.endTime || a.startTime || a.updatedAt || '';
-
     // Se existir alguma rota ainda aberta/em análise para esta auditoria na mesma data, não oculta
     const hasOpenMatchingRoute = importedRoutes.some(r =>
       !r.deletedAt &&
       !isRouteDeletedId(r.id) &&
       r.status !== 'fechado' &&
-      doesAuditMatchRoute(a, r, { strictSameDate: Boolean(r.routeDate && a.arrivalDate) })
+      doesAuditMatchRoute(a, r, { strictSameDate: true })
     );
 
-    // Só oculta por rota fechada se a rota tiver a mesma data exata e tiver sido fechada DEPOIS que esta conferência foi enviada
+    // Check if matching route (mesma data exata ou fechada após o início desta auditoria) is already closed/finalized
     const isRouteClosedInImports = !hasOpenMatchingRoute && importedRoutes.some(r => {
       if (r.deletedAt || isRouteDeletedId(r.id) || r.status !== 'fechado') return false;
-      if (!r.routeDate || !a.arrivalDate || r.routeDate !== a.arrivalDate) return false;
-      if (!doesAuditMatchRoute(a, r, { strictSameDate: true })) return false;
-      const routeUpdatedAt = r.updatedAt || '';
-      return Boolean(routeUpdatedAt && aRefTime && routeUpdatedAt >= aRefTime);
+      if (doesAuditMatchRoute(a, r, { strictSameDate: true })) {
+        return true;
+      }
+      if (doesAuditMatchRoute(a, r)) {
+        const routeUpdatedAt = r.updatedAt || '';
+        const auditStart = a.startTime || '';
+        return Boolean(routeUpdatedAt && auditStart && routeUpdatedAt >= auditStart);
+      }
+      return false;
     });
     if (isRouteClosedInImports) return false;
 
-    // Só oculta por outra auditoria finalizada do mesmo mapa e mesma data se ela tiver sido finalizada DEPOIS desta conferência
+    // Check if another audit session for the same map AND same day is already finished
     const getAuditDay = (session: AuditSession) =>
       session.arrivalDate ||
       (session.startTime ? session.startTime.slice(0, 10) : '') ||
@@ -3152,9 +3133,7 @@ export default function FiscalView({
       const oDay = getAuditDay(other);
       const sameDate = Boolean(aDay && oDay && oDay === aDay);
       const isFinished = other.status === 'finalizado_ok' || other.status === 'finalizado_divergente';
-      if (!sameDate || !isFinished) return false;
-      const otherFinishedAt = other.closedAt || other.endTime || other.updatedAt || other.startTime || '';
-      return Boolean(otherFinishedAt && aRefTime && otherFinishedAt >= aRefTime);
+      return sameDate && isFinished;
     });
     if (isAuditClosedInOthers) return false;
 
@@ -7345,34 +7324,14 @@ export default function FiscalView({
 
               {/* Column 2: Aguardando Reconciliação (Pendentes) */}
               <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-5 space-y-4">
-                <div className="flex justify-between items-center border-b border-slate-100 pb-3 gap-2">
+                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                   <h3 className="font-sans font-bold text-slate-900 text-sm uppercase flex items-center space-x-1.5">
                     <ShieldAlert className="h-4.5 w-4.5 text-indigo-600 animate-pulse" />
                     <span>Aguardando Conciliação</span>
                   </h3>
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (isRefreshingPendingQueue) return;
-                        setIsRefreshingPendingQueue(true);
-                        try {
-                          await refreshFirestoreSyncNow();
-                        } finally {
-                          setIsRefreshingPendingQueue(false);
-                        }
-                      }}
-                      title="Sincronizar conferências direto do servidor"
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 hover:bg-indigo-100 text-slate-700 hover:text-indigo-800 border border-slate-200 transition cursor-pointer disabled:opacity-60"
-                      disabled={isRefreshingPendingQueue}
-                    >
-                      <RefreshCw className={`h-3 w-3 ${isRefreshingPendingQueue ? 'animate-spin' : ''}`} />
-                      <span>{isRefreshingPendingQueue ? 'Sincronizando...' : 'Atualizar'}</span>
-                    </button>
-                    <span className="bg-indigo-100 text-indigo-800 text-xxs font-extrabold px-2 py-0.5 rounded-full font-mono">
-                      {pendingAudits.length} rotas
-                    </span>
-                  </div>
+                  <span className="bg-indigo-100 text-indigo-800 text-xxs font-extrabold px-2 py-0.5 rounded-full font-mono">
+                    {pendingAudits.length} rotas
+                  </span>
                 </div>
 
                 <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">

@@ -1095,76 +1095,30 @@ export default function GestorDashboard({
 
   // 6. RANKING DE EMPILHADORES (Ordenado estritamente pelo Menor Tempo de Descarregamento)
   const empilhadorRankingList = useMemo(() => {
-    const resolveEmpObj = (rawName: string): Empilhador | undefined => {
-      const norm = normalizePersonName(rawName);
-      if (!norm) return undefined;
-      const exact = empilhadores.find(e => normalizePersonName(e.name) === norm);
-      if (exact) return exact;
-      const tokens = norm.split(' ').filter(Boolean);
-      if (tokens.length >= 2) {
-        const twoWordPrefix = `${tokens[0]} ${tokens[1]}`;
-        const prefixMatches = empilhadores.filter(e => {
-          const eNorm = normalizePersonName(e.name);
-          return eNorm === twoWordPrefix || eNorm.startsWith(`${twoWordPrefix} `);
-        });
-        if (prefixMatches.length === 1) return prefixMatches[0];
-      }
-      return undefined;
-    };
+    const allNames = new Set<string>();
+    empilhadores.forEach(e => allNames.add(e.name));
+    unifiedUnloadingHistory.forEach(h => allNames.add(h.empilhadorName));
 
-    const groupedByKey = new Map<string, {
-      id: string;
-      name: string;
-      empObj?: Empilhador;
-      records: typeof unifiedUnloadingHistory;
-    }>();
-
-    const getCanonicalEntry = (rawName: string, explicitEmp?: Empilhador) => {
-      const empObj = explicitEmp || resolveEmpObj(rawName);
-      const norm = normalizePersonName(empObj?.name || rawName) || 'sem_nome';
-      const canonicalKey = empObj?.id ? `id:${empObj.id.trim().toLowerCase()}` : `name:${norm}`;
-      let entry = groupedByKey.get(canonicalKey);
-      if (!entry) {
-        entry = {
-          id: empObj?.id || `emp_${norm.replace(/\s+/g, '_')}`,
-          name: empObj?.name || rawName,
-          empObj,
-          records: []
-        };
-        groupedByKey.set(canonicalKey, entry);
-      }
-      return entry;
-    };
-
-    empilhadores.forEach(e => {
-      if (e?.name) getCanonicalEntry(e.name, e);
-    });
-
-    unifiedUnloadingHistory.forEach(h => {
-      if (!h?.empilhadorName) return;
-      const entry = getCanonicalEntry(h.empilhadorName);
-      entry.records.push(h);
-    });
-
-    if (groupedByKey.size === 0) {
-      getCanonicalEntry('Paulo Pereira');
-      getCanonicalEntry('José Ronildo');
-      getCanonicalEntry('Marivaldo Artur');
+    if (allNames.size === 0) {
+      allNames.add('Paulo Pereira');
+      allNames.add('José Ronildo');
+      allNames.add('Marivaldo Artur');
     }
 
-    const usedIds = new Set<string>();
-    const ranking = Array.from(groupedByKey.values()).map((entry, idx) => {
-      const { name, empObj, records } = entry;
+    const ranking = Array.from(allNames).map(name => {
+      const records = unifiedUnloadingHistory.filter(h => h.empilhadorName.toLowerCase() === name.toLowerCase());
       const totalVehicles = records.length;
       const totalMins = records.reduce((s, r) => s + r.durationMinutes, 0);
       const avgMins = totalVehicles > 0 ? Number((totalMins / totalVehicles).toFixed(1)) : 22;
       const minMins = totalVehicles > 0 ? Math.min(...records.map(r => r.durationMinutes)) : 16;
       const maxMins = totalVehicles > 0 ? Math.max(...records.map(r => r.durationMinutes)) : 28;
-
+      
       const eligible = records.filter(r => !r.isPernoite);
       const onTime = eligible.filter(r => r.isBefore22).length;
       const efdPct = eligible.length > 0 ? Number(((onTime / eligible.length) * 100).toFixed(1)) : 100;
       const pernoites = records.filter(r => r.isPernoite).length;
+
+      const empObj = empilhadores.find(e => e.name.toLowerCase() === name.toLowerCase());
 
       let formattedShift = 'Turno Geral / Pátio';
       if (empObj?.shift) {
@@ -1177,14 +1131,8 @@ export default function GestorDashboard({
         formattedShift = 'Turno Geral / Pátio';
       }
 
-      let uniqueId = entry.id;
-      if (usedIds.has(uniqueId)) {
-        uniqueId = `${uniqueId}__${idx}`;
-      }
-      usedIds.add(uniqueId);
-
       return {
-        id: uniqueId,
+        id: empObj?.id || `emp_${name}`,
         name,
         matricula: empObj?.matricula || 'MAT-DPO',
         shift: formattedShift,
@@ -2132,15 +2080,13 @@ export default function GestorDashboard({
       };
       onSaveUsers([...users, newUser]);
       if (newUserRole === 'empilhador' && onSaveEmpilhadores) {
-        const candidateId = 'EMP-' + formattedUsername.toUpperCase();
-        const existingEmp = empilhadores.find(e =>
-          (e.id || '').toLowerCase() === candidateId.toLowerCase() ||
-          (e.matricula || '').toLowerCase() === formattedUsername.toLowerCase() ||
-          normalizePersonName(e.name) === normalizePersonName(formattedName)
+        const existingEmp = empilhadores.find(e => 
+          e.matricula.toLowerCase() === formattedUsername.toLowerCase() || 
+          e.name.toLowerCase() === formattedName.toLowerCase()
         );
         if (!existingEmp) {
           const newEmp: Empilhador = {
-            id: candidateId,
+            id: 'EMP-' + formattedUsername.toUpperCase(),
             name: formattedName.toUpperCase(),
             matricula: formattedUsername.toUpperCase(),
             forkliftCode: `E-0${(empilhadores.length % 8) + 1}`,

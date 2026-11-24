@@ -16,14 +16,9 @@ function normalizeMapCode(mapCode: any): string {
   return str.replace(/^0+/, '') || str;
 }
 
-function getTodayLocalDateStr(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 // Format dates YYYY-MM-DD
 function formatDateToYYYYMMDD(val: any): string {
-  if (!val) return getTodayLocalDateStr();
+  if (!val) return new Date().toISOString().split('T')[0];
 
   // If Excel Date serial number
   if (typeof val === 'number') {
@@ -52,7 +47,7 @@ function formatDateToYYYYMMDD(val: any): string {
     }
   }
 
-  return getTodayLocalDateStr();
+  return new Date().toISOString().split('T')[0];
 }
 
 // Map column header names to standardized reason name in uppercase
