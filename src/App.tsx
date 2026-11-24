@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration } from './types';
-import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive } from './data';
+import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive, deduplicateEmpilhadores } from './data';
 import { ImageDB } from './imageDb';
 import {
   isClientFirebaseActive,
@@ -248,6 +248,30 @@ export default function App() {
   useEffect(() => {
     let hasMounted = false;
     let hiddenAt = 0;
+    let lastResumeTriggerAt = 0;
+
+    const triggerResumeSync = (forcedHiddenMs?: number) => {
+      const now = Date.now();
+      if (now - lastResumeTriggerAt < 10000) return;
+      lastResumeTriggerAt = now;
+      const hiddenDurationMs = forcedHiddenMs !== undefined
+        ? forcedHiddenMs
+        : (hiddenAt > 0 ? now - hiddenAt : 0);
+      hiddenAt = 0;
+      ensureFirestoreConnected(hiddenDurationMs);
+      // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
+      if (!isClientFirebaseActive()) {
+        fetch('/api/db')
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.success && data?.db) {
+              applyDirectDb(data.db);
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
     const handleVisibilityChange = () => {
       // Ignora o primeiro instante da montagem da página
       if (!hasMounted) {
@@ -259,29 +283,34 @@ export default function App() {
         return;
       }
       if (document.visibilityState === 'visible') {
-        const hiddenDurationMs = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
-        hiddenAt = 0;
-        ensureFirestoreConnected(hiddenDurationMs);
-        // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
-        if (!isClientFirebaseActive()) {
-          fetch('/api/db')
-            .then(res => res.ok ? res.json() : null)
-            .then(data => {
-              if (data?.success && data?.db) {
-                applyDirectDb(data.db);
-              }
-            })
-            .catch(() => {});
-        }
+        triggerResumeSync();
       }
+    };
+
+    const handlePageShow = (e: PageTransitionEvent) => {
+      if (!hasMounted) return;
+      if (e.persisted) {
+        triggerResumeSync(15000);
+      } else {
+        triggerResumeSync();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      if (!hasMounted || document.visibilityState !== 'visible') return;
+      triggerResumeSync();
     };
 
     // Marca como montado após o primeiro frame
     const timer = setTimeout(() => { hasMounted = true; }, 1000);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('focus', handleWindowFocus);
     return () => {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 
@@ -673,12 +702,29 @@ export default function App() {
     const now = new Date().toISOString();
     const effectiveAudits = (currentAudits || audits || []).filter(a => a && !a.deletedAt && !isAuditDeletedId(a.id));
     return list.filter(r => r && !r.deletedAt && !isRouteDeletedId(r.id)).map(r => {
-      const isClosedByAudit = effectiveAudits.some(a => {
-        if (a.reopeningRequested) return false;
+      const matchingAudits = effectiveAudits.filter(a => doesAuditMatchRoute(a, r));
+      let latestCompletedTime = '';
+      for (const a of matchingAudits) {
+        if (a.reopeningRequested) continue;
         const isCompleted = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente';
-        if (!isCompleted) return false;
-        return doesAuditMatchRoute(a, r);
+        if (!isCompleted) continue;
+        const t = a.closedAt || a.endTime || a.updatedAt || a.startTime || '';
+        if (t > latestCompletedTime) latestCompletedTime = t;
+      }
+
+      const hasNewerActiveOrPendingAudit = matchingAudits.some(a => {
+        const isPendingOrActive =
+          a.reopeningRequested ||
+          a.status === 'em_aberto' ||
+          a.status === 'reconferencia' ||
+          ((a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada') && !a.pdfDownloaded && a.surplusFlowStatus !== 'BAIXADO');
+        if (!isPendingOrActive) return false;
+        if (!latestCompletedTime) return true;
+        const t = a.endTime || a.startTime || a.updatedAt || '';
+        return t > latestCompletedTime;
       });
+
+      const isClosedByAudit = Boolean(latestCompletedTime) && !hasNewerActiveOrPendingAudit;
 
       return {
         ...r,
@@ -814,8 +860,9 @@ export default function App() {
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
-      latestCollectionRefs.current.empilhadores = db.empilhadores;
-      setEmpilhadores(db.empilhadores);
+      const cleanedEmps = deduplicateEmpilhadores(db.empilhadores);
+      latestCollectionRefs.current.empilhadores = cleanedEmps;
+      setEmpilhadores(cleanedEmps);
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
@@ -1049,7 +1096,7 @@ export default function App() {
     const handleForceApply = (e: any) => {
       if (e.detail) {
         console.log("[AppSync] Forçando aplicação manual de dados do banco...");
-        applyDirectDb(e.detail);
+        applyDirectDb(e.detail, true);
       }
     };
 
@@ -1555,8 +1602,9 @@ export default function App() {
   };
 
   const handleSaveEmpilhadores = (newEmpilhadores: Empilhador[]) => {
-    setEmpilhadores(newEmpilhadores);
-    pushDatabaseToServer({ empilhadores: newEmpilhadores });
+    const cleaned = deduplicateEmpilhadores(newEmpilhadores);
+    setEmpilhadores(cleaned);
+    pushDatabaseToServer({ empilhadores: cleaned });
   };
 
   const handleSaveCarregamentos = (newCarregamentos: CarregamentoProcess[]) => {

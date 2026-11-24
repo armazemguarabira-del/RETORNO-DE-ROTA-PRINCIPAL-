@@ -5,6 +5,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDocFromServer
 } from 'firebase/firestore';
@@ -12,12 +13,26 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
+function shouldUseMemoryCacheFallback(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return sessionStorage.getItem("firestore_memory_fallback") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function initFirestoreInstance() {
   const dbId = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)")
     ? firebaseConfig.firestoreDatabaseId
     : undefined;
 
   try {
+    if (shouldUseMemoryCacheFallback()) {
+      return initializeFirestore(app, {
+        localCache: memoryLocalCache()
+      }, dbId);
+    }
     if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
       return initializeFirestore(app, {
         localCache: persistentLocalCache({

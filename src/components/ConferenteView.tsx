@@ -9,10 +9,12 @@ import {
   softDeleteMapCascade,
   isGuardConflictOrNotFound,
   isAuditDeletedId,
+  isRouteDeletedId,
   doesAuditMatchRoute,
   markLegitimateAuditCreation,
   isClientFirebaseActive,
-  saveDocToFirestore
+  saveDocToFirestore,
+  refreshFirestoreSyncNow
 } from '../clientFirebase';
 
 const getTodayLocalDateStr = () => {
@@ -160,6 +162,8 @@ export default function ConferenteView({
   // Navigation / active sub-view
   const [activeSession, setActiveSession] = useState<AuditSession | null>(null);
   const [isFinishingAudit, setIsFinishingAudit] = useState<boolean>(false);
+  const [openRouteSearch, setOpenRouteSearch] = useState<string>('');
+  const [isSyncingOpenRoutes, setIsSyncingOpenRoutes] = useState<boolean>(false);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -196,7 +200,7 @@ export default function ConferenteView({
     const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === f.routeMap.toUpperCase());
     
     if (f.tripStatus === 'pernoitam') {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getTodayLocalDateStr();
       const isClosed = (matchingAudit && (matchingAudit.status === 'finalizado_ok' || matchingAudit.status === 'finalizado_divergente' || matchingAudit.surplusFlowStatus === 'BAIXADO')) || (matchingRoute && matchingRoute.status === 'fechado');
       const isDateRolledOver = f.updatedAt && f.updatedAt.split('T')[0] < todayStr;
 
@@ -720,6 +724,7 @@ export default function ConferenteView({
 
   const hasLoadedInitialAuditsRef = useRef<boolean>(false);
   const justStartedSessionRef = useRef<{ id: string; at: number } | null>(null);
+  const isFinishingAuditRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (audits && audits.length > 0) {
@@ -729,7 +734,7 @@ export default function ConferenteView({
 
   // Keep activeSession in sync with updates from parent audits (real-time/collaboration sync, checking for deletion/conflict)
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession || isFinishingAuditRef.current) return;
 
     if (isAuditDeletedId(activeSession.id) || activeSession.deletedAt) {
       localStorage.removeItem('conferente_active_session_id');
@@ -1288,8 +1293,10 @@ export default function ConferenteView({
     const targetMaps = unifiedMaps && unifiedMaps.length > 0 ? unifiedMaps : [finalRouteMap];
     const targetMapsUpper = targetMaps.map(m => m.trim().toUpperCase());
 
-    const existingActiveSession = audits.find(a => 
-      a.routeMap.toUpperCase() === finalRouteMap.toUpperCase() && 
+    const existingActiveSession = audits.find(a =>
+      !a.deletedAt &&
+      !isAuditDeletedId(a.id) &&
+      a.routeMap.toUpperCase() === finalRouteMap.toUpperCase() &&
       (a.status === 'em_aberto' || a.status === 'reconferencia')
     );
 
@@ -1312,7 +1319,9 @@ export default function ConferenteView({
     }
 
     // Search for an existing active/reconferencia audit among member maps to unify/update
-    const existingMemberAudit = audits.find(a => 
+    const existingMemberAudit = audits.find(a =>
+      !a.deletedAt &&
+      !isAuditDeletedId(a.id) &&
       (a.status === 'em_aberto' || a.status === 'reconferencia') &&
       (
         targetMapsUpper.includes(a.routeMap.toUpperCase()) ||
@@ -1480,9 +1489,9 @@ export default function ConferenteView({
 
         const matchedRoutes = importedRoutes.filter(r =>
           !r.deletedAt &&
+          !isRouteDeletedId(r.id) &&
           r.status !== 'fechado' &&
-          (r.routeMap.toUpperCase() === finalRouteMap ||
-            (unifiedMaps && unifiedMaps.some(m => m.toUpperCase() === r.routeMap.toUpperCase())))
+          doesAuditMatchRoute(sessionToActivate, r)
         );
         await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'conferindo', currentUser.name)));
       }
@@ -1780,6 +1789,7 @@ export default function ConferenteView({
     };
 
     setIsFinishingAudit(true);
+    isFinishingAuditRef.current = true;
     setActiveSession(updatedSession);
 
     try {
@@ -1820,6 +1830,8 @@ export default function ConferenteView({
             expectedStatus,
             actor: currentUser.name,
             clearFields: ['lastTimerStart'],
+            fallbackOfflineUpdate: true,
+            fallbackBaseAudit: baseWithRemoteMeta,
             appendHistoryEntry: {
               timestamp: now,
               action: actionText,
@@ -1857,17 +1869,19 @@ export default function ConferenteView({
         targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
       };
 
-      const matchedRoutes = (importedRoutes || []).filter(r => doesAuditMatchRoute(updatedSession, r));
+      const matchedRoutes = (importedRoutes || []).filter(r =>
+        !r.deletedAt && !isRouteDeletedId(r.id) && r.status !== 'fechado' && doesAuditMatchRoute(updatedSession, r)
+      );
       if (isClientFirebaseActive()) {
         await Promise.all([
-          saveDocToFirestore('fiscalAlerts', newAlert),
-          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name))
+          saveDocToFirestore('fiscalAlerts', newAlert).catch(() => false),
+          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name).catch(() => false))
         ]);
       } else {
         if (onSaveAlerts && fiscalAlerts) {
           onSaveAlerts([newAlert, ...fiscalAlerts]);
         }
-        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name).catch(() => false)));
       }
 
       setShowBlitzModal(false);
@@ -1877,6 +1891,7 @@ export default function ConferenteView({
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
     } finally {
+      isFinishingAuditRef.current = false;
       setIsFinishingAudit(false);
     }
   };
@@ -1904,6 +1919,7 @@ export default function ConferenteView({
     }
 
     setIsFinishingAudit(true);
+    isFinishingAuditRef.current = true;
     try {
       const now = new Date().toISOString();
       const nextStatus = isReconferindo ? ('recontagem_finalizada' as const) : ('conferido_fisico' as const);
@@ -1917,7 +1933,7 @@ export default function ConferenteView({
         finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
       }
 
-      // Auto-associate any captured refugoPhotos to the refugos in the session (em paralelo)
+      // Auto-associate any captured refugoPhotos to the refugos in the session (em paralelo, tolerante a falhas)
       let updatedRefugos = [...(activeSession.refugos || [])];
       if (refugoPhotos.length > 0 && updatedRefugos.length > 0) {
         const photoRecords = await Promise.all(
@@ -1927,7 +1943,7 @@ export default function ConferenteView({
               `ref_batch_${Date.now()}_${pIdx}`,
               `Refugo e Avarias (${updatedRefugos.length} itens)`,
               'refugo'
-            )
+            ).catch(() => null)
           )
         );
         const savedPhotoIds = photoRecords
@@ -1963,6 +1979,8 @@ export default function ConferenteView({
             expectedStatus,
             actor: currentUser.name,
             clearFields: ['lastTimerStart'],
+            fallbackOfflineUpdate: true,
+            fallbackBaseAudit: finishBaseWithMeta,
             appendHistoryEntry: {
               timestamp: now,
               action: actionText,
@@ -2000,17 +2018,19 @@ export default function ConferenteView({
         targetRoles: ['auxiliar_logistica', 'financeiro', 'gestor']
       };
 
-      const matchedRoutes = (importedRoutes || []).filter(r => doesAuditMatchRoute(activeSession, r));
+      const matchedRoutes = (importedRoutes || []).filter(r =>
+        !r.deletedAt && !isRouteDeletedId(r.id) && r.status !== 'fechado' && doesAuditMatchRoute(activeSession, r)
+      );
       if (isClientFirebaseActive()) {
         await Promise.all([
-          saveDocToFirestore('fiscalAlerts', newAlert),
-          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name))
+          saveDocToFirestore('fiscalAlerts', newAlert).catch(() => false),
+          ...matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name).catch(() => false))
         ]);
       } else {
         if (onSaveAlerts && fiscalAlerts) {
           onSaveAlerts([newAlert, ...fiscalAlerts]);
         }
-        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name)));
+        await Promise.all(matchedRoutes.map(r => updateRouteStatus(r.id, 'em_analise', currentUser.name).catch(() => false)));
       }
 
       alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
@@ -2018,6 +2038,7 @@ export default function ConferenteView({
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
     } finally {
+      isFinishingAuditRef.current = false;
       setIsFinishingAudit(false);
     }
   };
@@ -2467,7 +2488,7 @@ export default function ConferenteView({
 
     // 1. Process imported routes
     (importedRoutes || []).forEach(route => {
-      if (!route || route.deletedAt) return;
+      if (!route || route.deletedAt || isRouteDeletedId(route.id)) return;
       const routeMapUpper = (route.routeMap || '').toUpperCase();
       const routeMapNorm = normalizeMapCode(route.routeMap || '').toUpperCase();
 
@@ -2850,8 +2871,8 @@ export default function ConferenteView({
       {!activeSession ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 w-full min-w-0">
           
-          {/* LEFT & CENTER: Status of the Day + Pending Audits */}
-          <div className="lg:col-span-7 xl:col-span-8 space-y-6 min-w-0">
+          {/* LEFT & CENTER: Status of the Day + Pending Audits (abaixo no mobile para dar destaque imediato aos Mapas em Aberto) */}
+          <div className="lg:col-span-7 xl:col-span-8 space-y-6 min-w-0 order-2 lg:order-1">
             
             {/* STATUS DO DIA (Dashboard Widget) */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
@@ -3131,34 +3152,75 @@ export default function ConferenteView({
 
           </div>
           
-          {/* RIGHT: REGISTER RETURN FROM ROUTE PANEL */}
-          <div className="lg:col-span-5 xl:col-span-4 space-y-6 min-w-0">
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="flex justify-between items-center mb-4">
+          {/* RIGHT: REGISTER RETURN FROM ROUTE PANEL (topo imediato no celular) */}
+          <div className="lg:col-span-5 xl:col-span-4 space-y-6 min-w-0 order-1 lg:order-2">
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-6">
+              <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
                 <h2 className="font-sans font-bold text-lg text-slate-900 flex items-center space-x-2">
                   <Play className="h-5 w-5 text-amber-500" />
                   <span>MAPAS EM ABERTO</span>
                 </h2>
-                <button
-                  type="button"
-                  onClick={handleLoadDemoForm}
-                  className="text-xxs font-semibold uppercase tracking-wider text-amber-600 hover:text-amber-700 hover:bg-amber-50 px-2 py-1 rounded transition border border-amber-200"
-                >
-                  Autopreencher Teste
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsSyncingOpenRoutes(true);
+                      try {
+                        await refreshFirestoreSyncNow();
+                      } finally {
+                        setTimeout(() => setIsSyncingOpenRoutes(false), 500);
+                      }
+                    }}
+                    disabled={isSyncingOpenRoutes}
+                    className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-lg transition border border-blue-200 flex items-center gap-1 cursor-pointer disabled:opacity-60"
+                    title="Sincronizar mapas abertos diretamente do servidor"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${isSyncingOpenRoutes ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingOpenRoutes ? 'Sinc...' : 'Atualizar'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLoadDemoForm}
+                    className="text-xxs font-semibold uppercase tracking-wider text-amber-600 hover:text-amber-700 hover:bg-amber-50 px-2 py-1 rounded transition border border-amber-200"
+                  >
+                    Teste
+                  </button>
+                </div>
               </div>
 
               {/* Mapas Importados e Reabertos Quick Fill Panel */}
-              {openRoutesList.length > 0 && (
-                <div className="mb-5 bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
-                  <div className="flex justify-between items-center">
+              {openRoutesList.length > 0 ? (
+                <div className="mb-5 bg-slate-50 border border-slate-200 rounded-xl p-3 sm:p-3.5 space-y-2.5">
+                  <div className="flex justify-between items-center gap-2">
                     <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider flex items-center space-x-1.5 font-mono">
                       <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
                       <span>Veículos com Mapas em Aberto</span>
                     </span>
-                    <span className="text-[10px] text-slate-500 font-semibold font-mono">
+                    <span className="text-[10px] text-slate-500 font-semibold font-mono shrink-0">
                       {openRoutesList.length} abertos
                     </span>
+                  </div>
+
+                  {/* Busca rápida por mapa/placa no celular e desktop */}
+                  <div className="relative">
+                    <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={openRouteSearch}
+                      onChange={(e) => setOpenRouteSearch(e.target.value)}
+                      placeholder="Buscar mapa, placa ou motorista..."
+                      className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-7 py-1.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                    {openRouteSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setOpenRouteSearch('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        title="Limpar busca"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   {/* Unify Maps Button Banner */}
@@ -3189,7 +3251,18 @@ export default function ConferenteView({
                     </div>
                   )}
                   <div className="flex flex-col gap-2">
-                    {openRoutesList.map(route => {
+                    {openRoutesList
+                      .filter(route => {
+                        const q = openRouteSearch.trim().toUpperCase();
+                        if (!q) return true;
+                        return (
+                          (route.routeMap || '').toUpperCase().includes(q) ||
+                          (route.plate || '').toUpperCase().includes(q) ||
+                          (route.driverName || '').toUpperCase().includes(q) ||
+                          (route.empilhadorName || '').toUpperCase().includes(q)
+                        );
+                      })
+                      .map(route => {
                       const isPendente = route.status === 'pendente' || !route.status;
                       const isConferindo = route.status === 'conferindo';
                       const isEmAnalise = route.status === 'em_analise';
@@ -3376,6 +3449,26 @@ export default function ConferenteView({
                       );
                     })}
                   </div>
+                </div>
+              ) : (
+                <div className="mb-5 bg-slate-50 border border-dashed border-slate-300 rounded-xl p-4 text-center space-y-2">
+                  <p className="text-xs font-semibold text-slate-600">Nenhum veículo com mapa em aberto no momento.</p>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsSyncingOpenRoutes(true);
+                      try {
+                        await refreshFirestoreSyncNow();
+                      } finally {
+                        setTimeout(() => setIsSyncingOpenRoutes(false), 500);
+                      }
+                    }}
+                    disabled={isSyncingOpenRoutes}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold rounded-lg transition cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isSyncingOpenRoutes ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingOpenRoutes ? 'Buscando do Servidor...' : 'Sincronizar Mapas do Servidor'}</span>
+                  </button>
                 </div>
               )}
  
@@ -5286,7 +5379,11 @@ export default function ConferenteView({
                       onChange={(e) => setGuiaEmpilhadorName(e.target.value)}
                       className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
                     >
-                      {(empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map(emp => (
+                      {Array.from(
+                        new Map(
+                          (empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map(e => [e.id, e])
+                        ).values()
+                      ).map(emp => (
                         <option key={emp.id} value={emp.name}>{emp.name}</option>
                       ))}
                     </select>

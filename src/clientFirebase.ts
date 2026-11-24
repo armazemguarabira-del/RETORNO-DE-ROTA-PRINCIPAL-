@@ -4,6 +4,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDoc,
   getDocs,
@@ -18,7 +19,8 @@ import {
   updateDoc,
   increment,
   deleteField,
-  enableNetwork
+  enableNetwork,
+  getDocsFromServer
 } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import firebaseConfig from "../firebase-applet-config.json";
@@ -562,8 +564,14 @@ function attachAuthStateListener() {
         isAuthenticated = true;
         isAuthenticating = false;
         clientAuthError = null;
-        if (wasUnauthenticated) {
-          window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
+        if (wasUnauthenticated && activeOnUpdateCallback) {
+          const activeCount = Object.keys(activeUnsubscribes).length;
+          const hasPendingRetries = Object.values(COLLECTION_RETRY_STATE).some(
+            (s) => Boolean(s?.timer) || (s?.attempts || 0) > 0
+          );
+          if (activeCount < TRACKED_COLLECTIONS.length || hasPendingRetries || hasClientPermissionError) {
+            window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
+          }
         }
       } else {
         console.warn("[ClientFirebase] Sessão de autenticação perdida. Tentando reautenticar...");
@@ -815,10 +823,17 @@ export function getClientFirestore() {
     const app = getApps().length === 0 ? initializeApp(config) : getApp();
     const dbId = (config.firestoreDatabaseId && config.firestoreDatabaseId !== "(default)") ? config.firestoreDatabaseId : undefined;
 
-    // Enable IndexedDB persistent local cache with multi-tab support
-    // This allows page reloads and multiple tabs to read from local cache with 0 Firestore read consumption!
+    const useMemoryFallback = typeof window !== "undefined" && (() => {
+      try { return sessionStorage.getItem("firestore_memory_fallback") === "1"; } catch { return false; }
+    })();
+
+    // Enable IndexedDB persistent local cache with multi-tab support (or memory cache fallback if flagged)
     try {
-      if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
+      if (useMemoryFallback) {
+        firestoreInstance = initializeFirestore(app, {
+          localCache: memoryLocalCache()
+        }, dbId);
+      } else if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
         firestoreInstance = initializeFirestore(app, {
           localCache: persistentLocalCache({
             tabManager: persistentMultipleTabManager()
@@ -1175,6 +1190,24 @@ export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean 
 // Fase 2: Helpers Transacionais por Documento (máx 1-2 docs por operação)
 // ---------------------------------------------------------------------------
 
+function isTransientOfflineError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err?.code || "").toLowerCase();
+  const msg = String(err?.message || err || "").toLowerCase();
+  return (
+    code === "unavailable" ||
+    code === "aborted" ||
+    code === "deadline-exceeded" ||
+    code === "failed-precondition" ||
+    msg.includes("client is offline") ||
+    msg.includes("failed to get document") ||
+    msg.includes("unavailable") ||
+    msg.includes("network") ||
+    msg.includes("offline") ||
+    msg.includes("timeout")
+  );
+}
+
 export async function createAudit(audit: AuditSession, actor: string): Promise<AuditSession> {
   const docId = getDocIdForCollection("audits", audit);
   markLegitimateAuditCreation(docId);
@@ -1208,22 +1241,54 @@ export async function createAudit(audit: AuditSession, actor: string): Promise<A
   activeTransactionalAuditIds.add(docId);
   try {
     await waitForActiveDiffFlush();
-    await runTransaction(db, async (tx) => {
-      const docRef = doc(db, "audits", docId);
-      const snap = await tx.get(docRef);
-      if (snap.exists()) {
-        const existing = snap.data() as any;
-        if (!existing.deletedAt) {
-          throw new FirestoreConflictError(
-            `Já existe uma conferência ativa para o mapa ${audit.routeMap}.`,
-            existing.status
-          );
-        }
-        baseAudit.generation = Number(existing.generation || 1) + 1;
-        baseAudit.rev = Number(existing.rev || 0) + 1;
+    await enableNetwork(db).catch(() => {});
+
+    const retryDelays = [0, 400, 900];
+    let lastErr: any = null;
+    let txDone = false;
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+      if (retryDelays[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+        await enableNetwork(db).catch(() => {});
       }
-      tx.set(docRef, baseAudit);
-    });
+      try {
+        await runTransaction(db, async (tx) => {
+          const docRef = doc(db, "audits", docId);
+          const snap = await tx.get(docRef);
+          if (snap.exists()) {
+            const existing = snap.data() as any;
+            if (!existing.deletedAt) {
+              throw new FirestoreConflictError(
+                `Já existe uma conferência ativa para o mapa ${audit.routeMap}.`,
+                existing.status
+              );
+            }
+            baseAudit.generation = Number(existing.generation || 1) + 1;
+            baseAudit.rev = Number(existing.rev || 0) + 1;
+          }
+          tx.set(docRef, baseAudit);
+        });
+        txDone = true;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (isGuardConflictOrNotFound(err) || !isTransientOfflineError(err)) {
+          throw err;
+        }
+      }
+    }
+
+    if (!txDone) {
+      if (isAuditDeletedId(docId)) {
+        throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+      }
+      if (!isTransientOfflineError(lastErr)) {
+        throw lastErr;
+      }
+      console.warn(`[ClientFirebase] Rede instável ao criar auditoria ${docId}. Enfileirando criação offline para sincronização automática...`);
+      await setDoc(doc(db, "audits", docId), baseAudit, { merge: true });
+    }
   } finally {
     activeTransactionalAuditIds.delete(docId);
   }
@@ -1304,6 +1369,127 @@ export async function createRoute(route: ImportedRoute, actor: string): Promise<
   return finalRoute;
 }
 
+export function getTodayLocalDateStrClient(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Grava rotas importadas em lote (ex: 03.11.49.02), reativando com segurança
+ * qualquer documento que tenha sido excluído logicamente anteriormente
+ * (remove deletedAt/deletedBy via deleteField() e incrementa generation).
+ */
+export async function upsertImportedRoutesBatch(
+  routesToUpsert: ImportedRoute[],
+  actor: string
+): Promise<ImportedRoute[]> {
+  if (!routesToUpsert || routesToUpsert.length === 0) return [];
+
+  const dedupedByDocId = new Map<string, ImportedRoute>();
+  for (const r of routesToUpsert) {
+    if (!r) continue;
+    const docId = getDocIdForCollection("importedRoutes", r);
+    dedupedByDocId.set(docId, { ...r, id: docId });
+  }
+
+  const db = getClientFirestore();
+  const nowIso = new Date().toISOString();
+  const entries = Array.from(dedupedByDocId.entries());
+
+  if (!db) {
+    return entries.map(([docId, route]) => {
+      const nextGen = getRouteGeneration(docId) + (isRouteDeletedId(docId) ? 1 : 0);
+      const clean = sanitizeForFirestore({
+        ...route,
+        id: docId,
+        generation: nextGen,
+        updatedAt: nowIso,
+        lastUpdatedBy: actor
+      });
+      delete clean.deletedAt;
+      delete clean.deletedBy;
+      deletedRouteIds.delete(docId);
+      latestRouteGenerationById.set(docId, nextGen);
+      return clean;
+    });
+  }
+
+  const colCache = getColCache("importedRoutes");
+  const prepared: Array<{ docId: string; route: ImportedRoute; hadDeletedAt: boolean }> = [];
+
+  // Consulta apenas rotas que estão em deletedRouteIds ou fora do cache da sessão (sem custo em rotas já ativas)
+  await Promise.all(
+    entries.map(async ([docId, route]) => {
+      let existingGen = getRouteGeneration(docId);
+      let existingRev = Number(route.rev || 0);
+      let hadDeletedAt = isRouteDeletedId(docId);
+
+      if (hadDeletedAt || !colCache.has(docId)) {
+        try {
+          const snap = await getDoc(doc(db, "importedRoutes", docId));
+          if (snap.exists()) {
+            const existing = snap.data() as any;
+            existingGen = Math.max(existingGen, Number(existing.generation || 1));
+            existingRev = Math.max(existingRev, Number(existing.rev || 0));
+            if (existing.deletedAt) {
+              hadDeletedAt = true;
+            }
+          }
+        } catch {
+          // ignore read error; proceed cleanly
+        }
+      }
+
+      const nextGen = hadDeletedAt ? existingGen + 1 : Math.max(existingGen, Number(route.generation || 1));
+      const cleanRoute: ImportedRoute = sanitizeForFirestore({
+        ...route,
+        id: docId,
+        generation: nextGen,
+        rev: existingRev + 1,
+        updatedAt: nowIso,
+        lastUpdatedBy: actor
+      });
+      delete cleanRoute.deletedAt;
+      delete cleanRoute.deletedBy;
+      prepared.push({ docId, route: cleanRoute, hadDeletedAt });
+    })
+  );
+
+  const batchSize = 300;
+  for (let i = 0; i < prepared.length; i += batchSize) {
+    const chunk = prepared.slice(i, i + batchSize);
+    const batch = writeBatch(db);
+    chunk.forEach(({ docId, route }) => {
+      const docRef = doc(db, "importedRoutes", docId);
+      batch.set(
+        docRef,
+        {
+          ...route,
+          deletedAt: deleteField(),
+          deletedBy: deleteField()
+        },
+        { merge: true }
+      );
+    });
+    await batch.commit();
+  }
+
+  const finalRoutes: ImportedRoute[] = [];
+  for (const { docId, route } of prepared) {
+    deletedRouteIds.delete(docId);
+    latestRouteGenerationById.set(docId, route.generation || 1);
+    colCache.set(docId, canonicalJson(route));
+    notifyCancelPendingDocDiff("importedRoutes", docId);
+    notifyDocMutated("importedRoutes", route);
+    finalRoutes.push(route);
+  }
+
+  return finalRoutes;
+}
+
 export async function updateAuditGuarded(
   auditId: string,
   patch: Partial<AuditSession> & Record<string, any>,
@@ -1312,6 +1498,8 @@ export async function updateAuditGuarded(
     actor: string;
     clearFields?: string[];
     appendHistoryEntry?: AuditSession["history"][number];
+    fallbackOfflineUpdate?: boolean;
+    fallbackBaseAudit?: AuditSession;
   }
 ): Promise<AuditSession> {
   const nowIso = new Date().toISOString();
@@ -1334,6 +1522,7 @@ export async function updateAuditGuarded(
       delete (localPatch as any)[k];
     }
     const localRes = {
+      ...(opts.fallbackBaseAudit || {}),
       ...(localPatch as any),
       id: auditId,
       updatedAt: nowIso,
@@ -1350,25 +1539,103 @@ export async function updateAuditGuarded(
     // Aguarda qualquer flush de digitação já em curso e garante que nenhum diff pendente sobrescreva o status
     await waitForActiveDiffFlush();
     notifyCancelPendingDocDiff("audits", auditId);
+    await enableNetwork(db).catch(() => {});
 
-    await runTransaction(db, async (tx) => {
-      const docRef = doc(db, "audits", auditId);
-      const snap = await tx.get(docRef);
-      if (!snap.exists()) {
-        throw new FirestoreNotFoundError("Este mapa não existe mais no banco de dados.");
+    const retryDelays = [0, 400, 900];
+    let lastErr: any = null;
+    let txDone = false;
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+      if (retryDelays[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+        await enableNetwork(db).catch(() => {});
       }
-      const data = snap.data() as any;
-      if (data.deletedAt) {
+      try {
+        await runTransaction(db, async (tx) => {
+          const docRef = doc(db, "audits", auditId);
+          const snap = await tx.get(docRef);
+          if (!snap.exists()) {
+            throw new FirestoreNotFoundError("Este mapa não existe mais no banco de dados.");
+          }
+          const data = snap.data() as any;
+          if (data.deletedAt) {
+            throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+          }
+          if (!opts.expectedStatus.includes(data.status)) {
+            throw new FirestoreConflictError(
+              `Este mapa já foi alterado por outro usuário (status atual: ${data.status}).`,
+              data.status
+            );
+          }
+
+          const baseHistory = Array.isArray(data.history) ? [...data.history] : [];
+          const nextHistory = opts.appendHistoryEntry
+            ? [...baseHistory, opts.appendHistoryEntry]
+            : Array.isArray(patch.history)
+              ? patch.history
+              : baseHistory;
+
+          const cleanPatch = sanitizeForFirestore({
+            ...patch,
+            history: nextHistory,
+            updatedAt: nowIso,
+            lastUpdatedBy: opts.actor
+          }) as Record<string, any>;
+
+          delete cleanPatch.id;
+
+          const txUpdatePayload: Record<string, any> = {
+            ...cleanPatch,
+            rev: increment(1)
+          };
+
+          for (const fieldKey of opts.clearFields || []) {
+            txUpdatePayload[fieldKey] = deleteField();
+          }
+
+          tx.update(docRef, txUpdatePayload);
+
+          const nextObj: Record<string, any> = {
+            ...data,
+            ...cleanPatch,
+            id: auditId,
+            rev: Number(data.rev || 0) + 1
+          };
+          for (const fieldKey of opts.clearFields || []) {
+            delete nextObj[fieldKey];
+          }
+          resultingAudit = nextObj as AuditSession;
+        });
+        txDone = true;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (isGuardConflictOrNotFound(err) || !isTransientOfflineError(err)) {
+          throw err;
+        }
+      }
+    }
+
+    if (!txDone) {
+      if (!opts.fallbackOfflineUpdate || !isTransientOfflineError(lastErr)) {
+        throw lastErr;
+      }
+      if (isAuditDeletedId(auditId)) {
         throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
       }
-      if (!opts.expectedStatus.includes(data.status)) {
+      const meta = getAuditMeta(auditId);
+      if (meta?.deletedAt) {
+        throw new FirestoreNotFoundError("Este mapa foi excluído por outro usuário.");
+      }
+      if (meta && !opts.expectedStatus.includes(meta.status as AuditStatus)) {
         throw new FirestoreConflictError(
-          `Este mapa já foi alterado por outro usuário (status atual: ${data.status}).`,
-          data.status
+          `Este mapa já foi alterado por outro usuário (status atual: ${meta.status}).`,
+          meta.status
         );
       }
 
-      const baseHistory = Array.isArray(data.history) ? [...data.history] : [];
+      const baseObj = opts.fallbackBaseAudit || ({} as AuditSession);
+      const baseHistory = Array.isArray(baseObj.history) ? [...baseObj.history] : [];
       const nextHistory = opts.appendHistoryEntry
         ? [...baseHistory, opts.appendHistoryEntry]
         : Array.isArray(patch.history)
@@ -1381,31 +1648,30 @@ export async function updateAuditGuarded(
         updatedAt: nowIso,
         lastUpdatedBy: opts.actor
       }) as Record<string, any>;
-
       delete cleanPatch.id;
 
-      const txUpdatePayload: Record<string, any> = {
+      const offlinePayload: Record<string, any> = {
         ...cleanPatch,
         rev: increment(1)
       };
-
       for (const fieldKey of opts.clearFields || []) {
-        txUpdatePayload[fieldKey] = deleteField();
+        offlinePayload[fieldKey] = deleteField();
       }
 
-      tx.update(docRef, txUpdatePayload);
+      console.warn(`[ClientFirebase] Rede instável ao finalizar ${auditId}. Enfileirando atualização offline no Firestore...`);
+      await setDoc(doc(db, "audits", auditId), { ...baseObj, ...offlinePayload, id: auditId }, { merge: true });
 
       const nextObj: Record<string, any> = {
-        ...data,
+        ...baseObj,
         ...cleanPatch,
         id: auditId,
-        rev: Number(data.rev || 0) + 1
+        rev: Number(baseObj.rev || meta?.rev || 0) + 1
       };
       for (const fieldKey of opts.clearFields || []) {
         delete nextObj[fieldKey];
       }
       resultingAudit = nextObj as AuditSession;
-    });
+    }
   } finally {
     activeTransactionalAuditIds.delete(auditId);
   }
@@ -1765,10 +2031,17 @@ export async function batchRepairFinalizedAudits(
 // muito tempo (cobre o caso raro do stream travar sem chamar o erro).
 let reconnectGeneration = 0;
 let activeOnUpdateCallback: ((db: any) => void) | null = null;
+let activeAttachCollectionFn: ((colName: string) => void) | null = null;
 let activeUnsubscribes: Record<string, () => void> = {};
 const COLLECTION_RETRY_STATE: Record<string, { attempts: number; timer: any }> = {};
 let watchdogInterval: any = null;
 let reattachRequestListenerAttached = false;
+let pendingReconnectTimer: any = null;
+let lastFullReconnectAt = 0;
+const MIN_FULL_RECONNECT_INTERVAL_MS = 15000;
+let lastCriticalServerSyncAt = 0;
+let criticalSyncInFlightPromise: Promise<boolean> | null = null;
+const MIN_CRITICAL_SYNC_INTERVAL_MS = 15000;
 
 function resetCollectionRetryState(colName: string) {
   const prev = COLLECTION_RETRY_STATE[colName];
@@ -1791,23 +2064,44 @@ function scheduleCollectionRetry(colName: string, generation: number, attach: (c
   COLLECTION_RETRY_STATE[colName] = state;
 }
 
+/**
+ * Reanexa apenas coleções que realmente perderam seu listener onSnapshot,
+ * sem destruir nem recriar os outros ouvintes saudáveis (evita churn de targetId / b815).
+ */
+export function reconnectMissingListeners(): void {
+  if (!activeOnUpdateCallback || pendingReconnectTimer) return;
+  if (!activeAttachCollectionFn) {
+    forceReconnect();
+    return;
+  }
+  const missingCols = TRACKED_COLLECTIONS.filter((colName) => !activeUnsubscribes[colName]);
+  if (missingCols.length === 0) return;
+
+  console.log(`[ClientFirebase] Reanexando ${missingCols.length} listener(s) ausente(s): ${missingCols.join(', ')}`);
+  missingCols.forEach((colName) => {
+    resetCollectionRetryState(colName);
+    activeAttachCollectionFn?.(colName);
+  });
+}
+
 function attachReattachRequestListener() {
   if (reattachRequestListenerAttached || typeof window === "undefined") return;
   reattachRequestListenerAttached = true;
   // Disparado quando uma flag global (permissão/cota/autenticação) se
-  // recupera - qualquer coleção que ainda esteja esperando seu backoff
-  // é reanexada na hora, em vez de esperar o timer correr.
+  // recupera - reanexa apenas coleções ausentes em vez de derrubar todas as 19.
   window.addEventListener('firestore_request_reattach', () => {
-    forceReconnect();
+    reconnectMissingListeners();
   });
-  // Quando a conexão volta de uma queda de Wi-Fi/4G, desperta o canal do Firestore imediatamente
+  // Quando a conexão volta de uma queda de Wi-Fi/4G, desperta o canal do Firestore
+  // e atualiza coleções críticas sem recriar os listeners saudáveis.
   window.addEventListener('online', () => {
     const db = getClientFirestore();
     if (db) {
       enableNetwork(db).catch(() => {});
     }
     if (activeOnUpdateCallback) {
-      forceReconnect();
+      reconnectMissingListeners();
+      syncCriticalCollectionsFromServer(true);
     }
   });
 }
@@ -1822,8 +2116,15 @@ function startConnectionWatchdog() {
     if (!activeOnUpdateCallback) return;
     const activeCount = Object.keys(activeUnsubscribes).length;
     if (activeCount < TRACKED_COLLECTIONS.length) {
-      console.warn(`[ClientFirebase] Listeners incompletos (${activeCount}/${TRACKED_COLLECTIONS.length}). Restaurando escuta em tempo real...`);
-      forceReconnect();
+      console.warn(`[ClientFirebase] Listeners incompletos (${activeCount}/${TRACKED_COLLECTIONS.length}). Restaurando apenas ausentes...`);
+      reconnectMissingListeners();
+    } else {
+      const auditsLastSync = lastSyncByCollection["audits"] || 0;
+      const routesLastSync = lastSyncByCollection["importedRoutes"] || 0;
+      const oldestCriticalSync = Math.min(auditsLastSync, routesLastSync);
+      if (oldestCriticalSync === 0 || Date.now() - oldestCriticalSync > 90000) {
+        syncCriticalCollectionsFromServer(false);
+      }
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -1836,31 +2137,154 @@ function stopConnectionWatchdog() {
 }
 
 export function forceReconnect(): void {
-  if (!activeOnUpdateCallback) return;
-  subscribeToFirestore(activeOnUpdateCallback);
+  const cb = activeOnUpdateCallback;
+  if (!cb) return;
+  const now = Date.now();
+  if (pendingReconnectTimer) return;
+  if (now - lastFullReconnectAt < MIN_FULL_RECONNECT_INTERVAL_MS) {
+    reconnectMissingListeners();
+    return;
+  }
+  lastFullReconnectAt = now;
+
+  // Desinscreve os listeners antigos primeiro e aguarda o WatchStream concluir
+  // a remoção dos targets antes de abrir novos listeners (previne assertion ca9/b815).
+  const expectedGen = ++reconnectGeneration;
+  activeAttachCollectionFn = null;
+  Object.values(activeUnsubscribes).forEach((unsub) => { try { unsub(); } catch (e) {} });
+  activeUnsubscribes = {};
+  Object.values(COLLECTION_RETRY_STATE).forEach((s) => { if (s.timer) clearTimeout(s.timer); });
+
+  pendingReconnectTimer = setTimeout(() => {
+    pendingReconnectTimer = null;
+    if (expectedGen !== reconnectGeneration || !activeOnUpdateCallback) return;
+    subscribeToFirestore(activeOnUpdateCallback);
+  }, 250);
 }
 
 /**
- * Desperta o canal de rede do Firestore ao voltar para a aba e garante que
- * todas as coleções continuam inscritas (sem destruir listeners saudáveis).
+ * Busca apenas 'audits' e 'importedRoutes' direto do servidor via RPC pontual
+ * (sem destruir nem recriar os listeners onSnapshot / targets do WatchStream).
+ */
+export async function syncCriticalCollectionsFromServer(bypassThrottle: boolean = false): Promise<boolean> {
+  const db = getClientFirestore();
+  if (!db) return false;
+  if (criticalSyncInFlightPromise) {
+    return criticalSyncInFlightPromise;
+  }
+  const now = Date.now();
+  if (!bypassThrottle && now - lastCriticalServerSyncAt < MIN_CRITICAL_SYNC_INTERVAL_MS) {
+    return false;
+  }
+  lastCriticalServerSyncAt = now;
+
+  criticalSyncInFlightPromise = (async () => {
+    try {
+      const partialUpdate: Record<string, any> = {};
+      const targetCols: Array<"audits" | "importedRoutes"> = ["audits", "importedRoutes"];
+      await Promise.all(
+        targetCols.map(async (colName) => {
+          const snap = await getDocsFromServer(collection(db, colName));
+          const targetCol = COLLECTION_MAP[colName] || colName;
+          const colCache = getColCache(targetCol);
+          const rawItems = snap.docs.map((d) => {
+            const data = d.data();
+            colCache.set(d.id, canonicalJson({ ...data, id: d.id }));
+            if (colName === "audits") {
+              latestAuditMetaById.set(d.id, {
+                status: data.status,
+                rev: Number(data.rev || 0),
+                generation: Number(data.generation || 1),
+                reopenCycle: Number(data.reopenCycle || 0),
+                deletedAt: data.deletedAt
+              });
+              if (data.deletedAt) deletedAuditIds.add(d.id);
+              else deletedAuditIds.delete(d.id);
+              return {
+                ...data,
+                id: d.id,
+                items: Array.isArray(data.items) ? data.items : [],
+                assets: Array.isArray(data.assets) ? data.assets : [],
+                history: Array.isArray(data.history) ? data.history : [],
+                unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : []
+              };
+            }
+            latestRouteGenerationById.set(d.id, Number(data.generation || 1));
+            if (data.deletedAt) deletedRouteIds.add(d.id);
+            else deletedRouteIds.delete(d.id);
+            return { ...data, id: d.id };
+          });
+          partialUpdate[colName] = rawItems.filter((it: any) => !it.deletedAt);
+        })
+      );
+
+      lastSuccessfulSyncTime = Date.now();
+      lastSyncByCollection["audits"] = lastSuccessfulSyncTime;
+      lastSyncByCollection["importedRoutes"] = lastSuccessfulSyncTime;
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("force_database_apply", { detail: partialUpdate }));
+        emitSyncedEventThrottled();
+      }
+      return true;
+    } catch (err) {
+      if (isPermissionError(err)) checkPermissionError(err);
+      else if (isQuotaError(err)) checkQuotaError(err);
+      return false;
+    } finally {
+      criticalSyncInFlightPromise = null;
+    }
+  })();
+
+  return criticalSyncInFlightPromise;
+}
+
+/**
+ * Desperta o canal de rede do Firestore ao voltar para a aba, reanexa apenas
+ * listeners ausentes e busca coleções críticas direto do servidor sem recriar targets saudáveis.
  */
 export function ensureFirestoreConnected(hiddenDurationMs: number = 0): void {
-  if (!activeOnUpdateCallback) return;
-  const activeCount = Object.keys(activeUnsubscribes).length;
-  const auditsLastSync = lastSyncByCollection["audits"] || 0;
-  const routesLastSync = lastSyncByCollection["importedRoutes"] || 0;
-  const criticalSilent =
-    hiddenDurationMs > 45000 &&
-    (auditsLastSync === 0 || routesLastSync === 0 || Date.now() - Math.max(auditsLastSync, routesLastSync) > 120000);
-
-  if (activeCount < TRACKED_COLLECTIONS.length || criticalSilent) {
-    forceReconnect();
-    return;
-  }
-
   const db = getClientFirestore();
   if (db) {
     enableNetwork(db).catch(() => {});
+  }
+  if (!activeOnUpdateCallback) return;
+  const activeCount = Object.keys(activeUnsubscribes).length;
+  if (activeCount < TRACKED_COLLECTIONS.length) {
+    reconnectMissingListeners();
+  }
+
+  const auditsLastSync = lastSyncByCollection["audits"] || 0;
+  const routesLastSync = lastSyncByCollection["importedRoutes"] || 0;
+  const oldestCriticalSync = Math.min(auditsLastSync, routesLastSync);
+  const needsCriticalRefresh =
+    hiddenDurationMs > 10000 ||
+    oldestCriticalSync === 0 ||
+    Date.now() - oldestCriticalSync > 45000;
+
+  if (needsCriticalRefresh) {
+    syncCriticalCollectionsFromServer(false);
+  }
+}
+
+/**
+ * Força atualização imediata direto do servidor Firestore (útil no celular
+ * quando o sistema operacional suspendeu o cache local/WebChannel em background).
+ */
+export async function refreshFirestoreSyncNow(): Promise<boolean> {
+  const db = getClientFirestore();
+  if (!db) return false;
+  try {
+    await enableNetwork(db).catch(() => {});
+    reconnectMissingListeners();
+    const directDb = await fetchDirectlyFromFirestore(true);
+    if (directDb && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("force_database_apply", { detail: directDb }));
+      window.dispatchEvent(new CustomEvent("firestore_synced", { detail: { time: Date.now() } }));
+    }
+    return Boolean(directDb);
+  } catch (err) {
+    console.warn("[ClientFirebase] Erro ao forçar sincronização do servidor:", err);
+    return false;
   }
 }
 
@@ -1947,6 +2371,11 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
   const db = getClientFirestore();
   if (!db) return () => {};
 
+  if (pendingReconnectTimer) {
+    clearTimeout(pendingReconnectTimer);
+    pendingReconnectTimer = null;
+  }
+
   const myGeneration = ++reconnectGeneration;
   activeOnUpdateCallback = onUpdate;
 
@@ -1982,6 +2411,10 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
 
   const attach = (colName: string) => {
     if (myGeneration !== reconnectGeneration) return; // geração substituída - não faz nada
+    if (activeUnsubscribes[colName]) {
+      try { activeUnsubscribes[colName](); } catch (e) {}
+      delete activeUnsubscribes[colName];
+    }
     try {
       if (colName === "customManual") {
         const docRef = doc(db, "customManual", "main");
@@ -2175,6 +2608,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
     }
   };
 
+  activeAttachCollectionFn = attach;
   TRACKED_COLLECTIONS.forEach((colName) => {
     resetCollectionRetryState(colName);
     attach(colName);
@@ -2185,7 +2619,12 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
 
   return () => {
     if (myGeneration === reconnectGeneration) {
+      if (pendingReconnectTimer) {
+        clearTimeout(pendingReconnectTimer);
+        pendingReconnectTimer = null;
+      }
       activeOnUpdateCallback = null;
+      activeAttachCollectionFn = null;
       stopConnectionWatchdog();
       Object.values(activeUnsubscribes).forEach((unsub) => {
         try {
@@ -2199,6 +2638,9 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
 }
 
 function handleSubscriptionError(error: any, colName: string, generation: number, attach: (c: string) => void) {
+  if (generation === reconnectGeneration) {
+    delete activeUnsubscribes[colName];
+  }
   if (isPermissionError(error)) {
     checkPermissionError(error);
   } else if (isQuotaError(error)) {
@@ -2211,7 +2653,7 @@ function handleSubscriptionError(error: any, colName: string, generation: number
   }
 }
 
-export async function fetchDirectlyFromFirestore(): Promise<any> {
+export async function fetchDirectlyFromFirestore(forceServer: boolean = false): Promise<any> {
   const db = getClientFirestore();
   if (!db) return null;
 
@@ -2250,12 +2692,14 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
           }
         } else {
           const collRef = collection(db, colName);
-          const snap = await getDocs(collRef);
+          const snap = forceServer
+            ? await getDocsFromServer(collRef).catch(() => getDocs(collRef))
+            : await getDocs(collRef);
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
           const rawItems = snap.docs.map((d) => {
             const data = d.data();
-            colCache.set(d.id, JSON.stringify(data));
+            colCache.set(d.id, canonicalJson({ ...data, id: d.id }));
             if (colName === "audits") {
               latestAuditMetaById.set(d.id, {
                 status: data.status,
