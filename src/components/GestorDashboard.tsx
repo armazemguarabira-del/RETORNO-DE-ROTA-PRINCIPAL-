@@ -1095,18 +1095,97 @@ export default function GestorDashboard({
 
   // 6. RANKING DE EMPILHADORES (Ordenado estritamente pelo Menor Tempo de Descarregamento)
   const empilhadorRankingList = useMemo(() => {
-    const allNames = new Set<string>();
-    empilhadores.forEach(e => allNames.add(e.name));
-    unifiedUnloadingHistory.forEach(h => allNames.add(h.empilhadorName));
+    const normalizeOpName = (val: string) =>
+      String(val || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
 
-    if (allNames.size === 0) {
-      allNames.add('Paulo Pereira');
-      allNames.add('José Ronildo');
-      allNames.add('Marivaldo Artur');
+    const groups = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        empObj?: Empilhador;
+        matchNames: Set<string>;
+      }
+    >();
+
+    const findGroupKeyForName = (rawName: string): string | null => {
+      const norm = normalizeOpName(rawName);
+      if (!norm) return null;
+      if (groups.has(norm)) return norm;
+      for (const [key, g] of groups.entries()) {
+        if (g.matchNames.has(norm)) return key;
+      }
+      // Match first+second name prefix if history uses short name (e.g. "JOSE RONILDO" vs "JOSE RONILDO DA SILVA")
+      const words = norm.split(' ').filter(Boolean);
+      if (words.length >= 2) {
+        const prefix = `${words[0]} ${words[1]}`;
+        for (const [key, g] of groups.entries()) {
+          const gNorm = normalizeOpName(g.name);
+          if (gNorm.startsWith(prefix + ' ') || gNorm === prefix || norm.startsWith(gNorm + ' ')) {
+            return key;
+          }
+        }
+      }
+      return null;
+    };
+
+    empilhadores.forEach(e => {
+      if (!e || !e.name) return;
+      const norm = normalizeOpName(e.name);
+      if (!norm) return;
+      const existingById = e.id ? Array.from(groups.values()).find(g => g.id === e.id) : undefined;
+      if (existingById) {
+        existingById.matchNames.add(norm);
+        return;
+      }
+      if (!groups.has(norm)) {
+        groups.set(norm, {
+          id: e.id || `emp_${norm}`,
+          name: e.name,
+          empObj: e,
+          matchNames: new Set([norm]),
+        });
+      }
+    });
+
+    unifiedUnloadingHistory.forEach(h => {
+      if (!h.empilhadorName) return;
+      const norm = normalizeOpName(h.empilhadorName);
+      if (!norm) return;
+      const existingKey = findGroupKeyForName(h.empilhadorName);
+      if (existingKey) {
+        groups.get(existingKey)!.matchNames.add(norm);
+      } else {
+        groups.set(norm, {
+          id: `emp_${norm}`,
+          name: h.empilhadorName.trim(),
+          matchNames: new Set([norm]),
+        });
+      }
+    });
+
+    if (groups.size === 0) {
+      ['Paulo Pereira', 'José Ronildo', 'Marivaldo Artur'].forEach(fallbackName => {
+        const norm = normalizeOpName(fallbackName);
+        groups.set(norm, {
+          id: `emp_${norm}`,
+          name: fallbackName,
+          matchNames: new Set([norm]),
+        });
+      });
     }
 
-    const ranking = Array.from(allNames).map(name => {
-      const records = unifiedUnloadingHistory.filter(h => h.empilhadorName.toLowerCase() === name.toLowerCase());
+    const usedIds = new Set<string>();
+    const ranking = Array.from(groups.values()).map((group, idx) => {
+      const { name, empObj, matchNames } = group;
+      const records = unifiedUnloadingHistory.filter(h =>
+        matchNames.has(normalizeOpName(h.empilhadorName))
+      );
       const totalVehicles = records.length;
       const totalMins = records.reduce((s, r) => s + r.durationMinutes, 0);
       const avgMins = totalVehicles > 0 ? Number((totalMins / totalVehicles).toFixed(1)) : 22;
@@ -1117,8 +1196,6 @@ export default function GestorDashboard({
       const onTime = eligible.filter(r => r.isBefore22).length;
       const efdPct = eligible.length > 0 ? Number(((onTime / eligible.length) * 100).toFixed(1)) : 100;
       const pernoites = records.filter(r => r.isPernoite).length;
-
-      const empObj = empilhadores.find(e => e.name.toLowerCase() === name.toLowerCase());
 
       let formattedShift = 'Turno Geral / Pátio';
       if (empObj?.shift) {
@@ -1131,8 +1208,14 @@ export default function GestorDashboard({
         formattedShift = 'Turno Geral / Pátio';
       }
 
+      let uniqueId = group.id;
+      if (usedIds.has(uniqueId)) {
+        uniqueId = `${uniqueId}_${idx}`;
+      }
+      usedIds.add(uniqueId);
+
       return {
-        id: empObj?.id || `emp_${name}`,
+        id: uniqueId,
         name,
         matricula: empObj?.matricula || 'MAT-DPO',
         shift: formattedShift,

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, ImportedRoute, ReturnForecast, Driver, Vehicle, AuditSession, RouteObservation } from '../types';
-import { doesAuditMatchRoute, isAuditDeletedId } from '../clientFirebase';
+import { doesAuditMatchRoute, isAuditDeletedId, getTodayLocalDateStrClient } from '../clientFirebase';
 import { Truck, Clock, Calendar, Check, Save, RefreshCw, AlertCircle, FileSpreadsheet, MapPin, AlertTriangle, BarChart3, Plus, MessageSquare, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
 
 interface MonitoramentoViewProps {
@@ -335,7 +335,7 @@ export default function MonitoramentoView({
   // Group imported routes by date
   const uniqueDates = Array.from(new Set(importedRoutes.map(r => r.routeDate))).sort();
   const [selectedDate, setSelectedDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
+    return getTodayLocalDateStrClient();
   });
 
   const routesForSelectedDate = importedRoutes.filter(r => !r.deletedAt && r.routeDate === selectedDate && r.status !== 'fechado' && !isRouteClosedInAudits(r.routeMap, r.routeDate));
@@ -367,7 +367,7 @@ export default function MonitoramentoView({
             className="text-xs bg-transparent border-none text-white focus:outline-none font-semibold font-mono"
           >
             {uniqueDates.length === 0 ? (
-              <option value={new Date().toISOString().split('T')[0]}>Sem rotas importadas</option>
+              <option value={getTodayLocalDateStrClient()}>Sem rotas importadas</option>
             ) : (
               uniqueDates.map(d => (
                 <option key={d} value={d} className="bg-slate-900 text-white">

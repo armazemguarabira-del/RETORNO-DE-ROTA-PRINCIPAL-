@@ -3,14 +3,13 @@ import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDocFromServer
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 function initFirestoreInstance() {
   const dbId = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)")
@@ -18,13 +17,9 @@ function initFirestoreInstance() {
     : undefined;
 
   try {
-    if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
-      return initializeFirestore(app, {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager()
-        })
-      }, dbId);
-    }
+    return initializeFirestore(app, {
+      localCache: memoryLocalCache()
+    }, dbId);
   } catch (e) {
     // If already initialized in another mode
   }

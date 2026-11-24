@@ -3202,3 +3202,28 @@ export const deduplicateUsersComprehensive = (userList: User[]): DeduplicationRe
   return { cleanedUsers, duplicateIds };
 };
 
+export const deduplicateEmpilhadores = (empList: Empilhador[]): Empilhador[] => {
+  const seenIds = new Set<string>();
+  const seenMatriculas = new Set<string>();
+  const seenNames = new Set<string>();
+  const cleaned: Empilhador[] = [];
+
+  for (const emp of empList || []) {
+    if (!emp) continue;
+    const cleanId = (emp.id || '').trim().toLowerCase();
+    const cleanMat = (emp.matricula || '').trim().toLowerCase();
+    const cleanName = normalizePersonName(emp.name || '');
+
+    if (cleanId && seenIds.has(cleanId)) continue;
+    if (cleanMat && seenMatriculas.has(cleanMat)) continue;
+    if (cleanName && cleanName.length >= 3 && seenNames.has(cleanName)) continue;
+
+    if (cleanId) seenIds.add(cleanId);
+    if (cleanMat) seenMatriculas.add(cleanMat);
+    if (cleanName && cleanName.length >= 3) seenNames.add(cleanName);
+    cleaned.push(emp);
+  }
+
+  return cleaned;
+};
+

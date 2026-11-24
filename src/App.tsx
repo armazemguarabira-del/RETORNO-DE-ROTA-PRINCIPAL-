@@ -706,6 +706,34 @@ export default function App() {
     }));
   };
 
+  const cleanEmpilhadores = (list: Empilhador[]): Empilhador[] => {
+    if (!list || !Array.isArray(list)) return [];
+    const norm = (v?: string) =>
+      String(v || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+    const byKey = new Map<string, Empilhador>();
+    const seenIds = new Set<string>();
+    for (const emp of list) {
+      if (!emp) continue;
+      const empId = String(emp.id || '').trim();
+      const mat = norm(emp.matricula);
+      const name = norm(emp.name);
+      const canonicalKey = empId || (mat ? `MAT:${mat}` : `NAME:${name}`);
+      if (!canonicalKey) continue;
+      if (empId && seenIds.has(empId)) continue;
+      const existingByMat = mat ? Array.from(byKey.values()).find(e => norm(e.matricula) === mat) : undefined;
+      const existingByName = name ? Array.from(byKey.values()).find(e => norm(e.name) === name) : undefined;
+      if (existingByMat || existingByName) continue;
+      if (empId) seenIds.add(empId);
+      byKey.set(canonicalKey, emp);
+    }
+    return Array.from(byKey.values());
+  };
+
   const getRouteStatusRank = (status?: string): number => {
     switch (status) {
       case 'fechado': return 4;
@@ -814,8 +842,9 @@ export default function App() {
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
-      latestCollectionRefs.current.empilhadores = db.empilhadores;
-      setEmpilhadores(db.empilhadores);
+      const cleanedEmps = cleanEmpilhadores(db.empilhadores);
+      latestCollectionRefs.current.empilhadores = cleanedEmps;
+      setEmpilhadores(cleanedEmps);
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
@@ -1555,8 +1584,9 @@ export default function App() {
   };
 
   const handleSaveEmpilhadores = (newEmpilhadores: Empilhador[]) => {
-    setEmpilhadores(newEmpilhadores);
-    pushDatabaseToServer({ empilhadores: newEmpilhadores });
+    const cleaned = cleanEmpilhadores(newEmpilhadores);
+    setEmpilhadores(cleaned);
+    pushDatabaseToServer({ empilhadores: cleaned });
   };
 
   const handleSaveCarregamentos = (newCarregamentos: CarregamentoProcess[]) => {

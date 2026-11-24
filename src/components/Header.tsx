@@ -11,6 +11,7 @@ import {
   getFirebaseConnectionState, 
   getIsFirestoreQuotaExceeded,
   fetchDirectlyFromFirestore,
+  refreshFirestoreSyncNow,
   getLastSuccessfulSyncTime,
   getActiveFirebaseConfig
 } from '../clientFirebase';
@@ -641,12 +642,12 @@ export default function Header({
                 <span>Baixar APK</span>
               </button>
 
-              {/* Botão Limpar Cache e Recarregar (Telas Médias/Grandes) */}
+              {/* Botão Limpar Cache e Recarregar (Visível no Mobile e Desktop) */}
               <button
                 id="clear_platform_cache_btn"
                 onClick={handleClearCacheAndReload}
                 disabled={isClearingCache}
-                className="hidden md:flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-colors items-center justify-center cursor-pointer shadow-xs shrink-0"
+                className="flex bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 sm:p-2 rounded-lg transition-colors items-center justify-center cursor-pointer shadow-xs shrink-0"
                 title="Limpar Cache da Plataforma e Recarregar Dados Atualizados"
               >
                 <RefreshCw className={`h-3.5 w-3.5 sm:h-4 sm:w-4 text-sky-400 ${isClearingCache ? 'animate-spin' : ''}`} />
@@ -1000,10 +1001,13 @@ export default function Header({
                 onClick={async () => {
                   setIsManualSyncing(true);
                   try {
-                    const directData = await fetchDirectlyFromFirestore();
-                    if (directData) {
-                      window.dispatchEvent(new CustomEvent('force_database_apply', { detail: directData }));
-                      window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: Date.now() } }));
+                    const synced = await refreshFirestoreSyncNow();
+                    if (!synced) {
+                      const directData = await fetchDirectlyFromFirestore(true);
+                      if (directData) {
+                        window.dispatchEvent(new CustomEvent('force_database_apply', { detail: directData }));
+                        window.dispatchEvent(new CustomEvent('firestore_synced', { detail: { time: Date.now() } }));
+                      }
                     }
                   } catch (e) {
                     console.error("Erro na sincronização manual:", e);

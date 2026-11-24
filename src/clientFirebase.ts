@@ -2,8 +2,7 @@ import { initializeApp, getApps, getApp, deleteApp } from "firebase/app";
 import {
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDoc,
   getDocs,
@@ -17,11 +16,11 @@ import {
   runTransaction,
   updateDoc,
   increment,
-  deleteField,
-  enableNetwork
+  deleteField
 } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import firebaseConfig from "../firebase-applet-config.json";
+import { db as defaultFirebaseDb } from "./firebase";
 import { DEFAULT_USERS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, DEFAULT_PRODUCTS, DEFAULT_ACTIVE_ASSETS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS } from "./data";
 import { FIREBASE_PRESETS } from "./firebasePresets";
 import { isAutoScheduleEnabled, getCurrentScheduledPreset } from "./utils/databaseScheduler";
@@ -550,6 +549,7 @@ function markSyncSuccess(colName?: string) {
 // limpo, etc.), isAuthenticated ficava `true` para sempre e nada tentava se
 // autenticar de novo.
 let authStateListenerAttached = false;
+let hadAuthLoss = false;
 
 function attachAuthStateListener() {
   if (authStateListenerAttached || typeof window === "undefined") return;
@@ -558,15 +558,20 @@ function attachAuthStateListener() {
     const authRef = getAuth();
     onAuthStateChanged(authRef, (user) => {
       if (user) {
-        const wasUnauthenticated = !isAuthenticated;
+        const shouldReattach = hadAuthLoss || hasClientPermissionError;
+        hadAuthLoss = false;
         isAuthenticated = true;
         isAuthenticating = false;
         clientAuthError = null;
-        if (wasUnauthenticated) {
+        if (shouldReattach) {
+          hasClientPermissionError = false;
           window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
         }
       } else {
-        console.warn("[ClientFirebase] Sessão de autenticação perdida. Tentando reautenticar...");
+        if (isAuthenticated) {
+          hadAuthLoss = true;
+          console.warn("[ClientFirebase] Sessão de autenticação perdida. Tentando reautenticar...");
+        }
         isAuthenticated = false;
         triggerAnonymousAuth();
       }
@@ -664,12 +669,14 @@ export async function switchActiveFirebaseConfig(newConfig: any): Promise<boolea
       } catch (e) {}
       firestoreInstance = null;
     }
+    hasSwitchedFirebaseApp = true;
     for (const a of getApps()) {
       try {
         await deleteApp(a);
       } catch (e) {}
     }
     authStateListenerAttached = false;
+    hadAuthLoss = false;
     isAuthenticated = false;
     isAuthenticating = false;
     g1163RestorePromise = null;
@@ -792,6 +799,8 @@ export async function syncFirebaseData(sourceConfig: any, targetConfig: any): Pr
   return Promise.race([syncWorker(), timeoutPromise]);
 }
 
+let hasSwitchedFirebaseApp = false;
+
 export function getClientFirestore() {
   if (hasClientPermissionError) return null;
   if (firestoreInstance) {
@@ -812,24 +821,20 @@ export function getClientFirestore() {
       return null;
     }
 
-    const app = getApps().length === 0 ? initializeApp(config) : getApp();
     const dbId = (config.firestoreDatabaseId && config.firestoreDatabaseId !== "(default)") ? config.firestoreDatabaseId : undefined;
+    const defaultDbId = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)") ? firebaseConfig.firestoreDatabaseId : undefined;
 
-    // Enable IndexedDB persistent local cache with multi-tab support
-    // This allows page reloads and multiple tabs to read from local cache with 0 Firestore read consumption!
-    try {
-      if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
+    if (!hasSwitchedFirebaseApp && config.projectId === firebaseConfig.projectId && dbId === defaultDbId && defaultFirebaseDb) {
+      firestoreInstance = defaultFirebaseDb;
+    } else {
+      const app = getApps().length === 0 ? initializeApp(config) : getApp();
+      try {
         firestoreInstance = initializeFirestore(app, {
-          localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager()
-          })
+          localCache: memoryLocalCache()
         }, dbId);
-      } else {
+      } catch (errInit) {
         firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
       }
-    } catch (errInit) {
-      // Fallback if already initialized in another mode
-      firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
     }
 
     triggerAnonymousAuth();
@@ -1791,6 +1796,9 @@ function scheduleCollectionRetry(colName: string, generation: number, attach: (c
   COLLECTION_RETRY_STATE[colName] = state;
 }
 
+let lastForceReconnectAt = 0;
+const MIN_RECONNECT_COOLDOWN_MS = 10000;
+
 function attachReattachRequestListener() {
   if (reattachRequestListenerAttached || typeof window === "undefined") return;
   reattachRequestListenerAttached = true;
@@ -1798,15 +1806,13 @@ function attachReattachRequestListener() {
   // recupera - qualquer coleção que ainda esteja esperando seu backoff
   // é reanexada na hora, em vez de esperar o timer correr.
   window.addEventListener('firestore_request_reattach', () => {
-    forceReconnect();
+    forceReconnect(true);
   });
-  // Quando a conexão volta de uma queda de Wi-Fi/4G, desperta o canal do Firestore imediatamente
+  // Quando a conexão volta de uma queda de Wi-Fi/4G, só reanexa se algum listener caiu
   window.addEventListener('online', () => {
-    const db = getClientFirestore();
-    if (db) {
-      enableNetwork(db).catch(() => {});
-    }
-    if (activeOnUpdateCallback) {
+    if (!activeOnUpdateCallback) return;
+    const activeCount = Object.keys(activeUnsubscribes).length;
+    if (activeCount < TRACKED_COLLECTIONS.length) {
       forceReconnect();
     }
   });
@@ -1835,32 +1841,25 @@ function stopConnectionWatchdog() {
   }
 }
 
-export function forceReconnect(): void {
+export function forceReconnect(bypassCooldown: boolean = false): void {
   if (!activeOnUpdateCallback) return;
+  const now = Date.now();
+  if (!bypassCooldown && now - lastForceReconnectAt < MIN_RECONNECT_COOLDOWN_MS) {
+    return;
+  }
+  lastForceReconnectAt = now;
   subscribeToFirestore(activeOnUpdateCallback);
 }
 
 /**
- * Desperta o canal de rede do Firestore ao voltar para a aba e garante que
- * todas as coleções continuam inscritas (sem destruir listeners saudáveis).
+ * Garante que todas as coleções continuam inscritas ao voltar para a aba,
+ * sem destruir listeners saudáveis nem chamar enableNetwork em paralelo aos streams.
  */
-export function ensureFirestoreConnected(hiddenDurationMs: number = 0): void {
+export function ensureFirestoreConnected(_hiddenDurationMs: number = 0): void {
   if (!activeOnUpdateCallback) return;
   const activeCount = Object.keys(activeUnsubscribes).length;
-  const auditsLastSync = lastSyncByCollection["audits"] || 0;
-  const routesLastSync = lastSyncByCollection["importedRoutes"] || 0;
-  const criticalSilent =
-    hiddenDurationMs > 45000 &&
-    (auditsLastSync === 0 || routesLastSync === 0 || Date.now() - Math.max(auditsLastSync, routesLastSync) > 120000);
-
-  if (activeCount < TRACKED_COLLECTIONS.length || criticalSilent) {
+  if (activeCount < TRACKED_COLLECTIONS.length) {
     forceReconnect();
-    return;
-  }
-
-  const db = getClientFirestore();
-  if (db) {
-    enableNetwork(db).catch(() => {});
   }
 }
 
