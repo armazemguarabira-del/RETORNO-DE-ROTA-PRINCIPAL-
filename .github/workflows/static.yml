@@ -16,10 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,6 +30,11 @@ jobs:
           node-version: 20
           cache: 'npm'
 
+      - name: Configurar GitHub Pages nativo
+        id: pages_config
+        uses: actions/configure-pages@v5
+        continue-on-error: true
+
       - name: Instalar dependencias
         run: npm install --legacy-peer-deps
 
@@ -41,6 +43,7 @@ jobs:
 
       - name: Preparar arquivos estaticos (nojekyll e 404)
         run: |
+          rm -f dist/server.cjs dist/server.cjs.map
           touch dist/.nojekyll
           if [ -f dist/index.html ]; then
             cp dist/index.html dist/404.html
@@ -54,16 +57,20 @@ jobs:
           publish_dir: ./dist
           keep_files: false
 
-      - name: Configurar GitHub Pages nativo
-        id: pages_config
-        uses: actions/configure-pages@v5
-        continue-on-error: true
-
       - name: Upload artifact (dist compilado)
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
+          name: github-pages
           path: './dist'
+          include-hidden-files: true
 
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
